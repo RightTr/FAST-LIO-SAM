@@ -57,9 +57,9 @@
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3.h>
 #include <geometry_msgs/PoseWithCovarianceStamped.h>
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include "preprocess.h"
-#include <ikd-Tree/ikd_Tree.h>
+#include "ikdtree_public.hpp"
 #include <reloc/reloc.h>
 #include <atomic>
 
@@ -75,6 +75,8 @@ double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
 /**************************/
+
+bool feature_pub_en = false, effect_pub_en = false;
 
 float res_last[100000] = {0.0};
 float DET_RANGE = 300.0f;
@@ -127,7 +129,7 @@ PointCloudXYZI::Ptr _featsArray;
 pcl::VoxelGrid<PointType> downSizeFilterSurf;
 pcl::VoxelGrid<PointType> downSizeFilterMap;
 
-KD_TREE<PointType> ikdtree;
+KD_TREE_PUBLIC<PointType> ikdtree;
 
 V3F XAxisPoint_body(LIDAR_SP_LEN, 0.0, 0.0);
 V3F XAxisPoint_world(LIDAR_SP_LEN, 0.0, 0.0);
@@ -309,7 +311,7 @@ void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg)
 
 double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
-void livox_pcl_cbk(const livox_ros_driver::CustomMsg::ConstPtr &msg) 
+void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg) 
 {
     mtx_buffer.lock();
     double preprocess_start_time = omp_get_wtime();
@@ -794,6 +796,8 @@ int main(int argc, char** argv)
     nh.param<bool>("publish/scan_publish_en",scan_pub_en, true);
     nh.param<bool>("publish/dense_publish_en",dense_pub_en, true);
     nh.param<bool>("publish/scan_bodyframe_pub_en",scan_body_pub_en, true);
+    nh.param<bool>("publish/feature_pub_en",feature_pub_en, false);
+    nh.param<bool>("publish/effect_pub_en",effect_pub_en, false);
     nh.param<bool>("reloc/reloc_en", reloc_en, false);
     nh.param<int>("max_iteration",NUM_MAX_ITERATIONS,4);
     nh.param<string>("map_file_path",map_file_path,"");
@@ -911,7 +915,6 @@ int main(int argc, char** argv)
                 ROS_INFO("...... Enter Relocalization Mode ......");
 
                 feats_down_world->clear();
-                featsFromMap->clear();
                 p_imu->Reset();
                 state_ikfom state_point_reloc;
 
@@ -923,6 +926,8 @@ int main(int argc, char** argv)
                                                 reloc_state.qy_, reloc_state.qz_);
                 }        
                 kf.reset(state_point_reloc);
+                ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
+                ikdtree.Root_Node = nullptr;
                 
                 ROS_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
                     state_point_reloc.pos.x(), state_point_reloc.pos.y(), state_point_reloc.pos.z(),
@@ -1009,7 +1014,7 @@ int main(int argc, char** argv)
             fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<< " " << state_point.vel.transpose() \
             <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
 
-            if(0) // If you need to see map point, change to "if(1)"
+            if(feature_pub_en) // If you need to see map point, change to "if(1)"
             {
                 PointVector ().swap(ikdtree.PCL_Storage);
                 ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
@@ -1050,8 +1055,8 @@ int main(int argc, char** argv)
             if (path_en)                         publish_path(pubPath);
             if (scan_pub_en || pcd_save_en)      publish_frame_world(pubLaserCloudFull);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
-            // publish_effect_world(pubLaserCloudEffect);
-            // publish_map(pubLaserCloudMap);
+            if (effect_pub_en) publish_effect_world(pubLaserCloudEffect);
+            if (feature_pub_en) publish_map(pubLaserCloudMap);
 
             /*** Debug variables ***/
             if (runtime_pos_log)
