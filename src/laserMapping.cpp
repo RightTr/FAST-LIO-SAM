@@ -610,23 +610,37 @@ void publish_map(const ros::Publisher & pubLaserCloudMap)
     pubLaserCloudMap.publish(laserCloudMap);
 }
 
-void publish_imupose(PoseBuffer& pbuffer, const ros::Publisher& pubImuPose)
+void publish_odometryhighfreq(PoseBuffer& pbuffer, const ros::Publisher& pubOdomHighFreq)
 {
     ros::Rate rate(200);
     while(ros::ok()) 
     {
         Pose pose = pbuffer.Pop();
-        geometry_msgs::PoseStamped msg;
+        nav_msgs::Odometry msg;
         msg.header.stamp = ros::Time(pose._timestamp);
         msg.header.frame_id = "camera_init";
-        msg.pose.position.x = pose._x;
-        msg.pose.position.y = pose._y;
-        msg.pose.position.z = pose._z;
-        msg.pose.orientation.x = pose._qx;
-        msg.pose.orientation.y = pose._qy;
-        msg.pose.orientation.z = pose._qz;
-        msg.pose.orientation.w = pose._qw;
-        pubImuPose.publish(msg);
+        msg.child_frame_id = "body";
+        msg.pose.pose.position.x = pose._x;
+        msg.pose.pose.position.y = pose._y;
+        msg.pose.pose.position.z = pose._z;
+        msg.pose.pose.orientation.x = pose._qx;
+        msg.pose.pose.orientation.y = pose._qy;
+        msg.pose.pose.orientation.z = pose._qz;
+        msg.pose.pose.orientation.w = pose._qw;
+        pubOdomHighFreq.publish(msg);
+
+        static tf::TransformBroadcaster br_hf;
+        tf::Transform transform;
+        tf::Quaternion q;
+        transform.setOrigin(tf::Vector3(msg.pose.pose.position.x, \
+                                        msg.pose.pose.position.y, \
+                                        msg.pose.pose.position.z));
+        q.setW(msg.pose.pose.orientation.w);
+        q.setX(msg.pose.pose.orientation.x);
+        q.setY(msg.pose.pose.orientation.y);
+        q.setZ(msg.pose.pose.orientation.z);
+        transform.setRotation(q);
+        br_hf.sendTransform(tf::StampedTransform(transform, msg.header.stamp, "odom_hf", "body"));
 
         rate.sleep();
     }
@@ -925,10 +939,10 @@ int main(int argc, char** argv)
             ("/Odometry", 100000);
     ros::Publisher pubPath          = nh.advertise<nav_msgs::Path> 
             ("/path", 100000);
-    ros::Publisher pubImuPose       = nh.advertise<geometry_msgs::PoseStamped> ("/imu_pose", 100000);
+    ros::Publisher pubOdomHighFreq  = nh.advertise<nav_msgs::Odometry> ("/OdometryHighFreq", 100000);
 
     std::thread th([&](){
-        publish_imupose(p_imu->pbuffer, pubImuPose);
+        publish_odometryhighfreq(   p_imu->pbuffer, pubOdomHighFreq);
     });
     th.detach();
 
