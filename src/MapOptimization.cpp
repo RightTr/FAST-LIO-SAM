@@ -29,6 +29,8 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
+#include <ikd-Tree/ikd_Tree.h>
+
 #ifdef USE_ROS1
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
