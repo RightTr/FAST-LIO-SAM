@@ -317,7 +317,7 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
     // #ifdef USE_ROS1
     //     ROS_INFO("Loop closure detected between keyframe %d and keyframe %d", loopKeyCur, loopKeyPre);
     // #elif defined(USE_ROS2)
-    //     RCLCPP_INFO(rclcpp::get_logger("fast_lio"), "Loop closure detected between keyframe %d and keyframe %d", loopKeyCur, loopKeyPre);
+    //     RCLCPP_INFO(rclcpp::get_logger("fast_lio_sam"), "Loop closure detected between keyframe %d and keyframe %d", loopKeyCur, loopKeyPre);
     // #endif
 
     return true;
@@ -736,7 +736,7 @@ void loopClosureThread()
     #ifdef USE_ROS1
         ROS_INFO("...... Loop Closure Thread Start......");
     #elif defined(USE_ROS2)
-        RCLCPP_INFO(rclcpp::get_logger("fast_lio"), "...... Loop Closure Thread Start......");
+        RCLCPP_INFO(rclcpp::get_logger("fast_lio_sam"), "...... Loop Closure Thread Start......");
     #endif
 
     ros::Rate rate(loopClosureFrequency);

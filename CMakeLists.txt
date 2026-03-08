@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(fast_lio)
+project(fast_lio_sam)
 
 SET(CMAKE_BUILD_TYPE "Debug")
 

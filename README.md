@@ -52,7 +52,7 @@ git submodule update --init --recursive
 cd fastlio_sam_ws 
 source devel/setup.bash
 # e.g.
-roslaunch fast_lio mapping_mid360.launch
+roslaunch fast_lio_sam mapping_mid360.launch
 ```
 
 ### ROS2 Build
@@ -77,7 +77,7 @@ git submodule update --init --recursive
 cd fastlio_ws 
 source install/setup.bash
 # e.g.
-ros2 launch fast_lio mapping_mid360.launch.py
+ros2 launch fast_lio_sam mapping_mid360.launch.py
 ```
 
 ### Launch LIO-SAM-style Backend
@@ -86,7 +86,7 @@ ros2 launch fast_lio mapping_mid360.launch.py
 cd fastlio_ws 
 source devel/setup.bash
 # e.g.
-roslaunch fast_lio sam_airy.launch
+roslaunch fast_lio_sam sam_airy.launch
 ```
 
 ### Relocalization
@@ -100,13 +100,13 @@ Run relocalization mode:
 # ROS1
 cd fastlio_ws 
 source devel/setup.bash
-roslaunch fast_lio reloc_mid360.launch
+roslaunch fast_lio_sam reloc_mid360.launch
 # Publish geometry_msgs::PoseStamped to the /reloc_topic
 
 # ROS2
 cd fastlio_ws 
 source install/setup.bash
-ros2 launch fast_lio reloc_mid360.launch.py
+ros2 launch fast_lio_sam reloc_mid360.launch.py
 # Publish geometry_msgs::msg::PoseStamped to the /reloc_topic
 ```
 
@@ -120,7 +120,7 @@ Now, FAST-LIO supports tracking and mapping using the RoboSense LiDARs (e.g., Ro
 
 ```bash
 # e.g.
-roslaunch fast_lio mapping_airy.launch
+roslaunch fast_lio_sam mapping_airy.launch
 ```
 
 ## TODO List

@@ -8,7 +8,7 @@
 
 
 #ifdef USE_ROS1
-#include <fast_lio/Pose6D.h>
+#include <fast_lio_sam/Pose6D.h>
 #include <sensor_msgs/Imu.h>
 #include <nav_msgs/Odometry.h>
 #include <tf/transform_broadcaster.h>
@@ -25,7 +25,7 @@
 using TimeType = ros::Time;
 using OdomMsg = nav_msgs::Odometry;
 using RateType = ros::Rate;
-using Pose6D = fast_lio::Pose6D;
+using Pose6D = fast_lio_sam::Pose6D;
 using ImuMsgConstPtr = sensor_msgs::Imu::ConstPtr;
 #elif defined(USE_ROS2)
 using TimeType = rclcpp::Time;
