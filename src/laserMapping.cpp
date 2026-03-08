@@ -1379,7 +1379,6 @@ int main(int argc, char** argv)
                 state_point_reloc.rot.normalize();
                 kf.reset(state_point_reloc);
                 ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
-                ikdtree.Root_Node = nullptr;
                 
                 #ifdef USE_ROS1
                     ROS_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",

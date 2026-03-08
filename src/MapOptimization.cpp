@@ -29,7 +29,7 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
-#include <ikd-Tree/ikd_Tree.h>
+#include "ikdtree_public.hpp"
 
 #ifdef USE_ROS1
 #include <ros/ros.h>
@@ -140,7 +140,7 @@ pcl::VoxelGrid<PointType> downSizeFilterICP;
 
 vector<pcl::PointCloud<PointType>::Ptr> featCloudKeyFrames;
 
-pcl::KdTreeFLANN<PointType>::Ptr kdtreeHistoryKeyPoses;
+KD_TREE_PUBLIC<PointType>::Ptr ikdtreeHistoryKeyPoses;
 
 Eigen::Affine3f pclPointToAffine3f(PointTypePose thisPoint)
 { 
@@ -212,8 +212,6 @@ void allocateMemory()
     cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
     copy_cloudKeyPoses3D.reset(new pcl::PointCloud<PointType>());
     copy_cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
-
-    kdtreeHistoryKeyPoses.reset(new pcl::KdTreeFLANN<PointType>());
 
     for (int i = 0; i < 6; ++i){
         transformTobeMapped[i] = 0;
@@ -297,14 +295,12 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
         return false;
 
     // find the closest history key frame
-    std::vector<int> pointSearchIndLoop;
-    std::vector<float> pointSearchSqDisLoop;
-    kdtreeHistoryKeyPoses->setInputCloud(copy_cloudKeyPoses3D);
-    kdtreeHistoryKeyPoses->radiusSearch(copy_cloudKeyPoses3D->back(), historyKeyframeSearchRadius, pointSearchIndLoop, pointSearchSqDisLoop, 0);
+    KD_TREE_PUBLIC<PointType>::PointVector pointSearchPoses3D;
     
-    for (int i = 0; i < (int)pointSearchIndLoop.size(); ++i)
+    ikdtreeHistoryKeyPoses->Radius_Search(copy_cloudKeyPoses3D->back(), historyKeyframeSearchRadius, pointSearchPoses3D);
+    for (int i = 0; i < (int)pointSearchPoses3D.size(); ++i)
     {
-        int id = pointSearchIndLoop[i];
+        int id = pointSearchPoses3D[i].intensity; // index stored in intensity field
         if (abs(copy_cloudKeyPoses6D->points[id].time - timeLaserInfoCur) > historyKeyframeSearchTimeDiff)
         {
             loopKeyPre = id;
@@ -597,7 +593,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     transformTobeMapped[3] = latestEstimate.translation().x();
     transformTobeMapped[4] = latestEstimate.translation().y();
     transformTobeMapped[5] = latestEstimate.translation().z();
-    
 
     pcl::PointCloud<PointType>::Ptr featCloudKeyFrame(new pcl::PointCloud<PointType>());
     pcl::copyPointCloud(*feats_undistort, *featCloudKeyFrame);
@@ -619,6 +614,23 @@ void updatePath(const PointTypePose& pose_in)
     pose_stamped.pose.orientation.w = q.w();
 
     globalPath.poses.push_back(pose_stamped);
+}
+
+void ReconstructIkdTree()
+{
+    if (cloudKeyPoses3D->points.empty())
+        return;
+
+    ikdtreeHistoryKeyPoses->delete_tree_nodes(&ikdtreeHistoryKeyPoses->Root_Node);
+
+    KD_TREE_PUBLIC<PointType>::PointVector pose_points;
+    pose_points.reserve(cloudKeyPoses3D->points.size());
+    for (const auto &pose : cloudKeyPoses3D->points)
+    {
+        pose_points.push_back(pose);
+    }
+
+    ikdtreeHistoryKeyPoses->Build(pose_points);
 }
 
 void correctPoses()
@@ -647,6 +659,8 @@ void correctPoses()
 
             updatePath(cloudKeyPoses6D->points[i]);
         }
+
+        ReconstructIkdTree();
 
         aLoopIsClosed = false;
     }
