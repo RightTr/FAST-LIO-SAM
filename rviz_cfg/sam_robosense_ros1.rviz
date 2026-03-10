@@ -14,6 +14,7 @@ Panels:
         - /Odometry1/Odometry1/Covariance1/Orientation1
         - /MarkerArray1/Namespaces1
         - /Keyframe1
+        - /Keyframe1/KeyframeRecent1
       Splitter Ratio: 0.6432291865348816
     Tree Height: 782
   - Class: rviz/Selection
@@ -333,8 +334,8 @@ Visualization Manager:
           Axis: Z
           Channel Name: intensity
           Class: rviz/PointCloud2
-          Color: 255; 255; 255
-          Color Transformer: Intensity
+          Color: 0; 255; 127
+          Color Transformer: FlatColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -345,7 +346,7 @@ Visualization Manager:
           Queue Size: 10
           Selectable: true
           Size (Pixels): 3
-          Size (m): 0.009999999776482582
+          Size (m): 0.10000000149011612
           Style: Flat Squares
           Topic: /lio_sam/mapping/cloud_recent_keyframe
           Unreliable: false
@@ -355,14 +356,14 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 10
-            Min Value: -10
+            Max Value: 3.074239730834961
+            Min Value: -19.450166702270508
             Value: true
           Axis: Z
           Channel Name: intensity
           Class: rviz/PointCloud2
           Color: 255; 255; 255
-          Color Transformer: Intensity
+          Color Transformer: AxisColor
           Decay Time: 0
           Enabled: true
           Invert Rainbow: false
@@ -373,7 +374,7 @@ Visualization Manager:
           Queue Size: 10
           Selectable: true
           Size (Pixels): 3
-          Size (m): 0.009999999776482582
+          Size (m): 0.05000000074505806
           Style: Flat Squares
           Topic: /lio_sam/mapping/cloud_global
           Unreliable: false
@@ -434,7 +435,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 60.48106384277344
+      Distance: 64.85441589355469
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -442,17 +443,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -14.423202514648438
-        Y: -0.9560307860374451
-        Z: 2.252654790878296
+        X: -19.342975616455078
+        Y: 6.214931964874268
+        Z: -0.8826784491539001
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: true
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.0347964763641357
+      Pitch: 1.0447964668273926
       Target Frame: global
-      Yaw: 0.2871786653995514
+      Yaw: 5.430344581604004
     Saved: ~
 Window Geometry:
   Displays:
