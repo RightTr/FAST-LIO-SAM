@@ -235,7 +235,7 @@ Visualization Manager:
       Length: 1
       Name: Axes
       Radius: 0.10000000149011612
-      Reference Frame: camera_init
+      Reference Frame: map
       Value: true
     - Angle Tolerance: 0.10000000149011612
       Class: rviz_default_plugins/Odometry
@@ -425,7 +425,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: camera_init
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:

@@ -63,6 +63,8 @@ int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudVal
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 std::atomic<bool> flg_exit(false);
+Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
+Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool reloc_en = false;
 bool sam_enable = false;
@@ -532,6 +534,33 @@ void getCurrOffset(const state_ikfom& curr_state) {
     rotationLidarToIMU = curr_state.offset_R_L_I.toRotationMatrix();
 }
 
+template<typename T>
+void fillPoseMsg(T& pose_msg, const Eigen::Matrix3d& R, const Eigen::Vector3d& t)
+{
+    Eigen::Quaterniond q(R);
+    q.normalize();
+    pose_msg.position.x = t.x();
+    pose_msg.position.y = t.y();
+    pose_msg.position.z = t.z();
+    pose_msg.orientation.x = q.x();
+    pose_msg.orientation.y = q.y();
+    pose_msg.orientation.z = q.z();
+    pose_msg.orientation.w = q.w();
+}
+
+void fillTransformMsg(TransformStampedMsg& tf_msg, const Eigen::Matrix3d& R, const Eigen::Vector3d& t)
+{
+    Eigen::Quaterniond q(R);
+    q.normalize();
+    tf_msg.transform.translation.x = t.x();
+    tf_msg.transform.translation.y = t.y();
+    tf_msg.transform.translation.z = t.z();
+    tf_msg.transform.rotation.x = q.x();
+    tf_msg.transform.rotation.y = q.y();
+    tf_msg.transform.rotation.z = q.z();
+    tf_msg.transform.rotation.w = q.w();
+}
+
 void update_state_ikfom()
 {
     state_ikfom state_updated = kf.get_x();
@@ -565,7 +594,7 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
         Pcl2Msg laserCloudmsg;
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
         laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-        laserCloudmsg.header.frame_id = "camera_init";
+        laserCloudmsg.header.frame_id = map_frame;
         ros_publish(pubLaserCloudFull, laserCloudmsg);
         publish_count -= PUBFRAME_PERIOD;
     }
@@ -635,7 +664,7 @@ void publish_frame_body(const Pcl2Publisher & pubLaserCloudFull_body)
     Pcl2Msg laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudmsg.header.frame_id = "body";
+    laserCloudmsg.header.frame_id = base_frame;
     ros_publish(pubLaserCloudFull_body, laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
 }
@@ -652,7 +681,7 @@ void publish_effect_world(const Pcl2Publisher & pubLaserCloudEffect)
     Pcl2Msg laserCloudFullRes3;
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
     laserCloudFullRes3.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudFullRes3.header.frame_id = "camera_init";
+    laserCloudFullRes3.header.frame_id = map_frame;
     ros_publish(pubLaserCloudEffect, laserCloudFullRes3);
 }
 
@@ -661,7 +690,7 @@ void publish_map(const Pcl2Publisher & pubLaserCloudMap)
     Pcl2Msg laserCloudMap;
     pcl::toROSMsg(*featsFromMap, laserCloudMap);
     laserCloudMap.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudMap.header.frame_id = "camera_init";
+    laserCloudMap.header.frame_id = map_frame;
     ros_publish(pubLaserCloudMap, laserCloudMap);
 }
 
@@ -676,25 +705,22 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer, const OdomPublisher& pubOdomH
         }
         OdomMsg msg;
         msg.header.stamp = get_ros_time(pose._timestamp);
-        msg.header.frame_id = "camera_init";
-        msg.child_frame_id = "body";
+        msg.header.frame_id = odom_frame;
+        msg.child_frame_id = high_freq_base_frame;
 
-        msg.pose.pose.position.x = pose._x;
-        msg.pose.pose.position.y = pose._y;
-        msg.pose.pose.position.z = pose._z;
-        msg.pose.pose.orientation.x = pose._qx;
-        msg.pose.pose.orientation.y = pose._qy;
-        msg.pose.pose.orientation.z = pose._qz;
-        msg.pose.pose.orientation.w = pose._qw;
+        const Eigen::Matrix3d R_odom_map = R_map_odom.transpose();
+        const Eigen::Matrix3d R_map_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
+        const Eigen::Vector3d t_map_base(pose._x, pose._y, pose._z);
+
+        const Eigen::Matrix3d R_odom_base = R_odom_map * R_map_base;
+        const Eigen::Vector3d t_odom_base = R_odom_map * (t_map_base - t_map_odom);
+        fillPoseMsg(msg.pose.pose, R_odom_base, t_odom_base);
 
         TransformStampedMsg tf_msg;
         tf_msg.header.stamp = msg.header.stamp;
-        tf_msg.header.frame_id = "camera_init";
-        tf_msg.child_frame_id = "body_hf";
-        tf_msg.transform.translation.x = msg.pose.pose.position.x;
-        tf_msg.transform.translation.y = msg.pose.pose.position.y;
-        tf_msg.transform.translation.z = msg.pose.pose.position.z;
-        tf_msg.transform.rotation = msg.pose.pose.orientation;
+        tf_msg.header.frame_id = odom_frame;
+        tf_msg.child_frame_id = high_freq_base_frame;
+        fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
         ros_publish(pubOdomHighFreq, msg);
 
@@ -730,10 +756,15 @@ void set_posestamp(T & out)
 
 void publish_odometry(const OdomPublisher & pubOdomAftMapped)
 {
-    odomAftMapped.header.frame_id = "camera_init";
-    odomAftMapped.child_frame_id = "body";
-    set_posestamp(odomAftMapped.pose);
+    odomAftMapped.header.frame_id = odom_frame;
+    odomAftMapped.child_frame_id = base_frame;
     odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
+
+    const Eigen::Matrix3d R_odom_map = R_map_odom.transpose();
+
+    const Eigen::Matrix3d R_odom_base = R_odom_map * state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_odom_base = R_odom_map * (state_point.pos - t_map_odom);
+    fillPoseMsg(odomAftMapped.pose.pose, R_odom_base, t_odom_base);
 
     auto P = kf.get_P();
     for (int i = 0; i < 6; i ++)
@@ -749,12 +780,23 @@ void publish_odometry(const OdomPublisher & pubOdomAftMapped)
 
     TransformStampedMsg tf_msg;
     tf_msg.header.stamp = odomAftMapped.header.stamp;
-    tf_msg.header.frame_id = "camera_init";
-    tf_msg.child_frame_id  = "body";
-    tf_msg.transform.translation.x = odomAftMapped.pose.pose.position.x;
-    tf_msg.transform.translation.y = odomAftMapped.pose.pose.position.y;
-    tf_msg.transform.translation.z = odomAftMapped.pose.pose.position.z;
-    tf_msg.transform.rotation = odomAftMapped.pose.pose.orientation;
+    tf_msg.header.frame_id = odom_frame;
+    tf_msg.child_frame_id  = base_frame;
+    fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
+
+    TransformStampedMsg map_to_odom_msg;
+    map_to_odom_msg.header.stamp = odomAftMapped.header.stamp;
+    map_to_odom_msg.header.frame_id = map_frame;
+    map_to_odom_msg.child_frame_id = odom_frame;
+    map_to_odom_msg.transform.translation.x = t_map_odom.x();
+    map_to_odom_msg.transform.translation.y = t_map_odom.y();
+    map_to_odom_msg.transform.translation.z = t_map_odom.z();
+    Eigen::Quaterniond q_map_odom(R_map_odom);
+    q_map_odom.normalize();
+    map_to_odom_msg.transform.rotation.x = q_map_odom.x();
+    map_to_odom_msg.transform.rotation.y = q_map_odom.y();
+    map_to_odom_msg.transform.rotation.z = q_map_odom.z();
+    map_to_odom_msg.transform.rotation.w = q_map_odom.w();
 
     ros_publish(pubOdomAftMapped, odomAftMapped);
 
@@ -763,6 +805,7 @@ void publish_odometry(const OdomPublisher & pubOdomAftMapped)
 #elif defined(USE_ROS2)
     static tf2_ros::TransformBroadcaster br(get_ros_node());
 #endif
+    br.sendTransform(map_to_odom_msg);
     br.sendTransform(tf_msg);
 }
 
@@ -771,7 +814,7 @@ void publish_path(const PathPublisher pubPath)
     set_posestamp(msg_body_pose);
     msg_body_pose.header.stamp = get_ros_time(lidar_end_time);
 
-    msg_body_pose.header.frame_id = "camera_init";
+    msg_body_pose.header.frame_id = map_frame;
 
     /*** if path is too large, rviz will crash ***/
     static int jjj = 0;
@@ -927,6 +970,10 @@ int main(int argc, char** argv)
     rosparam_get("map_file_path", map_file_path, std::string(""));
     rosparam_get("common/lid_topic", lid_topic, std::string("/livox/lidar"));
     rosparam_get("common/imu_topic", imu_topic, std::string("/livox/imu"));
+    rosparam_get("common/map_frame", map_frame, std::string("map"));
+    rosparam_get("common/odom_frame", odom_frame, std::string("odom"));
+    rosparam_get("common/base_frame", base_frame, std::string("base_link"));
+    rosparam_get("common/high_freq_base_frame", high_freq_base_frame, base_frame);
     rosparam_get("reloc/reloc_topic", reloc_topic, std::string("/reloc/manual"));
     rosparam_get("common/time_sync_en", time_sync_en, false);
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
@@ -968,7 +1015,7 @@ int main(int argc, char** argv)
     rosparam_get("zupt/lidar_residual_ref",      lidar_residual_ref,      0.05);
 
     path.header.stamp = get_ros_now();
-    path.header.frame_id = "camera_init";
+    path.header.frame_id = map_frame;
 
     if (sam_enable) {
         read_liosam_params();
@@ -1068,7 +1115,7 @@ int main(int argc, char** argv)
     auto pubLaserCloudMap = create_publisher<PointCloud2Msg>("/Laser_map", 100000);
     #ifdef USE_ROS1
     int odom_qos = 0;  // ROS1 ignores this parameter
-    #else defined(USE_ROS2) 
+    #elif defined(USE_ROS2)
     auto odom_qos = rclcpp::QoS(10).best_effort(); // avoid latency caused by QoS reliability in ROS2
     #endif
     auto pubOdomAftMapped = create_publisher_qos<OdometryMsg>("/Odometry", odom_qos);
@@ -1239,9 +1286,20 @@ int main(int argc, char** argv)
             double t_update_end = omp_get_wtime();
             
             if (sam_enable) {
+                const Eigen::Matrix3d R_odom_map_prev = R_map_odom.transpose();
+                const Eigen::Matrix3d R_odom_base_before_sam = R_odom_map_prev * state_point.rot.toRotationMatrix();
+                const Eigen::Vector3d t_odom_base_before_sam = R_odom_map_prev * (state_point.pos - t_map_odom);
+
                 getCurrPose(state_point);
                 getCurrOffset(state_point);
                 saveKeyFramesAndFactor(feats_undistort);
+                const Eigen::Matrix3d R_map_base =
+                    (Eigen::AngleAxisd(transformTobeMapped[2], Eigen::Vector3d::UnitZ()) *
+                     Eigen::AngleAxisd(transformTobeMapped[1], Eigen::Vector3d::UnitY()) *
+                     Eigen::AngleAxisd(transformTobeMapped[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+                const Eigen::Vector3d t_map_base(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]);
+                R_map_odom = R_map_base * R_odom_base_before_sam.transpose();
+                t_map_odom = t_map_base - R_map_odom * t_odom_base_before_sam;
                 update_state_ikfom(); // Update current state_point
                 correctPoses();
 

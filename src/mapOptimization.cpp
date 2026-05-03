@@ -425,7 +425,7 @@ void updatePath(const PointTypePose& pose_in)
 {
     PoseStampedMsg pose_stamped;
     pose_stamped.header.stamp = get_ros_time(pose_in.time);
-    pose_stamped.header.frame_id = "camera_init";
+    pose_stamped.header.frame_id = map_frame;
     pose_stamped.pose.position.x = pose_in.x;
     pose_stamped.pose.position.y = pose_in.y;
     pose_stamped.pose.position.z = pose_in.z;
@@ -586,11 +586,11 @@ void publishSamMsg()
     if (cloudKeyPoses3D->points.empty())
         return;
     // publish key poses
-    publishCloud(pubKeyPoses, cloudKeyPoses3D, timeLaserInfoStamp, "camera_init");
+    publishCloud(pubKeyPoses, cloudKeyPoses3D, timeLaserInfoStamp, map_frame);
     if (ros_subscription_count(pubPath) != 0)
     {
         globalPath.header.stamp = timeLaserInfoStamp;
-        globalPath.header.frame_id = "camera_init";
+        globalPath.header.frame_id = map_frame;
         ros_publish(pubPath, globalPath);
     }
 
@@ -599,7 +599,7 @@ void publishSamMsg()
         pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
         PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
         *cloudOut += *transformPointCloud(featCloudKeyFrames.back(),  &thisPose6D);
-        publishCloud(pubRecentKeyFrame, cloudOut, timeLaserInfoStamp, "camera_init");
+        publishCloud(pubRecentKeyFrame, cloudOut, timeLaserInfoStamp, map_frame);
     }
 }
 
@@ -611,7 +611,7 @@ void visualizeLoopClosure()
     MarkerArrayMsg markerArray;
     // loop nodes
     MarkerMsg markerNode;
-    markerNode.header.frame_id = "camera_init";
+    markerNode.header.frame_id = map_frame;
     markerNode.header.stamp = timeLaserInfoStamp;
     markerNode.action = MarkerMsg::ADD;
     markerNode.type = MarkerMsg::SPHERE_LIST;
@@ -623,7 +623,7 @@ void visualizeLoopClosure()
     markerNode.color.a = 1;
     // loop edges
     MarkerMsg markerEdge;
-    markerEdge.header.frame_id = "camera_init";
+    markerEdge.header.frame_id = map_frame;
     markerEdge.header.stamp = timeLaserInfoStamp;
     markerEdge.action = MarkerMsg::ADD;
     markerEdge.type = MarkerMsg::LINE_LIST;
@@ -717,7 +717,7 @@ void publishGlobalMap() {
     downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
     downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
     downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
-    publishCloud(pubLaserCloudGlobal, globalMapKeyFramesDS, timeLaserInfoStamp, "camera_init");
+    publishCloud(pubLaserCloudGlobal, globalMapKeyFramesDS, timeLaserInfoStamp, map_frame);
 }
 
 void visualizeGlobalMapThread()

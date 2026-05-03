@@ -36,6 +36,11 @@ extern float mappingICPSize;
 
 extern int ikdtreeSearchNeighborNum;
 
+extern std::string map_frame;
+extern std::string odom_frame;
+extern std::string base_frame;
+extern std::string high_freq_base_frame;
+
 extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();

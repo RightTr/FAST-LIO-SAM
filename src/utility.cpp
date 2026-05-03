@@ -30,6 +30,11 @@ float mappingICPSize;
 
 int ikdtreeSearchNeighborNum;
 
+std::string map_frame = "map";
+std::string odom_frame = "odom";
+std::string base_frame = "base_link";
+std::string high_freq_base_frame = "base_hf_link";
+
 void read_liosam_params() {
 
     // CPU parameters
