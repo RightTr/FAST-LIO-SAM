@@ -15,6 +15,8 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
 * Stationary detection and adaptive weight handling between LiDAR update scans and ZUPT
 
 * Support for RoboSense LiDARs, Unilidar LiDARs
+  
+* The standard navigation TF tree: **map** → **odom** → **base_link**
 
 ## 🛠️ Prerequisites
 

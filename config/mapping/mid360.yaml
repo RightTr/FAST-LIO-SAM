@@ -39,7 +39,7 @@ res_save:
     res_save_en: true
     interval: -1                # how many LiDAR frames saved in each pcd file; 
                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
-    frame_save_en: true         # save all IMU poses  
+    imu_pose_save_en: true         # save all IMU poses  
 
 zupt:
     use_zupt: true                    # enable adaptive zero velocity update

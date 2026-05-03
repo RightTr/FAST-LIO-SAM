@@ -41,7 +41,7 @@ publish:
 res_save:
     res_save_en: false
     interval: -1                 # how many LiDAR frames saved in each pcd file; 
-    frame_save_en: true    # save each undistorted scan (LiDAR body frame) as PCD + pose to ROOT_DIR/SCAN_FRAMES/
+    imu_pose_save_en: true    # save each undistorted scan (LiDAR body frame) as PCD + pose to ROOT_DIR/SCAN_FRAMES/
 
 zupt:
     use_zupt: true              # enable zero velocity update

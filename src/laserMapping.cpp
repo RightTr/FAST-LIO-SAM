@@ -36,7 +36,7 @@ double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_pl
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   runtime_pos_log = false, res_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
-bool   frame_save_en = false;
+bool   imu_pose_save_en = false;
 /**************************/
 
 bool feature_pub_en = false, effect_pub_en = false;
@@ -731,7 +731,7 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer, const OdomPublisher& pubOdomH
 #endif
         br_hf.sendTransform(tf_msg);
 
-        if (frame_save_en && imu_pose_file.is_open())
+        if (imu_pose_save_en && imu_pose_file.is_open())
         {
             imu_pose_file << pose._timestamp << " "
                 << pose._x << " " << pose._y << " " << pose._z << " "
@@ -996,7 +996,7 @@ int main(int argc, char** argv)
     rosparam_get("point_filter_num", p_pre->point_filter_num, 2);
     rosparam_get("feature_extract_enable", p_pre->feature_enabled, false);
     rosparam_get("runtime_pos_log_enable", runtime_pos_log, false);
-    rosparam_get("res_save/frame_save_en", frame_save_en, false);
+    rosparam_get("res_save/imu_pose_save_en", imu_pose_save_en, false);
     rosparam_get("mapping/extrinsic_est_en", extrinsic_est_en, true);
     rosparam_get("res_save/res_save_en", res_save_en, false);
     rosparam_get("res_save/interval", res_save_interval, -1);
@@ -1072,12 +1072,12 @@ int main(int argc, char** argv)
     
     const string scan_frames_dir = root_dir + "/SCAN_FRAMES/";
     const string imu_poses_dir = root_dir + "/IMU_POSES/";
-    if (frame_save_en)
+    if (imu_pose_save_en)
     {
         if (!create_directory(scan_frames_dir + "scans/") || !create_directory(imu_poses_dir))
         {
-            ROS_PRINT_ERROR("Failed to create frame save directories, disable frame_save_en");
-            frame_save_en = false;
+            ROS_PRINT_ERROR("Failed to create frame save directories, disable imu_pose_save_en");
+            imu_pose_save_en = false;
         }
         else
         {
@@ -1320,7 +1320,7 @@ int main(int argc, char** argv)
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             if (effect_pub_en) publish_effect_world(pubLaserCloudEffect);
             if (feature_pub_en) publish_map(pubLaserCloudMap);
-            if (frame_save_en) {
+            if (imu_pose_save_en) {
                 save_scan_frame(scan_frames_dir);
             }
 
