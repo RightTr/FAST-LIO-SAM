@@ -67,23 +67,6 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 The modified system supports relocalization using manually set odometry poses. Once odometry poses are published to the */reloc_topic* (according to the following .yaml file), the system will reset the system and the initial pose according to your input.
 
-Run relocalization mode:
-
-```bash
-# e.g.
-# ROS1
-cd fastlio_ws 
-source devel/setup.bash
-roslaunch fast_lio_sam reloc_mid360.launch
-# Publish geometry_msgs::PoseStamped to the /reloc_topic
-
-# ROS2
-cd fastlio_ws 
-source install/setup.bash
-ros2 launch fast_lio_sam reloc_mid360.launch.py
-# Publish geometry_msgs::msg::PoseStamped to the /reloc_topic
-```
-
 ## Stationary detection and adaptive weight handling
 
 The system will adjust the confidence of the ZUPT and LiDAR updates based on the detected motion state, using **accelerometer and gyroscope variances** as well as **the EMA of velocity**. When the system detects a stationary state, it will increase the confidence of the ZUPT update and decrease the confidence of the LiDAR update, and vice versa when in motion.

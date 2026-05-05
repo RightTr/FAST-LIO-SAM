@@ -66,7 +66,6 @@ std::atomic<bool> flg_exit(false);
 Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
-bool reloc_en = false;
 bool sam_enable = false;
 bool imu_flip = false;
 int lidar_type;
@@ -965,7 +964,6 @@ int main(int argc, char** argv)
     rosparam_get("publish/scan_bodyframe_pub_en", scan_body_pub_en, true);
     rosparam_get("publish/feature_pub_en", feature_pub_en, false);
     rosparam_get("publish/effect_pub_en", effect_pub_en, false);
-    rosparam_get("reloc/reloc_en", reloc_en, false);
     rosparam_get("max_iteration", NUM_MAX_ITERATIONS, 4);
     rosparam_get("map_file_path", map_file_path, std::string(""));
     rosparam_get("common/lid_topic", lid_topic, std::string("/livox/lidar"));
@@ -1149,32 +1147,29 @@ int main(int argc, char** argv)
     {
         spin_once();
 
-        if(reloc_en)
+        // relocalization trigger
+        if(relocalize_flag.load())
         {
-            // relocalization trigger
-            if(relocalize_flag.load())
+            feats_down_world->clear();
+            p_imu->Reset();
+            state_ikfom state_point_reloc;
             {
-                feats_down_world->clear();
-                p_imu->Reset();
-                state_ikfom state_point_reloc;
-                {
-                    std::lock_guard<std::mutex> lock(mtx_reloc);
-                    state_point_reloc.pos = Eigen::Vector3d(reloc_state._x, reloc_state._y, reloc_state._z);
-                    state_point_reloc.rot = Eigen::Quaterniond(reloc_state._qw, reloc_state._qx,
-                                                reloc_state._qy, reloc_state._qz);
-                }        
-                state_point_reloc.rot.normalize();
-                kf.reset(state_point_reloc);
-                ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
-                
-                ROS_PRINT_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
-                    state_point_reloc.pos.x(), state_point_reloc.pos.y(), state_point_reloc.pos.z(),
-                    state_point_reloc.rot.x(), state_point_reloc.rot.y(), state_point_reloc.rot.z(), state_point_reloc.rot.w());
-                relocalize_flag.store(false);
-                flg_first_scan = true;
-                continue;
+                std::lock_guard<std::mutex> lock(mtx_reloc);
+                state_point_reloc.pos = Eigen::Vector3d(reloc_state._x, reloc_state._y, reloc_state._z);
+                state_point_reloc.rot = Eigen::Quaterniond(reloc_state._qw, reloc_state._qx,
+                                            reloc_state._qy, reloc_state._qz);
             }
-        }   
+            state_point_reloc.rot.normalize();
+            kf.reset(state_point_reloc);
+            ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
+
+            ROS_PRINT_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
+                state_point_reloc.pos.x(), state_point_reloc.pos.y(), state_point_reloc.pos.z(),
+                state_point_reloc.rot.x(), state_point_reloc.rot.y(), state_point_reloc.rot.z(), state_point_reloc.rot.w());
+            relocalize_flag.store(false);
+            flg_first_scan = true;
+            continue;
+        }
 
         if(sync_packages(Measures)) 
         {
