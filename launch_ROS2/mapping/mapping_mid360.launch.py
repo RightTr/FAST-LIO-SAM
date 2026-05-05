@@ -23,7 +23,7 @@ def load_ros1_yaml_as_params(yaml_file_path):
     
     return flatten_dict(config)
 
-rviz_cfg = os.path.join(get_package_share_directory("fast_lio_sam"), "rviz_cfg", "loam_ros2.rviz" )
+rviz_cfg = os.path.join(get_package_share_directory("fast_lio_sam"), "rviz_cfg", "sam_ros2.rviz" )
 
 print(rviz_cfg)
 
@@ -35,6 +35,7 @@ config_file = os.path.join(
 yaml_params = load_ros1_yaml_as_params(config_file)
 
 fast_lio_params = [
+    {'sam_enable': True},
     {'feature_extract_enable': False},
     {'point_filter_num': 3},
     {'max_iteration': 3},
@@ -42,7 +43,7 @@ fast_lio_params = [
     {'filter_size_map': 0.5},
     {'cube_side_length': 1000.0},
     {'runtime_pos_log_enable': False},
-    yaml_params
+    yaml_params,
 ]
 
 def generate_launch_description():
@@ -50,7 +51,7 @@ def generate_launch_description():
         package='fast_lio_sam',
         executable='fastlio_mapping',
         output='screen',
-        parameters=fast_lio_params
+        parameters=fast_lio_params,
     )
 
     fast_lio_rviz = Node(

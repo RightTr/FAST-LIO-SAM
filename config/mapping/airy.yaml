@@ -4,13 +4,14 @@ common:
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
-    imu_flip: true              # If IMU axes are opposite to the expected convention, set true.
 
+    imu_flip: true              # If IMU axes are opposite to the expected convention, set true.
+    
 preprocess:
     lidar_type: 4                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 4 for RoboSense LiDAR
     scan_line: 96
     timestamp_unit: 0                 # 0-second, 1-milisecond, 2-microsecond, 3-nanosecond.
-    blind: 0.5
+    blind: 1.0
 
 mapping:
     acc_cov: 0.1
@@ -32,6 +33,33 @@ mapping:
 # Position XYZ: x=0.004250, y=0.004180, z=-0.004460
 # ==========================
 
+lio_sam:
+
+  # CPU Params
+  numberOfCores: 4                              # number of cores for mapping optimization
+
+  # Surrounding map
+  surroundingkeyframeAddingDistThreshold: 1.0   # meters, regulate keyframe adding threshold
+  surroundingkeyframeAddingAngleThreshold: 0.2  # radians, regulate keyframe adding threshold
+  surroundingKeyframeDensity: 2.0               # meters, downsample surrounding keyframe poses   
+  surroundingKeyframeSearchRadius: 50.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
+
+  # Loop closure
+  loopClosureEnableFlag: true
+  loopClosureFrequency: 1.0                     # Hz, regulate loop closure constraint add frequency
+  surroundingKeyframeSize: 50                   # submap size (when loop closure enabled)
+  historyKeyframeSearchRadius: 5.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
+  historyKeyframeSearchTimeDiff: 15.0          # seconds, key frame that is n seconds older will be considered for loop closure
+  historyKeyframeSearchNum: 25                  # number of hostory key frames will be fused into a submap for loop closure
+  historyKeyframeFitnessScore: 0.3              # icp threshold, the smaller the better alignment
+
+  # Visualization
+  globalMapVisualizationSearchRadius: 1000.0    # meters, global map visualization radius
+  globalMapVisualizationPoseDensity: 10.0       # meters, global map visualization keyframe density
+  globalMapVisualizationLeafSize: 0.1          # meters, global map visualization cloud density
+
+  ikdtreeSearchNeighborNum: 8                   # number of neighbors to search in the ikdtree
+
 publish:
     path_en:  true
     scan_publish_en:  true       # false: close all the point cloud output
@@ -41,9 +69,9 @@ publish:
 res_save:
     res_save_en: false
     interval: -1                 # how many LiDAR frames saved in each pcd file; 
-    imu_pose_save_en: true    # save each undistorted scan (LiDAR body frame) as PCD + pose to ROOT_DIR/SCAN_FRAMES/
+                                # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
 
 zupt:
-    use_zupt: true              # enable zero velocity update
+    use_zupt: false              # enable zero velocity update
     zupt_acc_var_threshold: 0.0001   # (m/s²)² acceleration variance threshold for ZUPT
     zupt_gyro_var_threshold: 0.00001 # (rad/s)² gyroscope variance threshold for ZUPT

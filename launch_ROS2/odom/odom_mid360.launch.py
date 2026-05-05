@@ -28,7 +28,7 @@ rviz_cfg = os.path.join(get_package_share_directory("fast_lio_sam"), "rviz_cfg",
 print(rviz_cfg)
 
 config_file = os.path.join(
-    get_package_share_directory("fast_lio_sam"), "config", "mapping", "airy.yaml"
+    get_package_share_directory("fast_lio_sam"), "config", "odom", "mid360.yaml"
 )
 
 # Load ROS1 format YAML and convert params

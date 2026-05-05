@@ -1,9 +1,9 @@
 <launch>
-<!-- Launch file for Livox AVIA LiDAR -->
+<!-- Launch file for Livox Horizon LiDAR -->
 
 	<arg name="rviz" default="true" />
 
-	<rosparam command="load" file="$(find fast_lio_sam)/config/mapping/hap.yaml" />
+	<rosparam command="load" file="$(find fast_lio_sam)/config/odom/horizon.yaml" />
 
 	<param name="feature_extract_enable" type="bool" value="0"/>
 	<param name="point_filter_num" type="int" value="3"/>

@@ -1,11 +1,10 @@
 <launch>
-<!-- Launch file for Livox RoboSense LiDAR -->
+<!-- Launch file for Unilidar LiDAR -->
 
 	<arg name="rviz" default="true" />
 
-	<rosparam command="load" file="$(find li_pipline)/config/sam/l2.yaml"/>
+	<rosparam command="load" file="$(find fast_lio_sam)/config/odom/l2.yaml" />
 
-    <param name="sam_enable" type="bool" value="1"/>
 	<param name="feature_extract_enable" type="bool" value="0"/>
 	<param name="point_filter_num" type="int" value="3"/>
 	<param name="max_iteration" type="int" value="3" />
@@ -13,10 +12,10 @@
 	<param name="filter_size_map" type="double" value="0.1" />
 	<param name="cube_side_length" type="double" value="1000" />
 	<param name="runtime_pos_log_enable" type="bool" value="0" />
-    <node pkg="li_pipline" type="li_pipline" name="laserMapping" output="screen" /> 
+    <node pkg="fast_lio_sam" type="fast_lio_sam" name="laserMapping" output="screen" /> 
 
 	<group if="$(arg rviz)">
-	<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find li_pipline)/rviz_cfg/sam_ros1.rviz" /> 
+	<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_lio_sam)/rviz_cfg/loam_ros1.rviz" />
 	</group>
 
 </launch>

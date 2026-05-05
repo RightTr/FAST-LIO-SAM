@@ -60,7 +60,7 @@ git submodule update --init --recursive
 cd fastlio_ws 
 source devel/setup.bash
 # e.g.
-roslaunch fast_lio_sam sam_airy.launch
+roslaunch fast_lio_sam mapping_airy.launch
 ```
 
 ### Relocalization
@@ -119,11 +119,11 @@ Subscribe the topic */OdometryHighFreq* to receive high frequency odometry outpu
 
 ### Extended LiDAR support
 
-Now, FAST-LIO supports tracking and mapping using the RoboSense LiDARs (e.g., RoboSense Airy) and Unilidar LiDARs (e.g., Unilidar L2). Check the related files in ./config and ./launch folder.
+Now, FAST-LIO supports tracking and mapping using the RoboSense LiDARs (e.g., RoboSense Airy) and Unilidar LiDARs (e.g., Unilidar L2). Check the related files in ./config, ./launch_ROS1/odom, ./launch_ROS1/mapping, ./launch_ROS2/odom, and ./launch_ROS2/mapping.
 
 ```bash
 # e.g.
-roslaunch fast_lio_sam mapping_airy.launch
+roslaunch fast_lio_sam odom_airy.launch
 ```
 
 ## 📝 TODO List
