@@ -67,6 +67,12 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 The modified system supports relocalization using manually set odometry poses. Once odometry poses are published to the */reloc_topic* (according to the following .yaml file), the system will reset the system and the initial pose according to your input.
 
+### Keyframe export
+
+Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-resolution PCD built from `feats_undistort`, together with its pose, under `KEY_FRAMES/scans/` and `ROOT_DIR/KEY_FRAMES/poses.txt`.
+
+Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyframes into one global PCD at `KEY_FRAMES/global.pcd`.
+
 ## Stationary detection and adaptive weight handling
 
 The system will adjust the confidence of the ZUPT and LiDAR updates based on the detected motion state, using **accelerometer and gyroscope variances** as well as **the EMA of velocity**. When the system detects a stationary state, it will increase the confidence of the ZUPT update and decrease the confidence of the LiDAR update, and vice versa when in motion.

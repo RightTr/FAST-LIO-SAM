@@ -30,6 +30,9 @@ float mappingICPSize;
 
 int ikdtreeSearchNeighborNum;
 
+bool keyframe_export_en = false;
+bool keyframe_global_pcd_en = false;
+
 std::string map_frame = "map";
 std::string odom_frame = "odom";
 std::string base_frame = "base_link";
@@ -62,4 +65,6 @@ void read_liosam_params() {
 
     rosparam_get("lio_sam/mappingICPSize", mappingICPSize, 0.2f);
     rosparam_get("lio_sam/ikdtreeSearchNeighborNum", ikdtreeSearchNeighborNum, 8);
+    rosparam_get("lio_sam/keyframe_export_en", keyframe_export_en, false);
+    rosparam_get("lio_sam/keyframe_global_pcd_en", keyframe_global_pcd_en, false);
 }

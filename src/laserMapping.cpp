@@ -138,6 +138,8 @@ int    scan_frame_idx = 0;
 bool   scan_frame_dir_ready = false;
 std::ofstream scan_frame_pose_file;
 std::ofstream imu_pose_file;
+std::ofstream keyframe_pose_file;
+pcl::PointCloud<PointTypeIndex>::Ptr keyframe_global_cloud(new pcl::PointCloud<PointTypeIndex>());
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
@@ -1089,6 +1091,23 @@ int main(int argc, char** argv)
         }
     }
 
+    const string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
+    if (keyframe_export_en || keyframe_global_pcd_en)
+    {
+        if (!create_directory(keyframe_frames_dir + "scans/"))
+        {
+            ROS_PRINT_ERROR("Failed to create keyframe save directories, disable keyframe export");
+            keyframe_export_en = false;
+            keyframe_global_pcd_en = false;
+        }
+        else if (keyframe_export_en)
+        {
+            string keyframe_pose_path = keyframe_frames_dir + "key_poses.txt";
+            keyframe_pose_file.open(keyframe_pose_path.c_str(), ios::out | ios::app);
+            keyframe_pose_file << std::fixed << std::setprecision(9);
+        }
+    }
+
     ofstream fout_pre, fout_out, fout_dbg;
     fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"),ios::out);
     fout_out.open(DEBUG_FILE_DIR("mat_out.txt"),ios::out);
@@ -1363,6 +1382,32 @@ int main(int argc, char** argv)
         pcl::PCDWriter pcd_writer;
         cout << "current scan saved to /PCD/" << file_name<<endl;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+    }
+
+    if (keyframe_export_en && keyframe_pose_file.is_open())
+    {
+        for (int i = 0; i < cloudKeyPoses6D->points.size(); ++i)
+        {
+            PointTypePose thisPose6D = cloudKeyPoses6D->points[i];
+            keyframe_pose_file << thisPose6D.time << " "
+                       << thisPose6D.x << " " << thisPose6D.y << " " << thisPose6D.z << " "
+                       << thisPose6D.roll << " " << thisPose6D.pitch << " " << thisPose6D.yaw << "\n";
+        }
+        keyframe_pose_file.close();
+    }
+
+    if (keyframe_global_pcd_en)
+    {
+        string global_keyframe_path = root_dir + "/KEY_FRAMES/global.pcd";
+        pcl::PCDWriter pcd_writer;
+        cout << "current global keyframe map saved to " << global_keyframe_path << endl;
+
+        for (int i = 0; i < featCloudKeyFrames.size(); ++i)
+        {
+            *keyframe_global_cloud += *transformPointCloud(featCloudKeyFrames[i], &cloudKeyPoses6D->points[i]);
+        }
+
+        pcd_writer.writeBinary(global_keyframe_path, *keyframe_global_cloud);
     }
 
     fout_out.close();

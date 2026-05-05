@@ -36,6 +36,9 @@ extern float mappingICPSize;
 
 extern int ikdtreeSearchNeighborNum;
 
+extern bool keyframe_export_en;
+extern bool keyframe_global_pcd_en;
+
 extern std::string map_frame;
 extern std::string odom_frame;
 extern std::string base_frame;

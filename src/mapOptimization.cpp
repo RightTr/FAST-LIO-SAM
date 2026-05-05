@@ -5,6 +5,7 @@
 #include "ros_utils.h"
 
 #include <algorithm>
+#include <fstream>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
@@ -23,6 +24,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/io/pcd_io.h>
 #include <pcl/registration/icp.h>
 #include <pcl/kdtree/kdtree_flann.h>
 
@@ -38,29 +40,9 @@ using symbol_shorthand::X; // Pose3 (x,y,z,r,p,y)
 using symbol_shorthand::V; // Vel   (xdot,ydot,zdot)
 using symbol_shorthand::B; // Bias  (ax,ay,az,gx,gy,gz)
 
-/*
-    * A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
-    */
-struct PointXYZIRPYT
-{
-    PCL_ADD_POINT4D
-    PCL_ADD_INTENSITY;                  // preferred way of adding a XYZ+padding
-    float roll;
-    float pitch;
-    float yaw;
-    double time;
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW   // make sure our new allocators are aligned
-} EIGEN_ALIGN16;                    // enforce SSE padding for correct memory alignment
+extern std::string root_dir;
 
-POINT_CLOUD_REGISTER_POINT_STRUCT (PointXYZIRPYT,
-                                   (float, x, x) (float, y, y)
-                                   (float, z, z) (float, intensity, intensity)
-                                   (float, roll, roll) (float, pitch, pitch) (float, yaw, yaw)
-                                   (double, time, time))
-
-typedef PointXYZIRPYT  PointTypePose;
-
-typedef pcl::PointXYZI PointType;
+int keyframe_frame_idx;
 
 // gtsam
 NonlinearFactorGraph gtSAMgraph;
@@ -84,9 +66,9 @@ MarkerArrayPublisher pubLoopConstraintEdge;
 
 TimeType timeLaserInfoStamp;
 
-pcl::PointCloud<PointType>::Ptr cloudKeyPoses3D; // Store keyframe poses and indexes 
+pcl::PointCloud<PointTypeIndex>::Ptr cloudKeyPoses3D; // Store keyframe poses and indexes 
 pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
-pcl::PointCloud<PointType>::Ptr copy_cloudKeyPoses3D;
+pcl::PointCloud<PointTypeIndex>::Ptr copy_cloudKeyPoses3D;
 pcl::PointCloud<PointTypePose>::Ptr copy_cloudKeyPoses6D;
 
 double timeLaserInfoCur;
@@ -108,15 +90,15 @@ vector<pair<int, int>> loopIndexQueue;
 vector<gtsam::Pose3> loopPoseQueue;
 vector<gtsam::noiseModel::Diagonal::shared_ptr> loopNoiseQueue;
 
-pcl::VoxelGrid<PointType> downSizeFilterICP;
+pcl::VoxelGrid<PointTypeIndex> downSizeFilterICP;
 
-vector<pcl::PointCloud<PointType>::Ptr> featCloudKeyFrames;
+vector<pcl::PointCloud<PointTypeIndex>::Ptr> featCloudKeyFrames;
 
-KD_TREE_PUBLIC<PointType>::Ptr ikdtreeHistoryKeyPoses;
+KD_TREE_PUBLIC<PointTypeIndex>::Ptr ikdtreeHistoryKeyPoses;
 
-KD_TREE_PUBLIC<PointType>::PointVector initPoses3D;
+KD_TREE_PUBLIC<PointTypeIndex>::PointVector initPoses3D;
 
-map<int, pair<pcl::PointCloud<PointType>, pcl::PointCloud<PointType>>> laserCloudMapContainer;
+map<int, pair<pcl::PointCloud<PointTypeIndex>, pcl::PointCloud<PointTypeIndex>>> laserCloudMapContainer;
 
 Eigen::Affine3f pclPointToAffine3f(PointTypePose thisPoint)
 { 
@@ -140,12 +122,12 @@ gtsam::Pose3 trans2gtsamPose(float transformIn[])
                                 gtsam::Point3(transformIn[3], transformIn[4], transformIn[5]));
 }
 
-float pointDistance(PointType p)
+float pointDistance(PointTypeIndex p)
 {
     return sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
 }
 
-float pointDistance(PointType p1, PointType p2)
+float pointDistance(PointTypeIndex p1, PointTypeIndex p2)
 {
     return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));
 }
@@ -167,9 +149,9 @@ void setLaserCurTime(double lidar_end_time)
     timeLaserInfoCur = lidar_end_time;
 }
 
-pcl::PointCloud<PointType>::Ptr transformPointCloud(pcl::PointCloud<PointType>::Ptr cloudIn, PointTypePose* transformIn)
+pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, PointTypePose* transformIn)
 {
-    pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
+    pcl::PointCloud<PointTypeIndex>::Ptr cloudOut(new pcl::PointCloud<PointTypeIndex>());
 
     int cloudSize = cloudIn->size();
     cloudOut->resize(cloudSize);
@@ -190,12 +172,12 @@ pcl::PointCloud<PointType>::Ptr transformPointCloud(pcl::PointCloud<PointType>::
 
 void allocateMemory()
 {
-    cloudKeyPoses3D.reset(new pcl::PointCloud<PointType>());
+    cloudKeyPoses3D.reset(new pcl::PointCloud<PointTypeIndex>());
     cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
-    copy_cloudKeyPoses3D.reset(new pcl::PointCloud<PointType>());
+    copy_cloudKeyPoses3D.reset(new pcl::PointCloud<PointTypeIndex>());
     copy_cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
 
-    ikdtreeHistoryKeyPoses.reset(new KD_TREE_PUBLIC<PointType>());
+    ikdtreeHistoryKeyPoses.reset(new KD_TREE_PUBLIC<PointTypeIndex>());
 
     for (int i = 0; i < 6; ++i){
         transformTobeMapped[i] = 0;
@@ -243,7 +225,7 @@ bool saveFrame()
     return true;
 }  
 
-void loopFindNearKeyframes(pcl::PointCloud<PointType>::Ptr& nearKeyframes, const int& key, const int& searchNum)
+void loopFindNearKeyframes(pcl::PointCloud<PointTypeIndex>::Ptr& nearKeyframes, const int& key, const int& searchNum)
 {
     // extract near keyframes
     nearKeyframes->clear();
@@ -260,7 +242,7 @@ void loopFindNearKeyframes(pcl::PointCloud<PointType>::Ptr& nearKeyframes, const
         return;
 
     // downsample near keyframes
-    pcl::PointCloud<PointType>::Ptr cloud_temp(new pcl::PointCloud<PointType>());
+    pcl::PointCloud<PointTypeIndex>::Ptr cloud_temp(new pcl::PointCloud<PointTypeIndex>());
     downSizeFilterICP.setInputCloud(nearKeyframes);
     downSizeFilterICP.filter(*cloud_temp);
     *nearKeyframes = *cloud_temp;
@@ -280,7 +262,7 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
         return false;
 
     // find the closest history key frame
-    KD_TREE_PUBLIC<PointType>::PointVector pointSearchPoses3D;
+    KD_TREE_PUBLIC<PointTypeIndex>::PointVector pointSearchPoses3D;
     std::vector<float> pointSearchSqDisLoop;
     
     ikdtreeHistoryKeyPoses->Nearest_Search(copy_cloudKeyPoses3D->back(), ikdtreeSearchNeighborNum, pointSearchPoses3D, pointSearchSqDisLoop, historyKeyframeSearchRadius);
@@ -319,8 +301,8 @@ void performLoopClosure()
     if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false) return;
 
     // extract cloud
-    pcl::PointCloud<PointType>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointType>());
-    pcl::PointCloud<PointType>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointType>());
+    pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointTypeIndex>());
+    pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointTypeIndex>());
     {
         // cloud near latest keyframe 
         loopFindNearKeyframes(cureKeyframeCloud, loopKeyCur, 0);
@@ -333,7 +315,7 @@ void performLoopClosure()
     }
 
     // ICP Settings
-    static pcl::IterativeClosestPoint<PointType, PointType> icp;
+    static pcl::IterativeClosestPoint<PointTypeIndex, PointTypeIndex> icp;
     icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);
     icp.setMaximumIterations(100);
     icp.setTransformationEpsilon(1e-6);
@@ -343,7 +325,7 @@ void performLoopClosure()
     // Align clouds
     icp.setInputSource(cureKeyframeCloud);
     icp.setInputTarget(prevKeyframeCloud);
-    pcl::PointCloud<PointType>::Ptr unused_result(new pcl::PointCloud<PointType>());
+    pcl::PointCloud<PointTypeIndex>::Ptr unused_result(new pcl::PointCloud<PointTypeIndex>());
     icp.align(*unused_result);
 
     if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
@@ -352,7 +334,7 @@ void performLoopClosure()
     // publish corrected cloud
     // if (pubIcpKeyFrames.getNumSubscribers() != 0)
     // {
-    //     pcl::PointCloud<PointType>::Ptr closed_cloud(new pcl::PointCloud<PointType>());
+    //     pcl::PointCloud<PointTypeIndex>::Ptr closed_cloud(new pcl::PointCloud<PointTypeIndex>());
     //     pcl::transformPointCloud(*cureKeyframeCloud, *closed_cloud, icp.getFinalTransformation());
     //     publishCloud(pubIcpKeyFrames, closed_cloud, timeLaserInfoStamp, odometryFrame);
     // }
@@ -465,7 +447,7 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     initialEstimate.clear();
 
     //save key poses
-    PointType thisPose3D;
+    PointTypeIndex thisPose3D;
     PointTypePose thisPose6D;
     Pose3 latestEstimate;
 
@@ -505,8 +487,8 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     transformTobeMapped[4] = latestEstimate.translation().y();
     transformTobeMapped[5] = latestEstimate.translation().z();
 
-    pcl::PointCloud<PointType>::Ptr featCloudKeyFrame(new pcl::PointCloud<PointType>());
-    PointType point;
+    pcl::PointCloud<PointTypeIndex>::Ptr featCloudKeyFrame(new pcl::PointCloud<PointTypeIndex>());
+    PointTypeIndex point;
     for (const auto &pt : feats_undistort->points) {
         Eigen::Vector3d pointBodyLidar(pt.x, pt.y, pt.z);
         Eigen::Vector3d pointBodyImu(rotationLidarToIMU * pointBodyLidar + translationLidarToIMU);
@@ -519,6 +501,15 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     }
 
     featCloudKeyFrames.push_back(featCloudKeyFrame);
+
+    if (keyframe_export_en)
+    {
+        const std::string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
+        const std::string idx_buf = std::to_string(keyframe_frame_idx++);
+        const std::string pcd_path = keyframe_frames_dir + "scans/" + idx_buf + ".pcd";
+        pcl::PCDWriter pcd_writer;
+        pcd_writer.writeBinary(pcd_path, *feats_undistort);
+    }
 
     if (ikdtreeHistoryKeyPoses->Root_Node == nullptr) {
         initPoses3D.push_back(thisPose3D);
@@ -539,7 +530,7 @@ void ReconstructIkdTree()
 
     ikdtreeHistoryKeyPoses->delete_tree_nodes(&ikdtreeHistoryKeyPoses->Root_Node);
 
-    KD_TREE_PUBLIC<PointType>::PointVector pose_points;
+    KD_TREE_PUBLIC<PointTypeIndex>::PointVector pose_points;
     pose_points.reserve(cloudKeyPoses3D->points.size());
     for (const auto &pose : cloudKeyPoses3D->points)
     {
@@ -596,7 +587,7 @@ void publishSamMsg()
 
     if (ros_subscription_count(pubRecentKeyFrame) != 0)
     {
-        pcl::PointCloud<PointType>::Ptr cloudOut(new pcl::PointCloud<PointType>());
+        pcl::PointCloud<PointTypeIndex>::Ptr cloudOut(new pcl::PointCloud<PointTypeIndex>());
         PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
         *cloudOut += *transformPointCloud(featCloudKeyFrames.back(),  &thisPose6D);
         publishCloud(pubRecentKeyFrame, cloudOut, timeLaserInfoStamp, map_frame);
@@ -679,13 +670,13 @@ void publishGlobalMap() {
     if (cloudKeyPoses3D->points.empty())
         return;
 
-    pcl::PointCloud<PointType>::Ptr globalMapKeyPoses(new pcl::PointCloud<PointType>());
-    pcl::PointCloud<PointType>::Ptr globalMapKeyPosesDS(new pcl::PointCloud<PointType>());
-    pcl::PointCloud<PointType>::Ptr globalMapKeyFrames(new pcl::PointCloud<PointType>());
-    pcl::PointCloud<PointType>::Ptr globalMapKeyFramesDS(new pcl::PointCloud<PointType>());
+    pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyPoses(new pcl::PointCloud<PointTypeIndex>());
+    pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyPosesDS(new pcl::PointCloud<PointTypeIndex>());
+    pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyFrames(new pcl::PointCloud<PointTypeIndex>());
+    pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyFramesDS(new pcl::PointCloud<PointTypeIndex>());
 
     // ikd-tree to find near key frames to visualize
-    KD_TREE_PUBLIC<PointType>::PointVector globalMapSearchPoses3D;
+    KD_TREE_PUBLIC<PointTypeIndex>::PointVector globalMapSearchPoses3D;
     std::vector<float> pointSearchSqDisGlobalMap;
     // search near key frames to visualize
     mtx.lock();
@@ -695,7 +686,7 @@ void publishGlobalMap() {
     for (int i = 0; i < (int)globalMapSearchPoses3D.size(); ++i)
         globalMapKeyPoses->push_back(cloudKeyPoses3D->points[globalMapSearchPoses3D[i].intensity]); // index stored in intensity field
     // downsample near selected key frames
-    pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyPoses; // for global map visualization
+    pcl::VoxelGrid<PointTypeIndex> downSizeFilterGlobalMapKeyPoses; // for global map visualization
     downSizeFilterGlobalMapKeyPoses.setLeafSize(globalMapVisualizationPoseDensity, globalMapVisualizationPoseDensity, globalMapVisualizationPoseDensity); // for global map visualization
     downSizeFilterGlobalMapKeyPoses.setInputCloud(globalMapKeyPoses);
     downSizeFilterGlobalMapKeyPoses.filter(*globalMapKeyPosesDS);
@@ -713,7 +704,7 @@ void publishGlobalMap() {
         *globalMapKeyFrames += *transformPointCloud(featCloudKeyFrames[thisKeyInd],  &cloudKeyPoses6D->points[thisKeyInd]);
     }
     // downsample visualized points
-    pcl::VoxelGrid<PointType> downSizeFilterGlobalMapKeyFrames; // for global map visualization
+    pcl::VoxelGrid<PointTypeIndex> downSizeFilterGlobalMapKeyFrames; // for global map visualization
     downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
     downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
     downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
