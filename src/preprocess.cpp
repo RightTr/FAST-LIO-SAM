@@ -474,6 +474,15 @@ void Preprocess::airy_handler(const Pcl2MsgConstPtr& msg) {
   pl_full.clear();
   pcl::PointCloud<robosense_ros::Point> pl_orig;
   pcl::fromROSMsg(*msg, pl_orig);
+  pcl::PointCloud<robosense_ros::Point> pl_clean;
+  pl_clean.reserve(pl_orig.size());
+  for (const auto &pt : pl_orig.points)
+  {
+    if (std::isnan(pt.x) || std::isnan(pt.y) || std::isnan(pt.z))
+      continue;
+    pl_clean.push_back(pt);
+  }
+  pl_orig.swap(pl_clean);
   int plsize = pl_orig.size();
   pl_corn.reserve(plsize);
   pl_surf.reserve(plsize);
