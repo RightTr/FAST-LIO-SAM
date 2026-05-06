@@ -35,8 +35,8 @@ double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_ti
 double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_plot5[MAXN], s_plot6[MAXN], s_plot7[MAXN], s_plot8[MAXN], s_plot9[MAXN], s_plot10[MAXN], s_plot11[MAXN];
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
-bool   runtime_pos_log = false, res_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
-bool   imu_pose_save_en = false;
+bool   runtime_pos_log = false, feat_accum_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
+bool   imu_pose_save_en = false, scan_frame_save_en = false;
 /**************************/
 
 bool feature_pub_en = false, effect_pub_en = false;
@@ -136,7 +136,6 @@ QuaternionMsg geoQuat;
 PoseStampedMsg msg_body_pose;
 
 int    scan_frame_idx = 0;
-bool   scan_frame_dir_ready = false;
 std::ofstream scan_frame_pose_file;
 std::ofstream imu_pose_file;
 std::ofstream keyframe_pose_file;
@@ -144,6 +143,26 @@ pcl::PointCloud<PointTypeIndex>::Ptr keyframe_global_cloud(new pcl::PointCloud<P
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
+
+void save_scan_frame(const string& scan_frames_dir)
+{
+    // Save undistorted scan in LiDAR body frame.
+    char idx_buf[16];
+    snprintf(idx_buf, sizeof(idx_buf), "%06d", scan_frame_idx);
+    string pcd_path = scan_frames_dir + "scans/" + idx_buf + ".pcd";
+    pcl::PCDWriter pcd_writer;
+    pcd_writer.writeBinary(pcd_path, *feats_undistort);
+
+    // Save LiDAR pose in world frame, TUM format: timestamp tx ty tz qx qy qz qw
+    V3D p_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+    auto q_lid = state_point.rot * state_point.offset_R_L_I;
+    scan_frame_pose_file << lidar_end_time << " "
+              << p_lid.x() << " " << p_lid.y() << " " << p_lid.z() << " "
+              << q_lid.coeffs()[0] << " " << q_lid.coeffs()[1] << " "
+              << q_lid.coeffs()[2] << " " << q_lid.coeffs()[3] << "\n";
+
+    scan_frame_idx++;
+}
 
 void SigHandle(int sig)
 {
@@ -601,10 +620,10 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
         publish_count -= PUBFRAME_PERIOD;
     }
 
-    /**************** save map ****************/
+    /**************** save accumulated feature scans ****************/
     /* 1. make sure you have enough memories
-    /* 2. noted that pcd save will influence the real-time performences **/
-    if (res_save_en)
+    /* 2. noted that PCD saving will influence real-time performance **/
+    if (feat_accum_save_en)
     {
         int size = feats_undistort->points.size();
         PointCloudXYZI::Ptr laserCloudWorld( \
@@ -624,32 +643,12 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
             pcd_index ++;
             string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
             pcl::PCDWriter pcd_writer;
-            cout << "current scan saved to /PCD/" << all_points_dir << endl;
+            cout << "current accumulated feature cloud saved to /PCD/" << all_points_dir << endl;
             pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
             pcl_wait_save->clear();
             scan_wait_num = 0;
         }
     }
-}
-
-void save_scan_frame(const string& scan_frames_dir)
-{
-    // Save undistorted scan in LiDAR body frame
-    char idx_buf[16];
-    snprintf(idx_buf, sizeof(idx_buf), "%06d", scan_frame_idx);
-    string pcd_path = scan_frames_dir + "scans/" + idx_buf + ".pcd";
-    pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(pcd_path, *feats_undistort);
-
-    // Save LiDAR pose in world frame, TUM format: timestamp tx ty tz qx qy qz qw
-    V3D p_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-    auto q_lid = state_point.rot * state_point.offset_R_L_I;
-    scan_frame_pose_file << lidar_end_time << " "
-              << p_lid.x() << " " << p_lid.y() << " " << p_lid.z() << " "
-              << q_lid.coeffs()[0] << " " << q_lid.coeffs()[1] << " "
-              << q_lid.coeffs()[2] << " " << q_lid.coeffs()[3] << "\n";
-
-    scan_frame_idx++;
 }
 
 void publish_frame_body(const Pcl2Publisher & pubLaserCloudFull_body)
@@ -998,10 +997,11 @@ int main(int argc, char** argv)
     rosparam_get("point_filter_num", p_pre->point_filter_num, 2);
     rosparam_get("feature_extract_enable", p_pre->feature_enabled, false);
     rosparam_get("runtime_pos_log_enable", runtime_pos_log, false);
-    rosparam_get("res_save/imu_pose_save_en", imu_pose_save_en, false);
+    rosparam_get("result_save/imu_pose_save_en", imu_pose_save_en, false);
+    rosparam_get("result_save/scan_frame_save_en", scan_frame_save_en, false);
     rosparam_get("mapping/extrinsic_est_en", extrinsic_est_en, true);
-    rosparam_get("res_save/res_save_en", res_save_en, false);
-    rosparam_get("res_save/interval", res_save_interval, -1);
+    rosparam_get("result_save/feat_accum_save_en", feat_accum_save_en, false);
+    rosparam_get("result_save/interval", res_save_interval, -1);
     rosparam_get("mapping/extrinsic_T", extrinT, std::vector<double>());
     rosparam_get("mapping/extrinsic_R", extrinR, std::vector<double>());
     rosparam_get("zupt/use_zupt",                use_zupt,                false);
@@ -1075,26 +1075,37 @@ int main(int argc, char** argv)
     
     const string scan_frames_dir = root_dir + "/SCAN_FRAMES/";
     const string imu_poses_dir = root_dir + "/IMU_POSES/";
+    const string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
+    
+    if (scan_frame_save_en)
+    {
+        if (!create_directory(scan_frames_dir + "scans/"))
+        {
+            ROS_PRINT_ERROR("Failed to create scan frame save directories, disable scan_frame_save_en");
+            scan_frame_save_en = false;
+        }
+        else
+        {
+            string scan_frame_pose_path = scan_frames_dir + "scan_poses.txt";
+            scan_frame_pose_file.open(scan_frame_pose_path.c_str(), ios::out | ios::app);
+            scan_frame_pose_file << std::fixed << std::setprecision(9);
+        }
+    }
     if (imu_pose_save_en)
     {
-        if (!create_directory(scan_frames_dir + "scans/") || !create_directory(imu_poses_dir))
+        if (!create_directory(imu_poses_dir))
         {
-            ROS_PRINT_ERROR("Failed to create frame save directories, disable imu_pose_save_en");
+            ROS_PRINT_ERROR("Failed to create pose save directory, disable imu_pose_save_en");
             imu_pose_save_en = false;
         }
         else
         {
-            string scan_frame_pose_path = scan_frames_dir + "poses.txt";
-            scan_frame_pose_file.open(scan_frame_pose_path.c_str(), ios::out | ios::app);
-            scan_frame_pose_file << std::fixed << std::setprecision(9);
-
-            string imu_pose_path = imu_poses_dir + "poses.txt";
+            string imu_pose_path = imu_poses_dir + "imu_poses.txt";
             imu_pose_file.open(imu_pose_path.c_str(), ios::out | ios::app);
             imu_pose_file << std::fixed << std::setprecision(9);
         }
     }
 
-    const string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
     if (keyframe_export_en || keyframe_global_pcd_en)
     {
         if (!create_directory(keyframe_frames_dir + "scans/"))
@@ -1333,14 +1344,11 @@ int main(int argc, char** argv)
             
             /******* Publish points *******/
             if (path_en)                         publish_path(pubPath);
-            if (scan_pub_en || res_save_en)      publish_frame_world(pubLaserCloudFull);
+            if (scan_pub_en || feat_accum_save_en)      publish_frame_world(pubLaserCloudFull);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             if (effect_pub_en) publish_effect_world(pubLaserCloudEffect);
             if (feature_pub_en) publish_map(pubLaserCloudMap);
-            if (imu_pose_save_en) {
-                save_scan_frame(scan_frames_dir);
-            }
-
+            if (scan_frame_save_en) save_scan_frame(scan_frames_dir);
             /*** Debug variables ***/
             if (runtime_pos_log)
             {
@@ -1375,15 +1383,15 @@ int main(int argc, char** argv)
         rate.sleep();
     }            
 
-    /**************** save map ****************/
+    /**************** save accumulated feature scans ****************/
     /* 1. make sure you have enough memories
-    /* 2. pcd save will largely influence the real-time performences **/
-    if (!flg_exit && pcl_wait_save->size() > 0 && res_save_en)
+    /* 2. PCD saving will largely influence real-time performance **/
+    if (!flg_exit && pcl_wait_save->size() > 0 && feat_accum_save_en)
     {
         string file_name = string("scans.pcd");
         string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
         pcl::PCDWriter pcd_writer;
-        cout << "current scan saved to /PCD/" << file_name<<endl;
+        cout << "current accumulated feature cloud saved to /PCD/" << file_name<<endl;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
     }
 

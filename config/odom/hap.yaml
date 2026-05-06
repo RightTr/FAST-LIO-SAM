@@ -31,10 +31,11 @@ publish:
     dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
     scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
 
-res_save:
-    res_save_en: true
-    interval: -1                 # how many LiDAR frames saved in each pcd file; 
-    imu_pose_save_en: false    # save each undistorted scan (LiDAR body frame) as PCD + pose to ROOT_DIR/SCAN_FRAMES/
+result_save:
+    feat_accum_save_en: true     # save accumulated world-frame undistorted feature scans as PCD
+    interval: -1                 # how many LiDAR frames to accumulate before writing one PCD; -1 saves only once at shutdown
+    imu_pose_save_en: false      # save each IMU pose to ROOT_DIR/IMU_POSES/poses.txt
+    scan_frame_save_en: false    # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
 
 zupt:
     use_zupt: false              # enable zero velocity update

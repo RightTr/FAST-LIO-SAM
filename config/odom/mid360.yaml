@@ -35,11 +35,12 @@ publish:
     scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
     feature_pub_en: true
 
-res_save:
-    res_save_en: true
-    interval: -1                # how many LiDAR frames saved in each pcd file; 
+result_save:
+    feat_accum_save_en: true     # save accumulated world-frame undistorted feature scans as PCD
+    interval: -1                 # how many LiDAR frames to accumulate before writing one PCD; -1 saves only once at shutdown
                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
-    imu_pose_save_en: true         # save all IMU poses  
+    imu_pose_save_en: true         # save each IMU pose to ROOT_DIR/IMU_POSES/poses.txt
+    scan_frame_save_en: false      # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
 
 zupt:
     use_zupt: true                    # enable adaptive zero velocity update

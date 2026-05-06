@@ -73,6 +73,10 @@ Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-r
 
 Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyframes into one global PCD at `KEY_FRAMES/global.pcd`.
 
+### Result save
+
+Set `result_save/feat_accum_save_en: true` to accumulate each undistorted scan in the world frame and write the merged feature cloud to `ROOT_DIR/PCD/scans_*.pcd` during runtime, then `ROOT_DIR/PCD/scans.pcd` on shutdown. `result_save/imu_pose_save_en` saves each IMU pose to `ROOT_DIR/IMU_POSES/poses.txt`. `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame and the corresponding pose under `ROOT_DIR/SCAN_FRAMES/`.
+
 ## Stationary detection and adaptive weight handling
 
 The system will adjust the confidence of the ZUPT and LiDAR updates based on the detected motion state, using **accelerometer and gyroscope variances** as well as **the EMA of velocity**. When the system detects a stationary state, it will increase the confidence of the ZUPT update and decrease the confidence of the LiDAR update, and vice versa when in motion.
