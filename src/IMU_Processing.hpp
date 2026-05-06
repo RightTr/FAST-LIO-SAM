@@ -8,6 +8,7 @@
 #include <cassert>
 #include <so3_math.h>
 #include <Eigen/Eigen>
+#include <Eigen/Geometry>
 #include <common_lib.h>
 #include <ros_utils.h>
 #include <pcl/common/io.h>
@@ -47,6 +48,7 @@ class ImuProcess
   void set_gyr_bias_cov(const V3D &b_g);
   void set_acc_bias_cov(const V3D &b_a);
   void set_use_zupt(bool enabled);
+  void set_grav_align(bool enabled);
   void set_zupt_thresholds(double acc_norm_threshold, double gyro_threshold);
   void set_zupt_adaptive_params(double r_min, double r_max, double conf_min,
                                  double inflate_pos, double inflate_rot, int inflate_start);
@@ -76,6 +78,7 @@ class ImuProcess
   void zupt_update(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state, double confidence);
 
   bool   use_zupt = false;
+  bool   grav_align_ = true;
   double zupt_acc_var_threshold;
   double zupt_gyro_var_threshold;
 
@@ -184,6 +187,11 @@ void ImuProcess::set_use_zupt(bool enabled) {
   use_zupt = enabled; 
 }
 
+void ImuProcess::set_grav_align(bool enabled)
+{
+  grav_align_ = enabled;
+}
+
 void ImuProcess::set_zupt_thresholds(double acc_var_threshold, double gyro_var_threshold)
 {
   zupt_acc_var_threshold = acc_var_threshold;
@@ -284,7 +292,17 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     N ++;
   }
   state_ikfom init_state = kf_state.get_x();
-  init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+  const double mean_acc_norm = mean_acc.norm();
+  if (grav_align_ )
+  {
+    // Use the averaged gravity direction to initialize roll/pitch; yaw remains unconstrained.
+    const Eigen::Vector3d gravity_meas = mean_acc / mean_acc_norm;
+    const Eigen::Quaterniond q_init = Eigen::Quaterniond::FromTwoVectors(gravity_meas,
+                                                                         Eigen::Vector3d::UnitZ());
+    init_state.rot = q_init;
+    init_state.grav = S2(Eigen::Vector3d(0.0, 0.0, -G_m_s2));
+  }
+  else init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
   
   //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   init_state.bg  = mean_gyr;

@@ -68,6 +68,7 @@ Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool sam_enable = false;
 bool imu_flip = false;
+bool grav_align = true;
 int lidar_type;
 bool use_zupt = false;
 double zupt_acc_var_threshold;
@@ -978,6 +979,7 @@ int main(int argc, char** argv)
     rosparam_get("common/time_sync_en", time_sync_en, false);
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
     rosparam_get("common/imu_flip", imu_flip, false);
+    rosparam_get("common/grav_align", grav_align, true);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
     rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
     rosparam_get("filter_size_map", filter_size_map_min, 0.5);
@@ -1052,6 +1054,7 @@ int main(int argc, char** argv)
         Lidar_R_wrt_IMU = IMU_FLIP_R * Lidar_R_wrt_IMU;
     }
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
+    p_imu->set_grav_align(grav_align);
     p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
     p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
     p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
