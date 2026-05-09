@@ -1,4 +1,5 @@
 #include "preprocess.h"
+#include "utility.h"
 #include "ros_utils.h"
 
 #define RETURN0     0x00
@@ -45,6 +46,9 @@ void Preprocess::set(bool feat_en, int lid_type, double bld, int pfilt_num)
 void Preprocess::process(const LivoxCustomMsgConstPtr &msg, PointCloudXYZI::Ptr &pcl_out)
 {  
   avia_handler(msg);
+  standardize(pl_full);
+  standardize(pl_corn);
+  standardize(pl_surf);
   *pcl_out = pl_surf;
 }
 
@@ -99,6 +103,9 @@ void Preprocess::process(const Pcl2MsgConstPtr &msg, PointCloudXYZI::Ptr &pcl_ou
     printf("Error LiDAR Type");
     break;
   }
+  standardize(pl_full);
+  standardize(pl_corn);
+  standardize(pl_surf);
   *pcl_out = pl_surf;
 }
 
@@ -992,9 +999,12 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, vector<orgtype> &t
 
 void Preprocess::pub_func(const Pcl2Publisher& pub, PointCloudXYZI &pl, const TimeType &ct)
 {
-  pl.height = 1; pl.width = pl.size();
+  PointCloudXYZI pl_pub = pl;
+  standardize(pl_pub);
+  pl_pub.height = 1;
+  pl_pub.width = pl_pub.size();
   PointCloud2Msg output;
-  pcl::toROSMsg(pl, output);
+  pcl::toROSMsg(pl_pub, output);
   output.header.frame_id = "lidar";
   output.header.stamp = ct;
   ros_publish(pub, output);

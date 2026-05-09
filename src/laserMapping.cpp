@@ -67,8 +67,7 @@ Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool sam_enable = false;
-bool imu_flip = false;
-bool grav_align = true;
+bool grav_align = false;
 int lidar_type;
 bool use_zupt = false;
 double zupt_acc_var_threshold;
@@ -83,11 +82,6 @@ int    zupt_inflate_start      = 200;
 // Adaptive LiDAR weight params
 double lidar_cov_static_scale  = 5.0;
 double lidar_residual_ref      = 0.05;
-
-const M3D IMU_FLIP_R = (M3D() <<
-    1.0,  0.0,  0.0,
-    0.0, -1.0,  0.0,
-    0.0,  0.0, -1.0).finished();
 
 vector<vector<int>>  pointSearchInd_surf; 
 vector<BoxPointType> cub_needrm;
@@ -365,7 +359,7 @@ void imu_cbk(const ImuMsgConstPtr &msg_in)
     // cout<<"IMU got at: "<<get_ros_time_sec(msg_in->header.stamp)<<endl;
     ImuMsgPtr msg(new ImuMsg(*msg_in));
 
-    if (imu_flip)
+    if (flip_en)
     {
         // Use a proper rotation (det=+1) instead of a reflection.
         const V3D gyr_raw(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
@@ -977,8 +971,8 @@ int main(int argc, char** argv)
     rosparam_get("reloc/reloc_topic", reloc_topic, std::string("/reloc/manual"));
     rosparam_get("common/time_sync_en", time_sync_en, false);
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
-    rosparam_get("common/imu_flip", imu_flip, false);
-    rosparam_get("common/grav_align", grav_align, true);
+    rosparam_get("common/flip_en", flip_en, false);
+    rosparam_get("common/grav_align", grav_align, false);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
     rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
     rosparam_get("filter_size_map", filter_size_map_min, 0.5);
@@ -1043,16 +1037,13 @@ int main(int argc, char** argv)
     memset(point_selected_surf, true, sizeof(point_selected_surf));
     memset(res_last, -1000.0f, sizeof(res_last));
 
-    // extrinT: LiDAR position in the IMU coordinate frame !!!
-    // extrinR: LiDAR rotation in the IMU coordinate frame !!!
+    // extrinT/extrinR must stay in the sensor's native Airy/DIFOP IMU convention.
+    // When flip_en is enabled, IMU measurements, local point clouds, and these
+    // extrinsics are all standardized to the Mid360 convention before estimation.
     Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
     Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
-    if (imu_flip)
-    {
-        // Apply the same proper IMU frame rotation to both measurements and extrinsics.
-        Lidar_T_wrt_IMU = IMU_FLIP_R * Lidar_T_wrt_IMU;
-        Lidar_R_wrt_IMU = IMU_FLIP_R * Lidar_R_wrt_IMU;
-    }
+    Lidar_T_wrt_IMU = standardize(Lidar_T_wrt_IMU);
+    Lidar_R_wrt_IMU = standardize(Lidar_R_wrt_IMU);
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
     p_imu->set_grav_align(grav_align);
     p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));

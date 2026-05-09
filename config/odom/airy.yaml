@@ -4,7 +4,9 @@ common:
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
-    imu_flip: true              # If IMU axes are opposite to the expected convention, set true.
+    flip_en: true               # true: standardize Airy IMU, local point clouds, and extrinsic_R/T to the Mid360 convention.
+                                # Keep extrinsic_R/T in the sensor's original Airy/DIFOP convention; do not pre-flip them manually.
+    grav_align: true            # true: initialize roll/pitch from gravity so the startup world/map is level; yaw is still unconstrained.
 
 preprocess:
     lidar_type: 4                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 4 for RoboSense LiDAR

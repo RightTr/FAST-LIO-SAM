@@ -78,7 +78,7 @@ class ImuProcess
   void zupt_update(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state, double confidence);
 
   bool   use_zupt = false;
-  bool   grav_align_ = true;
+  bool   grav_align_ = false;
   double zupt_acc_var_threshold;
   double zupt_gyro_var_threshold;
 

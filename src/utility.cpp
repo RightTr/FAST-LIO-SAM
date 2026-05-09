@@ -37,6 +37,11 @@ std::string map_frame = "map";
 std::string odom_frame = "odom";
 std::string base_frame = "base_link";
 std::string high_freq_base_frame = "base_hf_link";
+bool flip_en = false;
+const Eigen::Matrix3d IMU_FLIP_R = (Eigen::Matrix3d() <<
+    1.0,  0.0,  0.0,
+    0.0, -1.0,  0.0,
+    0.0,  0.0, -1.0).finished();
 
 void read_liosam_params() {
 
