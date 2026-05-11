@@ -576,6 +576,34 @@ void fillTransformMsg(TransformStampedMsg& tf_msg, const Eigen::Matrix3d& R, con
     tf_msg.transform.rotation.w = q.w();
 }
 
+void fillOdometryMsg(OdomMsg& odom_msg,
+                     const std::string& parent_frame,
+                     const std::string& child_frame,
+                     const TimeType& stamp,
+                     const Eigen::Matrix3d& R,
+                     const Eigen::Vector3d& t)
+{
+    odom_msg.header.stamp = stamp;
+    odom_msg.header.frame_id = parent_frame;
+    odom_msg.child_frame_id = child_frame;
+    fillPoseMsg(odom_msg.pose.pose, R, t);
+}
+
+template<typename CovT>
+void fillOdometryCovariance(OdomMsg& odom_msg, const CovT& P)
+{
+    for (int i = 0; i < 6; i ++)
+    {
+        const int k = i < 3 ? i + 3 : i - 3;
+        odom_msg.pose.covariance[i*6 + 0] = P(k, 3);
+        odom_msg.pose.covariance[i*6 + 1] = P(k, 4);
+        odom_msg.pose.covariance[i*6 + 2] = P(k, 5);
+        odom_msg.pose.covariance[i*6 + 3] = P(k, 0);
+        odom_msg.pose.covariance[i*6 + 4] = P(k, 1);
+        odom_msg.pose.covariance[i*6 + 5] = P(k, 2);
+    }
+}
+
 void update_state_ikfom()
 {
     state_ikfom state_updated = kf.get_x();
@@ -689,7 +717,9 @@ void publish_map(const Pcl2Publisher & pubLaserCloudMap)
     ros_publish(pubLaserCloudMap, laserCloudMap);
 }
 
-void publish_odometryhighfreq(PoseBuffer& pbuffer, const OdomPublisher& pubOdomHighFreq)
+void publish_odometryhighfreq(PoseBuffer& pbuffer,
+                              const OdomPublisher& pubOdomHighFreqLocal,
+                              const OdomPublisher& pubOdomHighFreqGlobal)
 {
     while (ros_ok() && !flg_exit){
         Pose pose;
@@ -698,10 +728,9 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer, const OdomPublisher& pubOdomH
             usleep(1000);
             continue;
         }
-        OdomMsg msg;
-        msg.header.stamp = get_ros_time(pose._timestamp);
-        msg.header.frame_id = odom_frame;
-        msg.child_frame_id = high_freq_base_frame;
+        OdomMsg msg_local;
+        OdomMsg msg_global;
+        const auto stamp = get_ros_time(pose._timestamp);
 
         const Eigen::Matrix3d R_odom_map = R_map_odom.transpose();
         const Eigen::Matrix3d R_map_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
@@ -709,15 +738,17 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer, const OdomPublisher& pubOdomH
 
         const Eigen::Matrix3d R_odom_base = R_odom_map * R_map_base;
         const Eigen::Vector3d t_odom_base = R_odom_map * (t_map_base - t_map_odom);
-        fillPoseMsg(msg.pose.pose, R_odom_base, t_odom_base);
+        fillOdometryMsg(msg_local, odom_frame, high_freq_base_frame, stamp, R_odom_base, t_odom_base);
+        fillOdometryMsg(msg_global, map_frame, high_freq_base_frame, stamp, R_map_base, t_map_base);
 
         TransformStampedMsg tf_msg;
-        tf_msg.header.stamp = msg.header.stamp;
+        tf_msg.header.stamp = stamp;
         tf_msg.header.frame_id = odom_frame;
         tf_msg.child_frame_id = high_freq_base_frame;
         fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
-        ros_publish(pubOdomHighFreq, msg);
+        ros_publish(pubOdomHighFreqLocal, msg_local);
+        ros_publish(pubOdomHighFreqGlobal, msg_global);
 
 #ifdef USE_ROS1
         static tf::TransformBroadcaster br_hf;
@@ -749,38 +780,33 @@ void set_posestamp(T & out)
     
 }
 
-void publish_odometry(const OdomPublisher & pubOdomAftMapped)
+void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal,
+                      const OdomPublisher & pubOdomAftMappedGlobal)
 {
-    odomAftMapped.header.frame_id = odom_frame;
-    odomAftMapped.child_frame_id = base_frame;
-    odomAftMapped.header.stamp = get_ros_time(lidar_end_time);
+    OdomMsg odomAftMappedGlobal;
+    const auto stamp = get_ros_time(lidar_end_time);
 
     const Eigen::Matrix3d R_odom_map = R_map_odom.transpose();
 
+    const Eigen::Matrix3d R_map_base = state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_map_base = state_point.pos;
     const Eigen::Matrix3d R_odom_base = R_odom_map * state_point.rot.toRotationMatrix();
     const Eigen::Vector3d t_odom_base = R_odom_map * (state_point.pos - t_map_odom);
-    fillPoseMsg(odomAftMapped.pose.pose, R_odom_base, t_odom_base);
+    fillOdometryMsg(odomAftMapped, odom_frame, base_frame, stamp, R_odom_base, t_odom_base);
+    fillOdometryMsg(odomAftMappedGlobal, map_frame, base_frame, stamp, R_map_base, t_map_base);
 
-    auto P = kf.get_P();
-    for (int i = 0; i < 6; i ++)
-    {
-        int k = i < 3 ? i + 3 : i - 3;
-        odomAftMapped.pose.covariance[i*6 + 0] = P(k, 3);
-        odomAftMapped.pose.covariance[i*6 + 1] = P(k, 4);
-        odomAftMapped.pose.covariance[i*6 + 2] = P(k, 5);
-        odomAftMapped.pose.covariance[i*6 + 3] = P(k, 0);
-        odomAftMapped.pose.covariance[i*6 + 4] = P(k, 1);
-        odomAftMapped.pose.covariance[i*6 + 5] = P(k, 2);
-    }
+    const auto& P = kf.get_P();
+    fillOdometryCovariance(odomAftMapped, P);
+    fillOdometryCovariance(odomAftMappedGlobal, P);
 
     TransformStampedMsg tf_msg;
-    tf_msg.header.stamp = odomAftMapped.header.stamp;
+    tf_msg.header.stamp = stamp;
     tf_msg.header.frame_id = odom_frame;
     tf_msg.child_frame_id  = base_frame;
     fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
     TransformStampedMsg map_to_odom_msg;
-    map_to_odom_msg.header.stamp = odomAftMapped.header.stamp;
+    map_to_odom_msg.header.stamp = stamp;
     map_to_odom_msg.header.frame_id = map_frame;
     map_to_odom_msg.child_frame_id = odom_frame;
     map_to_odom_msg.transform.translation.x = t_map_odom.x();
@@ -793,7 +819,8 @@ void publish_odometry(const OdomPublisher & pubOdomAftMapped)
     map_to_odom_msg.transform.rotation.z = q_map_odom.z();
     map_to_odom_msg.transform.rotation.w = q_map_odom.w();
 
-    ros_publish(pubOdomAftMapped, odomAftMapped);
+    ros_publish(pubOdomAftMappedLocal, odomAftMapped);
+    ros_publish(pubOdomAftMappedGlobal, odomAftMappedGlobal);
 
 #ifdef USE_ROS1
     static tf::TransformBroadcaster br;
@@ -1141,8 +1168,10 @@ int main(int argc, char** argv)
     auto odom_qos = rclcpp::QoS(10).best_effort(); // avoid latency caused by QoS reliability in ROS2
     #endif
     auto pubOdomAftMapped = create_publisher_qos<OdometryMsg>("/Odometry", odom_qos);
+    auto pubOdomAftMappedGlobal = create_publisher_qos<OdometryMsg>("/OdometryGlobal", odom_qos);
     auto pubPath = create_publisher_qos<PathMsg>("/path", odom_qos);
     auto pubOdomHighFreq = create_publisher_qos<OdometryMsg>("/OdometryHighFreq", odom_qos);
+    auto pubOdomHighFreqGlobal = create_publisher_qos<OdometryMsg>("/OdometryHighFreqGlobal", odom_qos);
     p_pre->pub_corn = create_publisher<PointCloud2Msg>("/corn_feature", 100000);
     p_pre->pub_surf = create_publisher<PointCloud2Msg>("/surf_feature", 100000);
 
@@ -1153,7 +1182,7 @@ int main(int argc, char** argv)
     }
 
     std::thread odomhighthread([&](){
-        publish_odometryhighfreq(p_imu->pbuffer, pubOdomHighFreq);
+        publish_odometryhighfreq(p_imu->pbuffer, pubOdomHighFreq, pubOdomHighFreqGlobal);
     });
 
     std::thread loopthread;
@@ -1326,7 +1355,7 @@ int main(int argc, char** argv)
             }
 
             /******* Publish odometry *******/
-            publish_odometry(pubOdomAftMapped);
+            publish_odometry(pubOdomAftMapped, pubOdomAftMappedGlobal);
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
