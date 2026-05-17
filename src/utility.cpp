@@ -18,6 +18,7 @@ float loopClosureFrequency;
 int   surroundingKeyframeSize;
 float historyKeyframeSearchRadius;
 float historyKeyframeSearchTimeDiff;
+float historyKeyframeSearchAngleThreshold;
 int   historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
 
@@ -60,6 +61,7 @@ void read_liosam_params() {
     rosparam_get("lio_sam/surroundingKeyframeSize", surroundingKeyframeSize, 50);
     rosparam_get("lio_sam/historyKeyframeSearchRadius", historyKeyframeSearchRadius, 10.0f);
     rosparam_get("lio_sam/historyKeyframeSearchTimeDiff", historyKeyframeSearchTimeDiff, 30.0f);
+    rosparam_get("lio_sam/historyKeyframeSearchAngleThreshold", historyKeyframeSearchAngleThreshold, 0.5f);
     rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
 

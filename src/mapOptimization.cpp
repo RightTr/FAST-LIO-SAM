@@ -132,6 +132,14 @@ float pointDistance(PointTypeIndex p1, PointTypeIndex p2)
     return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));
 }
 
+float rotationDistance(const gtsam::Pose3& poseFrom, const gtsam::Pose3& poseTo)
+{
+    const Eigen::Matrix3d deltaR = poseFrom.between(poseTo).rotation().matrix();
+    double cosTheta = (deltaR.trace() - 1.0) * 0.5;
+    cosTheta = std::max(-1.0, std::min(1.0, cosTheta));
+    return static_cast<float>(std::acos(cosTheta));
+}
+
 PointTypePose trans2PointTypePose(float transformIn[])
 {
     PointTypePose thisPose6D;
@@ -271,6 +279,11 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
         int id = pointSearchPoses3D[i].intensity; // index stored in intensity field
         if (abs(copy_cloudKeyPoses6D->points[id].time - timeLaserInfoCur) > historyKeyframeSearchTimeDiff)
         {
+            const gtsam::Pose3 poseCur = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyCur]);
+            const gtsam::Pose3 posePre = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[id]);
+            if (rotationDistance(poseCur, posePre) > historyKeyframeSearchAngleThreshold)
+                continue;
+
             loopKeyPre = id;
             break;
         }

@@ -26,6 +26,7 @@ extern float loopClosureFrequency;
 extern int   surroundingKeyframeSize;
 extern float historyKeyframeSearchRadius;
 extern float historyKeyframeSearchTimeDiff;
+extern float historyKeyframeSearchAngleThreshold;
 extern int   historyKeyframeSearchNum;
 extern float historyKeyframeFitnessScore;
 
