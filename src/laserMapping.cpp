@@ -59,7 +59,7 @@ double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
 int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
-int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, res_save_interval = -1, pcd_index = 0;
+int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, res_save_interval = -1;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 std::atomic<bool> flg_exit(false);
@@ -141,8 +141,7 @@ shared_ptr<ImuProcess> p_imu(new ImuProcess());
 void save_scan_frame(const string& scan_frames_dir)
 {
     // Save undistorted scan in LiDAR body frame.
-    char idx_buf[16];
-    snprintf(idx_buf, sizeof(idx_buf), "%06d", scan_frame_idx);
+    const std::string stamp_str = format_unix_time(lidar_end_time);
 
     pcl::PointCloud<pcl::PointXYZ> scan_xyz;
     pcl::PointCloud<pcl::PointXYZI> scan_xyz_tstamp;
@@ -165,8 +164,8 @@ void save_scan_frame(const string& scan_frames_dir)
     }
 
     pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(scan_frames_dir + "scans/" + idx_buf + ".pcd", scan_xyz);
-    pcd_writer.writeBinary(scan_frames_dir + "scans_tstamp/" + idx_buf + "_tstamp.pcd", scan_xyz_tstamp);
+    pcd_writer.writeBinary(scan_frames_dir + "scans/" + stamp_str + ".pcd", scan_xyz);
+    pcd_writer.writeBinary(scan_frames_dir + "scans_tstamp/" + stamp_str + ".pcd", scan_xyz_tstamp);
 
     // Save LiDAR pose in world frame, TUM format: timestamp tx ty tz qx qy qz qw
     V3D p_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
@@ -683,10 +682,10 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
         scan_wait_num ++;
         if (pcl_wait_save->size() > 0 && res_save_interval > 0  && scan_wait_num >= res_save_interval)
         {
-            pcd_index ++;
-            string all_points_dir(string(string(ROOT_DIR) + "PCD/scans_") + to_string(pcd_index) + string(".pcd"));
+            const std::string stamp_str = format_unix_time(lidar_end_time);
+            const std::string all_points_dir = string(string(ROOT_DIR) + "PCD/") + stamp_str + string(".pcd");
             pcl::PCDWriter pcd_writer;
-            cout << "current accumulated feature cloud saved to /PCD/" << all_points_dir << endl;
+            cout << "current accumulated feature cloud saved to /PCD/" << stamp_str << ".pcd" << endl;
             pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
             pcl_wait_save->clear();
             scan_wait_num = 0;
@@ -1173,7 +1172,7 @@ int main(int argc, char** argv)
         }
         else if (keyframe_export_en)
         {
-            string keyframe_pose_path = keyframe_frames_dir + "key_poses.txt";
+            string keyframe_pose_path = keyframe_frames_dir + "key_pose.txt";
             keyframe_pose_file.open(keyframe_pose_path.c_str(), ios::out | ios::app);
             keyframe_pose_file << std::fixed << std::setprecision(9);
         }
@@ -1292,6 +1291,8 @@ int main(int argc, char** argv)
                 continue;
             }
 
+            if (scan_frame_save_en) save_scan_frame(scan_frames_dir);
+
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
             /*** Segment the map in lidar FOV ***/
@@ -1407,7 +1408,6 @@ int main(int argc, char** argv)
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             if (effect_pub_en) publish_effect_world(pubLaserCloudEffect);
             if (feature_pub_en) publish_map(pubLaserCloudMap);
-            if (scan_frame_save_en) save_scan_frame(scan_frames_dir);
             /*** Debug variables ***/
             if (runtime_pos_log)
             {
@@ -1447,8 +1447,9 @@ int main(int argc, char** argv)
     /* 2. PCD saving will largely influence real-time performance **/
     if (!flg_exit && pcl_wait_save->size() > 0 && feat_accum_save_en)
     {
-        string file_name = string("scans.pcd");
-        string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
+        const std::string stamp_str = format_unix_time(lidar_end_time);
+        const std::string file_name = stamp_str + string(".pcd");
+        const std::string all_points_dir = string(string(ROOT_DIR) + "PCD/") + file_name;
         pcl::PCDWriter pcd_writer;
         cout << "current accumulated feature cloud saved to /PCD/" << file_name<<endl;
         pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);

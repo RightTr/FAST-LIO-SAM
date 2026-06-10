@@ -69,13 +69,13 @@ The modified system supports relocalization using manually set odometry poses. O
 
 ### Keyframe export
 
-Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-resolution PCD built from `feats_undistort`, together with its pose, under `KEY_FRAMES/scans/` and `ROOT_DIR/KEY_FRAMES/poses.txt`.
+Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-resolution PCD built from `feats_undistort`, together with its pose, under `KEY_FRAMES/scans/` and `ROOT_DIR/KEY_FRAMES/pose.txt`.
 
 Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyframes into one global PCD at `KEY_FRAMES/global.pcd`.
 
 ### Result save
 
-Set `result_save/feat_accum_save_en: true` to accumulate each undistorted scan in the world frame and write the merged feature cloud to `ROOT_DIR/PCD/scans_*.pcd` during runtime, then `ROOT_DIR/PCD/scans.pcd` on shutdown. `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/IMU_STATES/imu_states.txt`. `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/SCAN_FRAMES/scans/`, saves the corresponding timestamped cloud under `ROOT_DIR/SCAN_FRAMES/scans_tstamp/`, and writes the pose to `ROOT_DIR/SCAN_FRAMES/scan_pose.txt`.
+Set `result_save/feat_accum_save_en: true` to accumulate each undistorted scan in the world frame and write the merged feature cloud to `ROOT_DIR/PCD/<lidar_time>.pcd` during runtime, then `ROOT_DIR/PCD/<lidar_time>.pcd` on shutdown. `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/IMU_STATES/imu_state.txt`. `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/SCAN_FRAMES/scans/<lidar_time>.pcd`, saves the corresponding timestamped cloud under `ROOT_DIR/SCAN_FRAMES/scans_tstamp/<lidar_time>.pcd`, and writes the pose to `ROOT_DIR/SCAN_FRAMES/scan_pose.txt`.
 
 ## Stationary detection and adaptive weight handling
 

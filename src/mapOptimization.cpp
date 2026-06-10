@@ -1,6 +1,7 @@
 // Modified from LIO-SAM: MapOptimization.cpp
 
 #include "utility.h"
+#include "common_utils.h"
 #include "map_optimization.h"
 #include "ros_utils.h"
 
@@ -41,8 +42,6 @@ using symbol_shorthand::V; // Vel   (xdot,ydot,zdot)
 using symbol_shorthand::B; // Bias  (ax,ay,az,gx,gy,gz)
 
 extern std::string root_dir;
-
-int keyframe_frame_idx;
 
 // gtsam
 NonlinearFactorGraph gtSAMgraph;
@@ -518,8 +517,8 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     if (keyframe_export_en)
     {
         const std::string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
-        const std::string idx_buf = std::to_string(keyframe_frame_idx++);
-        const std::string pcd_path = keyframe_frames_dir + "scans/" + idx_buf + ".pcd";
+        const std::string stamp_str = format_unix_time(thisPose6D.time);
+        const std::string pcd_path = keyframe_frames_dir + "scans/" + stamp_str + ".pcd";
         pcl::PCDWriter pcd_writer;
         pcd_writer.writeBinary(pcd_path, *feats_undistort);
     }

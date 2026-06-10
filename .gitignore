@@ -9,6 +9,6 @@ PCD/*.pcd
 .vscode
 package.xml
 SCAN_FRAMES
-IMU_POSES
+IMU_STATES
 .codex
 KEY_FRAMES
