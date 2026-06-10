@@ -68,7 +68,7 @@ publish:
 result_save:
     feat_accum_save_en: true     # save accumulated world-frame undistorted feature scans as PCD
     interval: -1                 # how many LiDAR frames to accumulate before writing one PCD; -1 saves only once at shutdown
-    imu_pose_save_en: true       # save each IMU pose to ROOT_DIR/IMU_POSES/poses.txt
+    imu_state_save_en: true       # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
     scan_frame_save_en: true    # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
 

@@ -36,7 +36,7 @@ double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_pl
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   runtime_pos_log = false, feat_accum_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
-bool   imu_pose_save_en = false, scan_frame_save_en = false;
+bool   imu_state_save_en = false, scan_frame_save_en = false;
 /**************************/
 
 bool feature_pub_en = false, effect_pub_en = false;
@@ -143,9 +143,30 @@ void save_scan_frame(const string& scan_frames_dir)
     // Save undistorted scan in LiDAR body frame.
     char idx_buf[16];
     snprintf(idx_buf, sizeof(idx_buf), "%06d", scan_frame_idx);
-    string pcd_path = scan_frames_dir + "scans/" + idx_buf + ".pcd";
+
+    pcl::PointCloud<pcl::PointXYZ> scan_xyz;
+    pcl::PointCloud<pcl::PointXYZI> scan_xyz_tstamp;
+    scan_xyz.reserve(feats_undistort->size());
+    scan_xyz_tstamp.reserve(feats_undistort->size());
+    for (const auto &pt : feats_undistort->points)
+    {
+        pcl::PointXYZ p_xyz;
+        p_xyz.x = pt.x;
+        p_xyz.y = pt.y;
+        p_xyz.z = pt.z;
+        scan_xyz.push_back(p_xyz);
+
+        pcl::PointXYZI p_xyz_tstamp;
+        p_xyz_tstamp.x = pt.x;
+        p_xyz_tstamp.y = pt.y;
+        p_xyz_tstamp.z = pt.z;
+        p_xyz_tstamp.intensity = pt.curvature;
+        scan_xyz_tstamp.push_back(p_xyz_tstamp);
+    }
+
     pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(pcd_path, *feats_undistort);
+    pcd_writer.writeBinary(scan_frames_dir + "scans/" + idx_buf + ".pcd", scan_xyz);
+    pcd_writer.writeBinary(scan_frames_dir + "scans_tstamp/" + idx_buf + "_tstamp.pcd", scan_xyz_tstamp);
 
     // Save LiDAR pose in world frame, TUM format: timestamp tx ty tz qx qy qz qw
     V3D p_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
@@ -757,11 +778,17 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
 #endif
         br_hf.sendTransform(tf_msg);
 
-        if (imu_pose_save_en && imu_pose_file.is_open())
+        if (imu_state_save_en && imu_pose_file.is_open())
         {
             imu_pose_file << pose._timestamp << " "
                 << pose._x << " " << pose._y << " " << pose._z << " "
-                << pose._qx << " " << pose._qy << " " << pose._qz << " " << pose._qw << "\n";
+                << pose._qx << " " << pose._qy << " " << pose._qz << " " << pose._qw << " "
+                << pose._vx << " " << pose._vy << " " << pose._vz << " "
+                << pose._bgx << " " << pose._bgy << " " << pose._bgz << " "
+                << pose._bax << " " << pose._bay << " " << pose._baz << " "
+                << pose._gravx << " " << pose._gravy << " " << pose._gravz << " "
+                << pose._exqx << " " << pose._exqy << " " << pose._exqz << " " << pose._exqw << " "
+                << pose._extx << " " << pose._exty << " " << pose._extz << "\n";
             imu_pose_file.flush();
         }
     }
@@ -1018,7 +1045,7 @@ int main(int argc, char** argv)
     rosparam_get("point_filter_num", p_pre->point_filter_num, 2);
     rosparam_get("feature_extract_enable", p_pre->feature_enabled, false);
     rosparam_get("runtime_pos_log_enable", runtime_pos_log, false);
-    rosparam_get("result_save/imu_pose_save_en", imu_pose_save_en, false);
+    rosparam_get("result_save/imu_state_save_en", imu_state_save_en, false);
     rosparam_get("result_save/scan_frame_save_en", scan_frame_save_en, false);
     rosparam_get("mapping/extrinsic_est_en", extrinsic_est_en, true);
     rosparam_get("result_save/feat_accum_save_en", feat_accum_save_en, false);
@@ -1092,7 +1119,7 @@ int main(int argc, char** argv)
     fp = fopen(pos_log_dir.c_str(),"w");
     
     const string scan_frames_dir = root_dir + "/SCAN_FRAMES/";
-    const string imu_poses_dir = root_dir + "/IMU_POSES/";
+    const string imu_states_dir = root_dir + "/IMU_STATES/";
     const string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
     
     if (scan_frame_save_en)
@@ -1102,25 +1129,37 @@ int main(int argc, char** argv)
             ROS_PRINT_ERROR("Failed to create scan frame save directories, disable scan_frame_save_en");
             scan_frame_save_en = false;
         }
+        else if (!create_directory(scan_frames_dir + "scans_tstamp/"))
+        {
+            ROS_PRINT_ERROR("Failed to create tstamp scan frame save directories, disable scan_frame_save_en");
+            scan_frame_save_en = false;
+        }
         else
         {
-            string scan_frame_pose_path = scan_frames_dir + "scan_poses.txt";
+            string scan_frame_pose_path = scan_frames_dir + "scan_pose.txt";
             scan_frame_pose_file.open(scan_frame_pose_path.c_str(), ios::out | ios::app);
             scan_frame_pose_file << std::fixed << std::setprecision(9);
         }
     }
-    if (imu_pose_save_en)
+    if (imu_state_save_en)
     {
-        if (!create_directory(imu_poses_dir))
+        if (!create_directory(imu_states_dir))
         {
-            ROS_PRINT_ERROR("Failed to create pose save directory, disable imu_pose_save_en");
-            imu_pose_save_en = false;
+            ROS_PRINT_ERROR("Failed to create IMU state save directory, disable imu_state_save_en");
+            imu_state_save_en = false;
         }
         else
         {
-            string imu_pose_path = imu_poses_dir + "imu_poses.txt";
-            imu_pose_file.open(imu_pose_path.c_str(), ios::out | ios::app);
+            string imu_state_path = imu_states_dir + "imu_state.txt";
+            imu_pose_file.open(imu_state_path.c_str(), ios::out);
             imu_pose_file << std::fixed << std::setprecision(9);
+            imu_pose_file << "# imu_states.txt columns:\n";
+            imu_pose_file << "# timestamp[s] pos_x[m] pos_y[m] pos_z[m] qx qy qz qw "
+                             "vel_x[m/s] vel_y[m/s] vel_z[m/s] "
+                             "bg_x[rad/s] bg_y[rad/s] bg_z[rad/s] "
+                             "ba_x[m/s^2] ba_y[m/s^2] ba_z[m/s^2] "
+                             "grav_x[m/s^2] grav_y[m/s^2] grav_z[m/s^2] "
+                             "ext_qx ext_qy ext_qz ext_qw ext_tx[m] ext_ty[m] ext_tz[m]\n";
         }
     }
 

@@ -75,7 +75,7 @@ Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyf
 
 ### Result save
 
-Set `result_save/feat_accum_save_en: true` to accumulate each undistorted scan in the world frame and write the merged feature cloud to `ROOT_DIR/PCD/scans_*.pcd` during runtime, then `ROOT_DIR/PCD/scans.pcd` on shutdown. `result_save/imu_pose_save_en` saves each IMU pose to `ROOT_DIR/IMU_POSES/poses.txt`. `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame and the corresponding pose under `ROOT_DIR/SCAN_FRAMES/`.
+Set `result_save/feat_accum_save_en: true` to accumulate each undistorted scan in the world frame and write the merged feature cloud to `ROOT_DIR/PCD/scans_*.pcd` during runtime, then `ROOT_DIR/PCD/scans.pcd` on shutdown. `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/IMU_STATES/imu_states.txt`. `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/SCAN_FRAMES/scans/`, saves the corresponding timestamped cloud under `ROOT_DIR/SCAN_FRAMES/scans_tstamp/`, and writes the pose to `ROOT_DIR/SCAN_FRAMES/scan_pose.txt`.
 
 ## Stationary detection and adaptive weight handling
 

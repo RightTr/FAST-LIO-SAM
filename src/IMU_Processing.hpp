@@ -398,7 +398,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   // cout<<"[ IMU Process ]: Process lidar from "<<pcl_beg_time<<" to "<<pcl_end_time<<", " \
   //          <<meas.imu.size()<<" imu msgs from "<<imu_beg_time<<" to "<<imu_end_time<<endl;
 
-  /*** Initialize IMU pose ***/
+  /*** Initialize IMU state ***/
   state_ikfom imu_state = kf_state.get_x();
   IMUpose.clear();
   IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot.toRotationMatrix()));
@@ -454,6 +454,25 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     Pose pose(imu_state.pos.x(), imu_state.pos.y(), imu_state.pos.z(),
               imu_state.rot.x(), imu_state.rot.y(), imu_state.rot.z(), imu_state.rot.w(),
               tail_time);
+    pose._vx = imu_state.vel.x();
+    pose._vy = imu_state.vel.y();
+    pose._vz = imu_state.vel.z();
+    pose._bgx = imu_state.bg.x();
+    pose._bgy = imu_state.bg.y();
+    pose._bgz = imu_state.bg.z();
+    pose._bax = imu_state.ba.x();
+    pose._bay = imu_state.ba.y();
+    pose._baz = imu_state.ba.z();
+    pose._gravx = imu_state.grav[0];
+    pose._gravy = imu_state.grav[1];
+    pose._gravz = imu_state.grav[2];
+    pose._exqx = imu_state.offset_R_L_I.x();
+    pose._exqy = imu_state.offset_R_L_I.y();
+    pose._exqz = imu_state.offset_R_L_I.z();
+    pose._exqw = imu_state.offset_R_L_I.w();
+    pose._extx = imu_state.offset_T_L_I.x();
+    pose._exty = imu_state.offset_T_L_I.y();
+    pose._extz = imu_state.offset_T_L_I.z();
     pbuffer.Push(pose);
     angvel_last = angvel_avr - imu_state.bg;
     acc_s_last  = imu_state.rot * (acc_avr - imu_state.ba);

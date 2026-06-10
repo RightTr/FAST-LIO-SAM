@@ -7,14 +7,20 @@
 
 struct Pose
 {
-    double _x, _y, _z;
-    double _qx, _qy, _qz, _qw;
-    double _timestamp;
+    double _x{0.0}, _y{0.0}, _z{0.0};
+    double _qx{0.0}, _qy{0.0}, _qz{0.0}, _qw{1.0};
+    double _timestamp{0.0};
+    double _vx{0.0}, _vy{0.0}, _vz{0.0};
+    double _bgx{0.0}, _bgy{0.0}, _bgz{0.0};
+    double _bax{0.0}, _bay{0.0}, _baz{0.0};
+    double _gravx{0.0}, _gravy{0.0}, _gravz{0.0};
+    double _exqx{0.0}, _exqy{0.0}, _exqz{0.0}, _exqw{1.0};
+    double _extx{0.0}, _exty{0.0}, _extz{0.0};
 
     Pose(double x, double y, double z, double qx, double qy, double qz, double qw, double timestamp)
         : _x(x), _y(y), _z(z), _qx(qx), _qy(qy), _qz(qz), _qw(qw), _timestamp(timestamp) {}
 
-    Pose() : _timestamp(0.0), _x(0.0), _y(0.0), _z(0.0), _qx(0.0), _qy(0.0), _qz(0.0), _qw(0.0) {}
+    Pose() : _timestamp(0.0), _x(0.0), _y(0.0), _z(0.0), _qx(0.0), _qy(0.0), _qz(0.0), _qw(1.0) {}
 };
 
 class PoseBuffer
