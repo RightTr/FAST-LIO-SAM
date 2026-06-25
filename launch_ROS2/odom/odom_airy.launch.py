@@ -41,7 +41,6 @@ fast_lio_params = [
     {'filter_size_surf': 0.5},
     {'filter_size_map': 0.5},
     {'cube_side_length': 1000.0},
-    {'runtime_pos_log_enable': False},
     yaml_params
 ]
 

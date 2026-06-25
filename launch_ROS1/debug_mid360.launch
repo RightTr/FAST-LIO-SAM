@@ -11,7 +11,6 @@
 		<param name="filter_size_surf" type="double" value="0.5" />
 		<param name="filter_size_map" type="double" value="0.5" />
 		<param name="cube_side_length" type="double" value="1000" />
-		<param name="runtime_pos_log_enable" type="bool" value="0" />
 		<node pkg="fast_lio_sam" type="fastlio_mapping" name="laserMapping" output="screen" /> 
     </node>
 
