@@ -1,14 +1,19 @@
 common:
     lid_topic:  "/livox/lidar"
     imu_topic:  "/livox/imu"
+    map_frame: "map"
+    odom_frame: "odom"
+    base_frame: "base_link"
+    high_freq_base_frame: "base_hf_link"
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
-                                  # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
+                                # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
+    grav_align: false            # Whether to use gravity alignment for initial roll/pitch estimation.
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
-    scan_line: 6
-    blind: 4
+    scan_line: 4
+    blind: 1.0
 
 mapping:
     acc_cov: 0.1
@@ -24,18 +29,36 @@ mapping:
                    0, 0, 1]
 
 publish:
-    path_en:  false
+    path_en:  true
     scan_publish_en:  true       # false: close all the point cloud output
     dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
     scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
+    feature_pub_en: true
 
 result_save:
-    feat_accum_save_en: true     # save accumulated world-frame undistorted feature scans as PCD
+    feat_accum_save_en: false     # save accumulated world-frame undistorted feature scans as PCD
     interval: -1                 # how many LiDAR frames to accumulate before writing one PCD; -1 saves only once at shutdown
-    imu_state_save_en: false    # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
-    scan_frame_save_en: false   # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
+                                # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+    imu_state_save_en: true         # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
+    scan_frame_save_en: true      # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
 
 zupt:
-    use_zupt: false              # enable zero velocity update
-    zupt_acc_var_threshold: 0.0001   # (m/s²)² acceleration variance threshold for ZUPT
-    zupt_gyro_var_threshold: 0.00001 # (rad/s)² gyroscope variance threshold for ZUPT
+    use_zupt: true                    # enable adaptive zero velocity update
+    zupt_acc_var_threshold:  0.0001   # (m/s²)² per-axis acc variance → full-confidence threshold
+    zupt_gyro_var_threshold: 0.00001  # (rad/s)² per-axis gyro variance → full-confidence threshold
+
+    # Static confidence: exp(-3 * max_normalized_variance), in [0,1]
+    zupt_confidence_min: 0.05         # below this no ZUPT is applied
+
+    # Dynamic ZUPT weight: R = clamp(zupt_r_min / eff_confidence, zupt_r_max)
+    zupt_r_min: 1.0e-5                # ZUPT measurement noise at full confidence
+    zupt_r_max: 1.0                   # ZUPT measurement noise cap (≈ no constraint)
+
+    # Dynamic LiDAR weight: lidar_cov = LASER_POINT_COV * (1 + scale*conf) * max(1, residual/ref)
+    lidar_cov_static_scale: 5.0       # LiDAR cov multiplier at full confidence
+    lidar_residual_ref: 0.05          # (m) reference residual; above this LiDAR trust reduces
+
+    # Covariance inflation (lock-in prevention)
+    cov_inflate_start: 200            # IMU steps of continuous static before inflation kicks in
+    cov_inflate_pos:   1.0e-7         # per-step position covariance inflation
+    cov_inflate_rot:   1.0e-8         # per-step rotation covariance inflation

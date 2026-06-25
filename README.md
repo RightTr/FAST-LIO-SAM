@@ -75,7 +75,9 @@ Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyf
 
 ### Result save
 
-Set `result_save/feat_accum_save_en: true` to accumulate each undistorted scan in the world frame and write the merged feature cloud to `ROOT_DIR/PCD/<lidar_time>.pcd` during runtime, then `ROOT_DIR/PCD/<lidar_time>.pcd` on shutdown. `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/IMU_STATES/imu_state.txt`. `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/SCAN_FRAMES/scans/<lidar_time>.pcd`, saves the corresponding timestamped cloud under `ROOT_DIR/SCAN_FRAMES/scans_tstamp/<lidar_time>.pcd`, and writes the pose to `ROOT_DIR/SCAN_FRAMES/scan_pose.txt`.
+* `result_save/feat_accum_save_en` to accumulate each undistorted scan in the world frame. The merged feature cloud is maintained in memory during runtime and written to `ROOT_DIR/PCD/<lidar_time>.pcd` when the system shuts down. 
+* `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/IMU_STATES/imu_state.txt`. 
+* `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/SCAN_FRAMES/scans/<lidar_time>.pcd`, saves the corresponding timestamped cloud under `ROOT_DIR/SCAN_FRAMES/scans_tstamp/<lidar_time>.pcd`, and writes the pose to `ROOT_DIR/SCAN_FRAMES/scan_pose.txt`.
 
 ## Stationary detection and adaptive weight handling
 
@@ -123,6 +125,7 @@ roslaunch fast_lio_sam odom_airy.launch
 
 * [x] Full ROS2 adaptation
 * [x] ROS2 adaptation Test
+* [x] ZUPT parameter tuning and testing
 
 ## 📚 Related Works
 
