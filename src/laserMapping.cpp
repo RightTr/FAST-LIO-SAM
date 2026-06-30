@@ -1139,18 +1139,11 @@ int main(int argc, char** argv)
         }
         else if (keyframe_export_en)
         {
-            string keyframe_pose_path = keyframe_frames_dir + "key_pose.txt";
+            string keyframe_pose_path = keyframe_frames_dir + "keyframe_pose.txt";
             keyframe_pose_file.open(keyframe_pose_path.c_str(), ios::out | ios::app);
             keyframe_pose_file << std::fixed << std::setprecision(9);
         }
     }
-
-    ofstream fout_pre;
-    fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"),ios::out);
-    if (fout_pre)
-        cout << "~~~~"<<ROOT_DIR<<" file opened" << endl;
-    else
-        cout << "~~~~"<<ROOT_DIR<<" doesn't exist" << endl;
 
     /*** ROS subscribe initialization ***/
     if (p_pre->lidar_type == AVIA) {
@@ -1305,10 +1298,6 @@ int main(int argc, char** argv)
             normvec->resize(feats_down_size);
             feats_down_world->resize(feats_down_size);
 
-            V3D ext_euler = SO3ToEuler(state_point.offset_R_L_I);
-            fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<< " " << state_point.vel.transpose() \
-            <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
-
             if(feature_pub_en) // If you need to see map point, change to "if(1)"
             {
                 PointVector ().swap(ikdtree.PCL_Storage);
@@ -1320,7 +1309,7 @@ int main(int argc, char** argv)
             pointSearchInd_surf.resize(feats_down_size);
             Nearest_Points.resize(feats_down_size);
             int  rematch_num = 0;
-            bool nearest_search_en = true; //
+            bool nearest_search_en = true; 
 
             t2 = omp_get_wtime();
             
@@ -1417,8 +1406,6 @@ int main(int argc, char** argv)
 
         pcd_writer.writeBinary(global_keyframe_path, *keyframe_global_cloud);
     }
-
-    fout_pre.close();
 
     flg_exit = true;
     if (odomhighthread.joinable()) {
