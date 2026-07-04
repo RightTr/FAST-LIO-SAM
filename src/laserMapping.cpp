@@ -33,7 +33,7 @@ double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_ti
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   feat_accum_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
-bool   imu_state_save_en = false, scan_frame_save_en = false;
+bool   imu_state_save_en = false, scan_frame_save_en = false, ikdtree_output_save_en = false;
 
 bool feature_pub_en = false, effect_pub_en = false;
 
@@ -68,10 +68,9 @@ int lidar_type;
 bool use_zupt = false;
 bool prior_update_en = false;
 bool prior_map_ready = false;
-std::string prior_map_path;
+std::string prior_tree_map_path;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
-float prior_map_voxel_size = 0.2f;
 int prior_update_interval = 10;
 double prior_lidar_cov_scale = 5.0;
 int prior_frame_counter = 0;
@@ -114,7 +113,6 @@ PointCloudXYZI::Ptr _featsArray;
 
 pcl::VoxelGrid<PointType> downSizeFilterSurf;
 pcl::VoxelGrid<PointType> downSizeFilterMap;
-pcl::VoxelGrid<PointType> downSizeFilterPriorMap;
 
 KD_TREE_PUBLIC<PointType> ikdtree;
 KD_TREE_PUBLIC<PointType> prior_ikdtree;
@@ -253,84 +251,27 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
     return fill_match_observation(pabcd, pd2, point_body, row_scale, obs_out);
 }
 
-bool loadPriorMap()
+bool loadPriorTreeMap()
 {
     if (!prior_update_en)
         return false;
 
-    std::string path = prior_map_path;
-    if (path.empty())
-        path = map_file_path;
-    if (path.empty())
+    if (prior_tree_map_path.empty())
     {
-        ROS_PRINT_WARN("prior update enabled, but no prior_map_path/map_file_path provided");
+        ROS_PRINT_WARN("prior update enabled, but no prior_tree_map_path provided");
         return false;
     }
 
-    pcl::PointCloud<PointType>::Ptr prior_cloud(new pcl::PointCloud<PointType>());
-    int ret = pcl::io::loadPCDFile<PointType>(path, *prior_cloud);
-    if (ret != 0)
+    if (prior_ikdtree.LoadStaticSnapshot(prior_tree_map_path))
     {
-        pcl::PointCloud<PointTypeIndex>::Ptr prior_cloud_i(new pcl::PointCloud<PointTypeIndex>());
-        ret = pcl::io::loadPCDFile<PointTypeIndex>(path, *prior_cloud_i);
-        if (ret != 0)
-        {
-            ROS_PRINT_ERROR("failed to load prior map: %s", path.c_str());
-            return false;
-        }
-
-        prior_cloud->reserve(prior_cloud_i->size());
-        for (const auto &pt : prior_cloud_i->points)
-        {
-            if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z))
-                continue;
-            PointType converted;
-            converted.x = pt.x;
-            converted.y = pt.y;
-            converted.z = pt.z;
-            converted.intensity = pt.intensity;
-            converted.normal_x = 0.0f;
-            converted.normal_y = 0.0f;
-            converted.normal_z = 0.0f;
-            converted.curvature = 0.0f;
-            prior_cloud->push_back(converted);
-        }
-    }
-    else
-    {
-        pcl::PointCloud<PointType>::Ptr cleaned(new pcl::PointCloud<PointType>());
-        cleaned->reserve(prior_cloud->size());
-        for (const auto &pt : prior_cloud->points)
-        {
-            if (!isFinitePoint(pt))
-                continue;
-            cleaned->push_back(pt);
-        }
-        prior_cloud.swap(cleaned);
+        prior_map_ready = prior_ikdtree.Root_Node != nullptr;
+        ROS_PRINT_INFO("loaded prior ikdtree snapshot: %s, nodes=%d",
+                       prior_tree_map_path.c_str(), prior_ikdtree.validnum());
+        return prior_map_ready;
     }
 
-    if (flip_en)
-        standardize(*prior_cloud);
-
-    pcl::PointCloud<PointType>::Ptr prior_cloud_ds(new pcl::PointCloud<PointType>());
-
-    downSizeFilterPriorMap.setLeafSize(prior_map_voxel_size, prior_map_voxel_size, prior_map_voxel_size);
-    downSizeFilterPriorMap.setInputCloud(prior_cloud);
-    downSizeFilterPriorMap.filter(*prior_cloud_ds);
-
-    KD_TREE_PUBLIC<PointType>::PointVector prior_points;
-    prior_points.reserve(prior_cloud_ds->size());
-    for (const auto &pt : prior_cloud_ds->points)
-    {
-        if (!isFinitePoint(pt))
-            continue;
-        prior_points.push_back(pt);
-    }
-
-    prior_ikdtree.Build(prior_points);
-    prior_map_ready = prior_ikdtree.Root_Node != nullptr;
-    ROS_PRINT_INFO("loaded prior map: %s, raw=%zu, ds=%zu", path.c_str(), prior_cloud->size(), prior_points.size());
-    return prior_map_ready;
+    ROS_PRINT_ERROR("failed to load prior ikdtree snapshot: %s", prior_tree_map_path.c_str());
+    return false;
 }
 
 void save_scan_frame(const string& scan_frames_dir)
@@ -371,6 +312,26 @@ void save_scan_frame(const string& scan_frames_dir)
               << q_lid.coeffs()[2] << " " << q_lid.coeffs()[3] << "\n";
 
     scan_frame_idx++;
+}
+
+void save_ikdtree_cloud(const string& ikdtree_cloud_path)
+{
+    if (ikdtree.Root_Node == nullptr)
+        return;
+
+    PointVector tree_points;
+    ikdtree.flatten(ikdtree.Root_Node, tree_points, NOT_RECORD);
+    if (tree_points.empty())
+        return;
+
+    PointCloudXYZI tree_cloud;
+    tree_cloud.points = tree_points;
+    tree_cloud.width = tree_cloud.points.size();
+    tree_cloud.height = 1;
+    tree_cloud.is_dense = true;
+
+    pcl::PCDWriter pcd_writer;
+    pcd_writer.writeBinary(ikdtree_cloud_path, tree_cloud);
 }
 
 void SigHandle(int sig)
@@ -1267,8 +1228,7 @@ int main(int argc, char** argv)
     rosparam_get("common/flip_en", flip_en, false);
     rosparam_get("common/grav_align", grav_align, false);
     rosparam_get("prior_update_en", prior_update_en, false);
-    rosparam_get("prior_map_path", prior_map_path, std::string(""));
-    rosparam_get("prior_map_voxel_size", prior_map_voxel_size, 0.2f);
+    rosparam_get("prior_tree_map_path", prior_tree_map_path, std::string(""));
     rosparam_get("prior_update_interval", prior_update_interval, 2);
     rosparam_get("prior_lidar_cov_scale", prior_lidar_cov_scale, 5.0);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
@@ -1290,6 +1250,7 @@ int main(int argc, char** argv)
     rosparam_get("feature_extract_enable", p_pre->feature_enabled, false);
     rosparam_get("result_save/imu_state_save_en", imu_state_save_en, false);
     rosparam_get("result_save/scan_frame_save_en", scan_frame_save_en, false);
+    rosparam_get("result_save/ikdtree_output_save_en", ikdtree_output_save_en, false);
     rosparam_get("mapping/extrinsic_est_en", extrinsic_est_en, true);
     rosparam_get("result_save/feat_accum_save_en", feat_accum_save_en, false);
     rosparam_get("result_save/interval", res_save_interval, -1);
@@ -1353,7 +1314,7 @@ int main(int argc, char** argv)
 
     if (prior_update_en)
     {
-        if (!loadPriorMap())
+        if (!loadPriorTreeMap())
         {
             ROS_PRINT_WARN("disable prior map localization because loading failed");
             prior_update_en = false;
@@ -1361,9 +1322,11 @@ int main(int argc, char** argv)
     }
 
     /*** debug record ***/
-    const string scan_frames_dir = root_dir + "/SCAN_FRAMES/";
-    const string imu_states_dir = root_dir + "/IMU_STATES/";
-    const string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
+    const string result_dir = string(ROOT_DIR) + "RESULTS/";
+    const string scan_frames_dir = result_dir + "/SCAN_FRAMES/";
+    const string imu_states_dir = result_dir + "/IMU_STATES/";
+    const string keyframe_frames_dir = result_dir + "/KEY_FRAMES/";
+    const string ikdtree_output_dir = result_dir + "/TREE_CLOUDS/";
     
     if (scan_frame_save_en)
     {
@@ -1403,6 +1366,15 @@ int main(int argc, char** argv)
                              "ba_x[m/s^2] ba_y[m/s^2] ba_z[m/s^2] "
                              "grav_x[m/s^2] grav_y[m/s^2] grav_z[m/s^2] "
                              "ext_qx ext_qy ext_qz ext_qw ext_tx[m] ext_ty[m] ext_tz[m]\n";
+        }
+    }
+
+    if (ikdtree_output_save_en)
+    {
+        if (!create_directory(ikdtree_output_dir))
+        {
+            ROS_PRINT_ERROR("Failed to create ikdtree cloud save directory, disable ikdtree_output_save_en");
+            ikdtree_output_save_en = false;
         }
     }
 
@@ -1685,6 +1657,16 @@ int main(int argc, char** argv)
     }
     if (globalthread.joinable()) {
         globalthread.join();
+    }
+
+    if (ikdtree_output_save_en && ikdtree.Root_Node != nullptr)
+    {
+        save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");
+        const string ikdtree_snapshot_path = ikdtree_output_dir + "prior_tree.bin";
+        if (ikdtree.SaveStaticSnapshot(ikdtree_snapshot_path))
+            ROS_PRINT_INFO("saved final ikdtree snapshot to %s", ikdtree_snapshot_path.c_str());
+        else
+            ROS_PRINT_WARN("failed to save final ikdtree snapshot to %s", ikdtree_snapshot_path.c_str());
     }
 
     return 0;
