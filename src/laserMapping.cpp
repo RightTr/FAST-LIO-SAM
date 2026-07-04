@@ -89,7 +89,9 @@ double lidar_residual_ref      = 0.05;
 
 vector<vector<int>>  pointSearchInd_surf; 
 vector<BoxPointType> cub_needrm;
-vector<PointVector>  Nearest_Points; 
+vector<PointVector>  Nearest_Points;
+vector<PointVector>  Prior_Nearest_Points;
+vector<uint8_t>      prior_point_selected;
 vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
 deque<double>                     time_buffer;
@@ -152,12 +154,26 @@ struct MatchObservation
     double row_scale = 1.0;
 };
 
-bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
-                                    const PointType &point_body,
-                                    const PointType &point_world,
-                                    double row_scale,
-                                    PointVector *points_near_out,
-                                    MatchObservation &obs_out)
+double adapt_lidar_weight()
+{
+    if (!use_zupt)
+        return LASER_POINT_COV;
+
+    // confidence cached by UndistortPcl inside p_imu->Process()
+    const double static_confidence = p_imu->get_static_confidence();
+
+    // Adaptive LiDAR cov: rises with static confidence and previous-frame residual
+    const double lidar_static_scale   = 1.0 + lidar_cov_static_scale * static_confidence;
+    const double lidar_residual_scale = std::max(1.0, res_mean_last / lidar_residual_ref);
+    return std::min(LASER_POINT_COV * lidar_static_scale * lidar_residual_scale, 0.1);
+}
+
+bool fill_plane_observation(KD_TREE_PUBLIC<PointType> &tree,
+                            const PointType &point_world,
+                            PointVector *points_near_out,
+                            vector<float> *point_search_sq_dis_out,
+                            VF(4) &pabcd_out,
+                            double &pd2_out)
 {
     vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
     PointVector points_near;
@@ -165,18 +181,35 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
 
     if (points_near_out != nullptr)
         *points_near_out = points_near;
+    if (point_search_sq_dis_out != nullptr)
+        *point_search_sq_dis_out = pointSearchSqDis;
 
     if (points_near.size() < NUM_MATCH_POINTS)
         return false;
     if (pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5)
         return false;
 
-    VF(4) pabcd;
-    if (!esti_plane(pabcd, points_near, 0.1f))
+    if (!esti_plane(pabcd_out, points_near, 0.1f))
         return false;
 
-    const double pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
-                       pabcd(2) * point_world.z + pabcd(3);
+    pd2_out = pabcd_out(0) * point_world.x + pabcd_out(1) * point_world.y +
+              pabcd_out(2) * point_world.z + pabcd_out(3);
+    return true;
+}
+
+bool fill_match_observation(const VF(4) &pabcd,
+                            double pd2,
+                            const PointType &point_body,
+                            double row_scale,
+                            MatchObservation &obs_out)
+{
+    const double body_range = std::sqrt(point_body.x * point_body.x +
+                                        point_body.y * point_body.y +
+                                        point_body.z * point_body.z);
+    const double surf_quality = 1.0 - 0.9 * std::fabs(pd2) / std::sqrt(std::max(1e-6, body_range));
+    if (surf_quality <= 0.9)
+        return false;
+
     obs_out.body = point_body;
     obs_out.normal.x = pabcd(0);
     obs_out.normal.y = pabcd(1);
@@ -185,6 +218,39 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
     obs_out.residual = std::fabs(pd2);
     obs_out.row_scale = row_scale;
     return true;
+}
+
+bool build_point_observation_from_neighbors(const PointVector &points_near,
+                                            const PointType &point_body,
+                                            const PointType &point_world,
+                                            double row_scale,
+                                            MatchObservation &obs_out)
+{
+    if (points_near.size() < NUM_MATCH_POINTS)
+        return false;
+
+    VF(4) pabcd;
+    if (!esti_plane(pabcd, points_near, 0.1f))
+        return false;
+
+    const double pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
+                       pabcd(2) * point_world.z + pabcd(3);
+    return fill_match_observation(pabcd, pd2, point_body, row_scale, obs_out);
+}
+
+bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
+                             const PointType &point_body,
+                             const PointType &point_world,
+                             double row_scale,
+                             PointVector *points_near_out,
+                             MatchObservation &obs_out)
+{
+    VF(4) pabcd;
+    double pd2 = 0.0;
+    if (!fill_plane_observation(tree, point_world, points_near_out, nullptr, pabcd, pd2))
+        return false;
+
+    return fill_match_observation(pabcd, pd2, point_body, row_scale, obs_out);
 }
 
 bool loadPriorMap()
@@ -997,6 +1063,11 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
     const bool use_prior_this_update = prior_query_this_scan && prior_map_ready;
     const double prior_row_scale_base = 1.0 / std::sqrt(std::max(1.0, prior_lidar_cov_scale));
+    if (use_prior_this_update)
+    {
+        Prior_Nearest_Points.resize(feats_down_size);
+        prior_point_selected.resize(feats_down_size, 0);
+    }
 
     std::vector<MatchObservation> online_candidates(feats_down_size);
     std::vector<MatchObservation> prior_candidates(feats_down_size);
@@ -1009,8 +1080,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 #endif
     for (int i = 0; i < feats_down_size; i++)
     {
-        const PointType &point_body = feats_down_body->points[i];
-        PointType point_world;
+        PointType &point_body = feats_down_body->points[i];
+        PointType &point_world = feats_down_world->points[i];
 
         /* transform to world frame */
         V3D p_body(point_body.x, point_body.y, point_body.z);
@@ -1020,29 +1091,76 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         point_world.z = p_global(2);
         point_world.intensity = point_body.intensity;
 
-        Nearest_Points[i].clear();
-
-        if (!ekfom_data.converge)
-            continue;
-
-        if (build_point_observation(ikdtree, point_body, point_world, 1.0, &Nearest_Points[i], online_candidates[i]))
-            online_valid[i] = 1;
-
-        if (use_prior_this_update &&
-            build_point_observation(prior_ikdtree, point_body, point_world, prior_row_scale_base, nullptr, prior_candidates[i]))
+        if (ekfom_data.converge)
         {
-            prior_valid[i] = 1;
+            if (build_point_observation(ikdtree, point_body, point_world, 1.0, &Nearest_Points[i], online_candidates[i]))
+            {
+                online_valid[i] = 1;
+                point_selected_surf[i] = true;
+                normvec->points[i] = online_candidates[i].normal;
+                res_last[i] = online_candidates[i].residual;
+            }
+            else
+            {
+                point_selected_surf[i] = false;
+            }
+        }
+        else if (point_selected_surf[i])
+        {
+            if (build_point_observation_from_neighbors(Nearest_Points[i], point_body, point_world, 1.0, online_candidates[i]))
+            {
+                online_valid[i] = 1;
+                normvec->points[i] = online_candidates[i].normal;
+                res_last[i] = online_candidates[i].residual;
+            }
+            else
+            {
+                point_selected_surf[i] = false;
+            }
+        }
+
+        if (use_prior_this_update)
+        {
+            if (ekfom_data.converge)
+            {
+                if (build_point_observation(prior_ikdtree, point_body, point_world, prior_row_scale_base,
+                                            &Prior_Nearest_Points[i], prior_candidates[i]))
+                {
+                    prior_valid[i] = 1;
+                    prior_point_selected[i] = 1;
+                }
+                else
+                {
+                    prior_point_selected[i] = 0;
+                }
+            }
+            else if (i < static_cast<int>(prior_point_selected.size()) && prior_point_selected[i])
+            {
+                if (build_point_observation_from_neighbors(Prior_Nearest_Points[i], point_body, point_world,
+                                                           prior_row_scale_base, prior_candidates[i]))
+                {
+                    prior_valid[i] = 1;
+                }
+                else
+                {
+                    prior_point_selected[i] = 0;
+                }
+            }
         }
     }
 
     std::vector<MatchObservation> matches;
     matches.reserve(feats_down_size * 2);
+    double online_residual_sum = 0.0;
+    int online_feat_num = 0;
 
     for (int i = 0; i < feats_down_size; i++)
     {
         if (online_valid[i])
         {
             matches.push_back(online_candidates[i]);
+            online_residual_sum += online_candidates[i].residual;
+            online_feat_num++;
         }
         if (prior_valid[i])
         {
@@ -1071,7 +1189,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         total_residual += matches[i].residual;
     }
 
-    res_mean_last = total_residual / effct_feat_num;
+    if (online_feat_num > 0)
+        res_mean_last = online_residual_sum / online_feat_num;
     match_time  += omp_get_wtime() - match_start;
     double solve_start_  = omp_get_wtime();
     
@@ -1444,14 +1563,7 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            // confidence cached by UndistortPcl inside p_imu->Process()
-            const double static_confidence = use_zupt ? p_imu->get_static_confidence() : 0.0;
-
-            // Adaptive LiDAR cov: rises with static confidence and previous-frame residual
-            const double lidar_static_scale   = 1.0 + lidar_cov_static_scale * static_confidence;
-            const double lidar_residual_scale = std::max(1.0, res_mean_last / lidar_residual_ref);
-            const double adaptive_lidar_cov   = std::min(
-                LASER_POINT_COV * lidar_static_scale * lidar_residual_scale, 0.1);
+            const double adaptive_lidar_cov = adapt_lidar_weight();
             
             feats_down_world->resize(feats_down_size);
 
