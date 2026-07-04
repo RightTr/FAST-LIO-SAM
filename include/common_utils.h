@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <cmath>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -16,4 +17,10 @@ inline std::string format_unix_time(double t) {
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(9) << t;
     return oss.str();
+}
+
+template<typename PointT>
+inline bool isFinitePoint(const PointT &pt)
+{
+    return std::isfinite(pt.x) && std::isfinite(pt.y) && std::isfinite(pt.z);
 }

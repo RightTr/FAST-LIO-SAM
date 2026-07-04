@@ -66,8 +66,16 @@ bool sam_enable = false;
 bool grav_align = false;
 int lidar_type;
 bool use_zupt = false;
+bool prior_update_en = false;
+bool prior_map_ready = false;
+std::string prior_map_path;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
+float prior_map_voxel_size = 0.2f;
+int prior_update_interval = 10;
+double prior_lidar_cov_scale = 5.0;
+int prior_frame_counter = 0;
+bool prior_query_this_scan = false;
 // Adaptive ZUPT params
 double zupt_r_min              = 1e-5;
 double zupt_r_max              = 1.0;
@@ -104,8 +112,10 @@ PointCloudXYZI::Ptr _featsArray;
 
 pcl::VoxelGrid<PointType> downSizeFilterSurf;
 pcl::VoxelGrid<PointType> downSizeFilterMap;
+pcl::VoxelGrid<PointType> downSizeFilterPriorMap;
 
 KD_TREE_PUBLIC<PointType> ikdtree;
+KD_TREE_PUBLIC<PointType> prior_ikdtree;
 
 V3F XAxisPoint_body(LIDAR_SP_LEN, 0.0, 0.0);
 V3F XAxisPoint_world(LIDAR_SP_LEN, 0.0, 0.0);
@@ -133,6 +143,129 @@ pcl::PointCloud<PointTypeIndex>::Ptr keyframe_global_cloud(new pcl::PointCloud<P
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
+
+struct MatchObservation
+{
+    PointType body;
+    PointType normal;
+    double residual = 0.0;
+    double row_scale = 1.0;
+};
+
+bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
+                                    const PointType &point_body,
+                                    const PointType &point_world,
+                                    double row_scale,
+                                    PointVector *points_near_out,
+                                    MatchObservation &obs_out)
+{
+    vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
+    PointVector points_near;
+    tree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
+
+    if (points_near_out != nullptr)
+        *points_near_out = points_near;
+
+    if (points_near.size() < NUM_MATCH_POINTS)
+        return false;
+    if (pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5)
+        return false;
+
+    VF(4) pabcd;
+    if (!esti_plane(pabcd, points_near, 0.1f))
+        return false;
+
+    const double pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
+                       pabcd(2) * point_world.z + pabcd(3);
+    obs_out.body = point_body;
+    obs_out.normal.x = pabcd(0);
+    obs_out.normal.y = pabcd(1);
+    obs_out.normal.z = pabcd(2);
+    obs_out.normal.intensity = pd2;
+    obs_out.residual = std::fabs(pd2);
+    obs_out.row_scale = row_scale;
+    return true;
+}
+
+bool loadPriorMap()
+{
+    if (!prior_update_en)
+        return false;
+
+    std::string path = prior_map_path;
+    if (path.empty())
+        path = map_file_path;
+    if (path.empty())
+    {
+        ROS_PRINT_WARN("prior update enabled, but no prior_map_path/map_file_path provided");
+        return false;
+    }
+
+    pcl::PointCloud<PointType>::Ptr prior_cloud(new pcl::PointCloud<PointType>());
+    int ret = pcl::io::loadPCDFile<PointType>(path, *prior_cloud);
+    if (ret != 0)
+    {
+        pcl::PointCloud<PointTypeIndex>::Ptr prior_cloud_i(new pcl::PointCloud<PointTypeIndex>());
+        ret = pcl::io::loadPCDFile<PointTypeIndex>(path, *prior_cloud_i);
+        if (ret != 0)
+        {
+            ROS_PRINT_ERROR("failed to load prior map: %s", path.c_str());
+            return false;
+        }
+
+        prior_cloud->reserve(prior_cloud_i->size());
+        for (const auto &pt : prior_cloud_i->points)
+        {
+            if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z))
+                continue;
+            PointType converted;
+            converted.x = pt.x;
+            converted.y = pt.y;
+            converted.z = pt.z;
+            converted.intensity = pt.intensity;
+            converted.normal_x = 0.0f;
+            converted.normal_y = 0.0f;
+            converted.normal_z = 0.0f;
+            converted.curvature = 0.0f;
+            prior_cloud->push_back(converted);
+        }
+    }
+    else
+    {
+        pcl::PointCloud<PointType>::Ptr cleaned(new pcl::PointCloud<PointType>());
+        cleaned->reserve(prior_cloud->size());
+        for (const auto &pt : prior_cloud->points)
+        {
+            if (!isFinitePoint(pt))
+                continue;
+            cleaned->push_back(pt);
+        }
+        prior_cloud.swap(cleaned);
+    }
+
+    if (flip_en)
+        standardize(*prior_cloud);
+
+    pcl::PointCloud<PointType>::Ptr prior_cloud_ds(new pcl::PointCloud<PointType>());
+
+    downSizeFilterPriorMap.setLeafSize(prior_map_voxel_size, prior_map_voxel_size, prior_map_voxel_size);
+    downSizeFilterPriorMap.setInputCloud(prior_cloud);
+    downSizeFilterPriorMap.filter(*prior_cloud_ds);
+
+    KD_TREE_PUBLIC<PointType>::PointVector prior_points;
+    prior_points.reserve(prior_cloud_ds->size());
+    for (const auto &pt : prior_cloud_ds->points)
+    {
+        if (!isFinitePoint(pt))
+            continue;
+        prior_points.push_back(pt);
+    }
+
+    prior_ikdtree.Build(prior_points);
+    prior_map_ready = prior_ikdtree.Root_Node != nullptr;
+    ROS_PRINT_INFO("loaded prior map: %s, raw=%zu, ds=%zu", path.c_str(), prior_cloud->size(), prior_points.size());
+    return prior_map_ready;
+}
 
 void save_scan_frame(const string& scan_frames_dir)
 {
@@ -856,15 +989,28 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     corr_normvect->clear(); 
     total_residual = 0.0; 
 
-    /** closest surface search and residual computation **/
-    #ifdef MP_EN
-        omp_set_num_threads(MP_PROC_NUM);
-        #pragma omp parallel for
-    #endif
+    if (feats_down_size < 1)
+    {
+        ekfom_data.valid = false;
+        return;
+    }
+
+    const bool use_prior_this_update = prior_query_this_scan && prior_map_ready;
+    const double prior_row_scale_base = 1.0 / std::sqrt(std::max(1.0, prior_lidar_cov_scale));
+
+    std::vector<MatchObservation> online_candidates(feats_down_size);
+    std::vector<MatchObservation> prior_candidates(feats_down_size);
+    std::vector<uint8_t> online_valid(feats_down_size, 0);
+    std::vector<uint8_t> prior_valid(feats_down_size, 0);
+
+#ifdef MP_EN
+    omp_set_num_threads(MP_PROC_NUM);
+    #pragma omp parallel for
+#endif
     for (int i = 0; i < feats_down_size; i++)
     {
-        PointType &point_body  = feats_down_body->points[i]; 
-        PointType &point_world = feats_down_world->points[i]; 
+        const PointType &point_body = feats_down_body->points[i];
+        PointType point_world;
 
         /* transform to world frame */
         V3D p_body(point_body.x, point_body.y, point_body.z);
@@ -874,58 +1020,57 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         point_world.z = p_global(2);
         point_world.intensity = point_body.intensity;
 
-        vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
+        Nearest_Points[i].clear();
 
-        auto &points_near = Nearest_Points[i];
+        if (!ekfom_data.converge)
+            continue;
 
-        if (ekfom_data.converge)
+        if (build_point_observation(ikdtree, point_body, point_world, 1.0, &Nearest_Points[i], online_candidates[i]))
+            online_valid[i] = 1;
+
+        if (use_prior_this_update &&
+            build_point_observation(prior_ikdtree, point_body, point_world, prior_row_scale_base, nullptr, prior_candidates[i]))
         {
-            /** Find the closest surfaces in the map **/
-            ikdtree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
-            point_selected_surf[i] = points_near.size() < NUM_MATCH_POINTS ? false : pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5 ? false : true;
-        }
-
-        if (!point_selected_surf[i]) continue;
-
-        VF(4) pabcd;
-        point_selected_surf[i] = false;
-        if (esti_plane(pabcd, points_near, 0.1f))
-        {
-            float pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y + pabcd(2) * point_world.z + pabcd(3);
-            float s = 1 - 0.9 * fabs(pd2) / sqrt(p_body.norm());
-
-            if (s > 0.9)
-            {
-                point_selected_surf[i] = true;
-                normvec->points[i].x = pabcd(0);
-                normvec->points[i].y = pabcd(1);
-                normvec->points[i].z = pabcd(2);
-                normvec->points[i].intensity = pd2;
-                res_last[i] = abs(pd2);
-            }
+            prior_valid[i] = 1;
         }
     }
-    
-    effct_feat_num = 0;
+
+    std::vector<MatchObservation> matches;
+    matches.reserve(feats_down_size * 2);
 
     for (int i = 0; i < feats_down_size; i++)
     {
-        if (point_selected_surf[i])
+        if (online_valid[i])
         {
-            laserCloudOri->points[effct_feat_num] = feats_down_body->points[i];
-            corr_normvect->points[effct_feat_num] = normvec->points[i];
-            total_residual += res_last[i];
-            effct_feat_num ++;
+            matches.push_back(online_candidates[i]);
+        }
+        if (prior_valid[i])
+        {
+            matches.push_back(prior_candidates[i]);
         }
     }
 
+    effct_feat_num = matches.size();
     if (effct_feat_num < 1)
     {
         ekfom_data.valid = false;
         return;
     }
 
-    // compute the residual mean
+    laserCloudOri->points.resize(effct_feat_num);
+    corr_normvect->points.resize(effct_feat_num);
+    laserCloudOri->width = effct_feat_num;
+    laserCloudOri->height = 1;
+    corr_normvect->width = effct_feat_num;
+    corr_normvect->height = 1;
+
+    for (int i = 0; i < effct_feat_num; i++)
+    {
+        laserCloudOri->points[i] = matches[i].body;
+        corr_normvect->points[i] = matches[i].normal;
+        total_residual += matches[i].residual;
+    }
+
     res_mean_last = total_residual / effct_feat_num;
     match_time  += omp_get_wtime() - match_start;
     double solve_start_  = omp_get_wtime();
@@ -951,18 +1096,21 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         /*** calculate the Measuremnt Jacobian matrix H ***/
         V3D C(s.rot.conjugate() *norm_vec);
         V3D A(point_crossmat * C);
+        const double row_scale = matches[i].row_scale;
         if (extrinsic_est_en)
         {
             V3D B(point_be_crossmat * s.offset_R_L_I.conjugate() * C); //s.rot.conjugate()*norm_vec);
-            ekfom_data.h_x.block<1, 12>(i,0) << norm_p.x, norm_p.y, norm_p.z, VEC_FROM_ARRAY(A), VEC_FROM_ARRAY(B), VEC_FROM_ARRAY(C);
+            ekfom_data.h_x.block<1, 12>(i,0) << row_scale * norm_p.x, row_scale * norm_p.y, row_scale * norm_p.z,
+                                                row_scale * VEC_FROM_ARRAY(A), row_scale * VEC_FROM_ARRAY(B), row_scale * VEC_FROM_ARRAY(C);
         }
         else
         {
-            ekfom_data.h_x.block<1, 12>(i,0) << norm_p.x, norm_p.y, norm_p.z, VEC_FROM_ARRAY(A), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+            ekfom_data.h_x.block<1, 12>(i,0) << row_scale * norm_p.x, row_scale * norm_p.y, row_scale * norm_p.z,
+                                                row_scale * VEC_FROM_ARRAY(A), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
         }
 
         /*** Measuremnt: distance to the closest surface/corner ***/
-        ekfom_data.h(i) = -norm_p.intensity;
+        ekfom_data.h(i) = -row_scale * norm_p.intensity;
     }
     solve_time += omp_get_wtime() - solve_start_;
 }
@@ -999,6 +1147,11 @@ int main(int argc, char** argv)
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
     rosparam_get("common/flip_en", flip_en, false);
     rosparam_get("common/grav_align", grav_align, false);
+    rosparam_get("prior_update_en", prior_update_en, false);
+    rosparam_get("prior_map_path", prior_map_path, std::string(""));
+    rosparam_get("prior_map_voxel_size", prior_map_voxel_size, 0.2f);
+    rosparam_get("prior_update_interval", prior_update_interval, 2);
+    rosparam_get("prior_lidar_cov_scale", prior_lidar_cov_scale, 5.0);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
     rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
     rosparam_get("filter_size_map", filter_size_map_min, 0.5);
@@ -1054,12 +1207,8 @@ int main(int argc, char** argv)
 
     _featsArray.reset(new PointCloudXYZI());
 
-    memset(point_selected_surf, true, sizeof(point_selected_surf));
-    memset(res_last, -1000.0f, sizeof(res_last));
     downSizeFilterSurf.setLeafSize(filter_size_surf_min, filter_size_surf_min, filter_size_surf_min);
     downSizeFilterMap.setLeafSize(filter_size_map_min, filter_size_map_min, filter_size_map_min);
-    memset(point_selected_surf, true, sizeof(point_selected_surf));
-    memset(res_last, -1000.0f, sizeof(res_last));
 
     // extrinT/extrinR must stay in the sensor's native Airy/DIFOP IMU convention.
     // When flip_en is enabled, IMU measurements, local point clouds, and these
@@ -1082,6 +1231,15 @@ int main(int argc, char** argv)
     double epsi[23] = {0.001};
     fill(epsi, epsi+23, 0.001);
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
+
+    if (prior_update_en)
+    {
+        if (!loadPriorMap())
+        {
+            ROS_PRINT_WARN("disable prior map localization because loading failed");
+            prior_update_en = false;
+        }
+    }
 
     /*** debug record ***/
     const string scan_frames_dir = root_dir + "/SCAN_FRAMES/";
@@ -1295,7 +1453,6 @@ int main(int argc, char** argv)
             const double adaptive_lidar_cov   = std::min(
                 LASER_POINT_COV * lidar_static_scale * lidar_residual_scale, 0.1);
             
-            normvec->resize(feats_down_size);
             feats_down_world->resize(feats_down_size);
 
             if(feature_pub_en) // If you need to see map point, change to "if(1)"
@@ -1306,14 +1463,14 @@ int main(int argc, char** argv)
                 featsFromMap->points = ikdtree.PCL_Storage;
             }
 
-            pointSearchInd_surf.resize(feats_down_size);
             Nearest_Points.resize(feats_down_size);
-            int  rematch_num = 0;
-            bool nearest_search_en = true; 
 
             t2 = omp_get_wtime();
             
             /*** iterated state estimation ***/
+            prior_query_this_scan = flg_EKF_inited && prior_update_en && prior_map_ready &&
+                                    prior_update_interval > 0 &&
+                                    (++prior_frame_counter % prior_update_interval == 0);
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
             kf.update_iterated_dyn_share_modified(adaptive_lidar_cov, solve_H_time);
@@ -1326,7 +1483,7 @@ int main(int argc, char** argv)
             geoQuat.w = state_point.rot.coeffs()[3];
 
             double t_update_end = omp_get_wtime();
-            
+
             if (sam_enable) {
                 const Eigen::Matrix3d R_odom_map_prev = R_map_odom.transpose();
                 const Eigen::Matrix3d R_odom_base_before_sam = R_odom_map_prev * state_point.rot.toRotationMatrix();
