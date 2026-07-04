@@ -103,6 +103,7 @@ Pose reloc_state;
 std::atomic<bool> relocalize_flag(false);
 
 PointCloudXYZI::Ptr featsFromMap(new PointCloudXYZI());
+PointCloudXYZI::Ptr featsFromPriorMap(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_body(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_world(new PointCloudXYZI());
@@ -265,6 +266,10 @@ bool loadPriorTreeMap()
     if (prior_ikdtree.LoadStaticSnapshot(prior_tree_map_path))
     {
         prior_map_ready = prior_ikdtree.Root_Node != nullptr;
+        PointVector().swap(prior_ikdtree.PCL_Storage);
+        prior_ikdtree.flatten(prior_ikdtree.Root_Node, prior_ikdtree.PCL_Storage, NOT_RECORD);
+        featsFromPriorMap->clear();
+        featsFromPriorMap->points = prior_ikdtree.PCL_Storage;
         ROS_PRINT_INFO("loaded prior ikdtree snapshot: %s, nodes=%d",
                        prior_tree_map_path.c_str(), prior_ikdtree.validnum());
         return prior_map_ready;
@@ -870,6 +875,18 @@ void publish_map(const Pcl2Publisher & pubLaserCloudMap)
     ros_publish(pubLaserCloudMap, laserCloudMap);
 }
 
+void publish_prior_map(const Pcl2Publisher & pubLaserCloudPriorMap)
+{
+    if (featsFromPriorMap->empty())
+        return;
+
+    Pcl2Msg laserCloudPriorMap;
+    pcl::toROSMsg(*featsFromPriorMap, laserCloudPriorMap);
+    laserCloudPriorMap.header.stamp = get_ros_time(lidar_end_time);
+    laserCloudPriorMap.header.frame_id = map_frame;
+    ros_publish(pubLaserCloudPriorMap, laserCloudPriorMap);
+}
+
 void publish_odometryhighfreq(PoseBuffer& pbuffer,
                               const OdomPublisher& pubOdomHighFreqLocal,
                               const OdomPublisher& pubOdomHighFreqGlobal)
@@ -1227,10 +1244,10 @@ int main(int argc, char** argv)
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
     rosparam_get("common/flip_en", flip_en, false);
     rosparam_get("common/grav_align", grav_align, false);
-    rosparam_get("prior_update_en", prior_update_en, false);
-    rosparam_get("prior_tree_map_path", prior_tree_map_path, std::string(""));
-    rosparam_get("prior_update_interval", prior_update_interval, 2);
-    rosparam_get("prior_lidar_cov_scale", prior_lidar_cov_scale, 5.0);
+    rosparam_get("prior_map/prior_update_en", prior_update_en, false);
+    rosparam_get("prior_map/prior_tree_map_path", prior_tree_map_path, std::string(""));
+    rosparam_get("prior_map/prior_update_interval", prior_update_interval, 2);
+    rosparam_get("prior_map/prior_lidar_cov_scale", prior_lidar_cov_scale, 5.0);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
     rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
     rosparam_get("filter_size_map", filter_size_map_min, 0.5);
@@ -1407,6 +1424,7 @@ int main(int argc, char** argv)
     auto pubLaserCloudFull_body = create_publisher<PointCloud2Msg>("/cloud_registered_body", 100000);
     auto pubLaserCloudEffect = create_publisher<PointCloud2Msg>("/cloud_effected", 100000);
     auto pubLaserCloudMap = create_publisher<PointCloud2Msg>("/Laser_map", 100000);
+    auto pubLaserCloudPriorMap = create_publisher<PointCloud2Msg>("/Laser_map_prior", 100000);
     #ifdef USE_ROS1
     int odom_qos = 0;  // ROS1 ignores this parameter
     #elif defined(USE_ROS2)
@@ -1603,6 +1621,7 @@ int main(int argc, char** argv)
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             if (effect_pub_en) publish_effect_world(pubLaserCloudEffect);
             if (feature_pub_en) publish_map(pubLaserCloudMap);
+            if (feature_pub_en) publish_prior_map(pubLaserCloudPriorMap);
             /*** Debug variables ***/
         }
 

@@ -12,6 +12,12 @@ common:
 
 prior_tree_map_path: ""         # static prior ikdtree snapshot path
 
+prior_map:
+    prior_update_en: true
+    prior_tree_map_path: "/home/right/fastlio_sam_ws/src/FAST-LIO-SAM/RESULTS/TREE_CLOUDS/prior_tree.bin"      # static prior ikdtree snapshot path for prior update
+    prior_update_interval: 2
+    prior_lidar_cov_scale: 5.0
+
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
     scan_line: 4
