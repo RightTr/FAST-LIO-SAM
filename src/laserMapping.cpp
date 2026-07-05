@@ -775,6 +775,27 @@ void update_state_ikfom()
     kf.change_x(state_updated);
 }
 
+void updatePose()
+{
+    const Eigen::Matrix3d R_odom_map_prev = R_map_odom.transpose();
+    const Eigen::Matrix3d R_odom_base_before = R_odom_map_prev * state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_odom_base_before = R_odom_map_prev * (state_point.pos - t_map_odom);
+
+    update_state_ikfom();
+
+    const Eigen::Matrix3d R_map_base = state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_map_base = state_point.pos;
+    R_map_odom = R_map_base * R_odom_base_before.transpose();
+    t_map_odom = t_map_base - R_map_odom * t_odom_base_before;
+
+    euler_cur = SO3ToEuler(state_point.rot);
+    pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+    geoQuat.x = state_point.rot.coeffs()[0];
+    geoQuat.y = state_point.rot.coeffs()[1];
+    geoQuat.z = state_point.rot.coeffs()[2];
+    geoQuat.w = state_point.rot.coeffs()[3];
+}
+
 void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
 {
     if(scan_pub_en)
@@ -1463,25 +1484,27 @@ int main(int argc, char** argv)
         // relocalization trigger
         if(relocalize_flag.load())
         {
-            feats_down_world->clear();
-            p_imu->Reset();
-            state_ikfom state_point_reloc;
+            Pose reloc_pose;
             {
                 std::lock_guard<std::mutex> lock(mtx_reloc);
-                state_point_reloc.pos = Eigen::Vector3d(reloc_state._x, reloc_state._y, reloc_state._z);
-                state_point_reloc.rot = Eigen::Quaterniond(reloc_state._qw, reloc_state._qx,
-                                            reloc_state._qy, reloc_state._qz);
+                reloc_pose = reloc_state;
             }
-            state_point_reloc.rot.normalize();
-            kf.reset(state_point_reloc);
-            if (use_online_map)
-                ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
+            Eigen::Quaterniond reloc_rot(reloc_pose._qw, reloc_pose._qx, reloc_pose._qy, reloc_pose._qz);
+            reloc_rot.normalize();
+            const Eigen::Vector3d reloc_pos(reloc_pose._x, reloc_pose._y, reloc_pose._z);
+            const Eigen::Vector3d reloc_euler = reloc_rot.toRotationMatrix().eulerAngles(2, 1, 0);
+            transformTobeMapped[0] = reloc_euler(2);
+            transformTobeMapped[1] = reloc_euler(1);
+            transformTobeMapped[2] = reloc_euler(0);
+            transformTobeMapped[3] = reloc_pos(0);
+            transformTobeMapped[4] = reloc_pos(1);
+            transformTobeMapped[5] = reloc_pos(2);
+            updatePose();
 
             ROS_PRINT_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
-                state_point_reloc.pos.x(), state_point_reloc.pos.y(), state_point_reloc.pos.z(),
-                state_point_reloc.rot.x(), state_point_reloc.rot.y(), state_point_reloc.rot.z(), state_point_reloc.rot.w());
+                reloc_pos.x(), reloc_pos.y(), reloc_pos.z(),
+                reloc_rot.x(), reloc_rot.y(), reloc_rot.z(), reloc_rot.w());
             relocalize_flag.store(false);
-            flg_first_scan = true;
             continue;
         }
 
@@ -1583,21 +1606,10 @@ int main(int argc, char** argv)
             double t_update_end = omp_get_wtime();
 
             if (sam_enable) {
-                const Eigen::Matrix3d R_odom_map_prev = R_map_odom.transpose();
-                const Eigen::Matrix3d R_odom_base_before_sam = R_odom_map_prev * state_point.rot.toRotationMatrix();
-                const Eigen::Vector3d t_odom_base_before_sam = R_odom_map_prev * (state_point.pos - t_map_odom);
-
                 getCurrPose(state_point);
                 getCurrOffset(state_point);
                 saveKeyFramesAndFactor(feats_undistort);
-                const Eigen::Matrix3d R_map_base =
-                    (Eigen::AngleAxisd(transformTobeMapped[2], Eigen::Vector3d::UnitZ()) *
-                     Eigen::AngleAxisd(transformTobeMapped[1], Eigen::Vector3d::UnitY()) *
-                     Eigen::AngleAxisd(transformTobeMapped[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
-                const Eigen::Vector3d t_map_base(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]);
-                R_map_odom = R_map_base * R_odom_base_before_sam.transpose();
-                t_map_odom = t_map_base - R_map_odom * t_odom_base_before_sam;
-                update_state_ikfom(); // Update current state_point
+                updatePose();
                 correctPoses();
 
                 publishSamMsg();
