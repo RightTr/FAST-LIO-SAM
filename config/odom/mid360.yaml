@@ -1,6 +1,6 @@
 common:
-    lid_topic:  "/livox/mid360/lidar"
-    imu_topic:  "/livox/mid360/imu"
+    lid_topic:  "/livox/lidar"
+    imu_topic:  "/livox/imu"
     map_frame: "map"
     odom_frame: "odom"
     base_frame: "base_link"

@@ -12,9 +12,12 @@ Panels:
         - /Keyframe1/KeyframeRecent1
         - /Keyframe1/KeyframeGlobal1
         - /OdometryGlobal1
-        - /OdometryGlobal1/Odometry2
+        - /OdometryGlobal1/Odometry1
+        - /OdometryGlobal1/Odometry1/Topic1
+        - /OdometryGlobal1/Odometry2/Topic1
         - /OdometryLocal1
-        - /OdometryLocal1/Odometry2
+        - /OdometryLocal1/Odometry1/Topic1
+        - /OdometryLocal1/Odometry2/Topic1
       Splitter Ratio: 0.5
     Tree Height: 1009
   - Class: rviz_common/Selection
@@ -34,7 +37,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: ""
+    SyncSource: KeyframeXYZ
 Visualization Manager:
   Class: ""
   Displays:
@@ -269,7 +272,7 @@ Visualization Manager:
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
-          Max Intensity: 55
+          Max Intensity: 13
           Min Color: 0; 0; 0
           Min Intensity: 0
           Name: KeyframeXYZ
@@ -325,8 +328,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 11.394532203674316
-            Min Value: -0.7922396063804626
+            Max Value: 6.885067939758301
+            Min Value: -0.43514570593833923
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -424,7 +427,7 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Reliable
+            Reliability Policy: Best Effort
             Value: /OdometryGlobal
           Value: true
         - Angle Tolerance: 0.10000000149011612
@@ -463,7 +466,7 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Reliable
+            Reliability Policy: Best Effort
             Value: /OdometryHighFreqGlobal
           Value: true
       Enabled: true
@@ -506,7 +509,7 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Reliable
+            Reliability Policy: Best Effort
             Value: /Odometry
           Value: true
         - Angle Tolerance: 0.10000000149011612
@@ -545,7 +548,7 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Reliable
+            Reliability Policy: Best Effort
             Value: /OdometryHighFreq
           Value: true
       Enabled: true
@@ -596,25 +599,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 22.074785232543945
+      Distance: 18.431427001953125
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
+        X: 5.45838737487793
+        Y: 0.07051393389701843
+        Z: 0.8081483840942383
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7803986668586731
+      Pitch: 0.6153988242149353
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.998579978942871
+      Yaw: 2.83355712890625
     Saved: ~
 Window Geometry:
   Displays:
