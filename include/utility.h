@@ -49,9 +49,22 @@ extern std::string high_freq_base_frame;
 extern bool flip_en;
 extern const Eigen::Matrix3d IMU_FLIP_R;
 
+enum class MappingMode
+{
+    Online,
+    Prior,
+    OnlinePrior
+};
+
+extern MappingMode mapping_mode;
+extern std::string mapping_mode_name;
+extern bool use_online_map;
+extern bool use_prior_map;
+
 extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();
+void set_mapping_mode(int mode_id);
 
 inline Eigen::Vector3d standardize(const Eigen::Vector3d &v)
 {

@@ -66,15 +66,11 @@ bool sam_enable = false;
 bool grav_align = false;
 int lidar_type;
 bool use_zupt = false;
-bool prior_update_en = false;
-bool prior_map_ready = false;
+int common_mode = 1;
 std::string prior_tree_map_path;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
-int prior_update_interval = 10;
 double prior_lidar_cov_scale = 5.0;
-int prior_frame_counter = 0;
-bool prior_query_this_scan = false;
 // Adaptive ZUPT params
 double zupt_r_min              = 1e-5;
 double zupt_r_max              = 1.0;
@@ -254,18 +250,16 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
 
 bool loadPriorTreeMap()
 {
-    if (!prior_update_en)
-        return false;
 
     if (prior_tree_map_path.empty())
     {
-        ROS_PRINT_WARN("prior update enabled, but no prior_tree_map_path provided");
+        ROS_PRINT_WARN("prior mode enabled, but no prior_tree_map_path provided");
         return false;
     }
 
     if (prior_ikdtree.LoadStaticSnapshot(prior_tree_map_path))
     {
-        prior_map_ready = prior_ikdtree.Root_Node != nullptr;
+        const bool prior_map_ready = prior_ikdtree.Root_Node != nullptr;
         PointVector().swap(prior_ikdtree.PCL_Storage);
         prior_ikdtree.flatten(prior_ikdtree.Root_Node, prior_ikdtree.PCL_Storage, NOT_RECORD);
         featsFromPriorMap->clear();
@@ -641,6 +635,9 @@ bool sync_packages(MeasureGroup &meas)
 int process_increments = 0;
 void map_incremental()
 {
+    if (!use_online_map)
+        return;
+
     PointVector PointToAdd;
     PointVector PointNoNeedDownsample;
     PointToAdd.reserve(feats_down_size);
@@ -1039,7 +1036,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         return;
     }
 
-    const bool use_prior_this_update = prior_query_this_scan && prior_map_ready;
+    const bool use_prior_this_update = use_prior_map;
     const double prior_row_scale_base = 1.0 / std::sqrt(std::max(1.0, prior_lidar_cov_scale));
     if (use_prior_this_update)
     {
@@ -1071,19 +1068,20 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         if (ekfom_data.converge)
         {
-            if (build_point_observation(ikdtree, point_body, point_world, 1.0, &Nearest_Points[i], online_candidates[i]))
+            if (use_online_map &&
+                build_point_observation(ikdtree, point_body, point_world, 1.0, &Nearest_Points[i], online_candidates[i]))
             {
                 online_valid[i] = 1;
                 point_selected_surf[i] = true;
                 normvec->points[i] = online_candidates[i].normal;
                 res_last[i] = online_candidates[i].residual;
             }
-            else
+            else if (use_online_map)
             {
                 point_selected_surf[i] = false;
             }
         }
-        else if (point_selected_surf[i])
+        else if (use_online_map && point_selected_surf[i])
         {
             if (build_point_observation_from_neighbors(Nearest_Points[i], point_body, point_world, 1.0, online_candidates[i]))
             {
@@ -1244,9 +1242,9 @@ int main(int argc, char** argv)
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
     rosparam_get("common/flip_en", flip_en, false);
     rosparam_get("common/grav_align", grav_align, false);
-    rosparam_get("prior_map/prior_update_en", prior_update_en, false);
+    rosparam_get("common/mode", common_mode, 1);
+    set_mapping_mode(common_mode);
     rosparam_get("prior_map/prior_tree_map_path", prior_tree_map_path, std::string(""));
-    rosparam_get("prior_map/prior_update_interval", prior_update_interval, 2);
     rosparam_get("prior_map/prior_lidar_cov_scale", prior_lidar_cov_scale, 5.0);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
     rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
@@ -1329,12 +1327,11 @@ int main(int argc, char** argv)
     fill(epsi, epsi+23, 0.001);
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
-    if (prior_update_en)
+    if (use_prior_map)
     {
         if (!loadPriorTreeMap())
         {
-            ROS_PRINT_WARN("disable prior map localization because loading failed");
-            prior_update_en = false;
+            use_prior_map = false;
         }
     }
 
@@ -1477,7 +1474,8 @@ int main(int argc, char** argv)
             }
             state_point_reloc.rot.normalize();
             kf.reset(state_point_reloc);
-            ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
+            if (use_online_map)
+                ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
 
             ROS_PRINT_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
                 state_point_reloc.pos.x(), state_point_reloc.pos.y(), state_point_reloc.pos.z(),
@@ -1521,15 +1519,16 @@ int main(int argc, char** argv)
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
             /*** Segment the map in lidar FOV ***/
-            lasermap_fov_segment();
+            if (use_online_map)
+                lasermap_fov_segment();
 
             /*** downsample the feature points in a scan ***/
             downSizeFilterSurf.setInputCloud(feats_undistort);
             downSizeFilterSurf.filter(*feats_down_body);
             t1 = omp_get_wtime();
             feats_down_size = feats_down_body->points.size();
-            /*** initialize the map kdtree ***/
-            if(ikdtree.Root_Node == nullptr)
+            /*** initialize the online map kdtree ***/
+            if (use_online_map && ikdtree.Root_Node == nullptr)
             {
                 if(feats_down_size > 5)
                 {
@@ -1541,10 +1540,10 @@ int main(int argc, char** argv)
                     }
                     ikdtree.Build(feats_down_world->points);
                 }
-                continue;
+                if (!use_prior_map)
+                    continue;
             }
-            int featsFromMapNum = ikdtree.validnum();
-            kdtree_size_st = ikdtree.size();
+            kdtree_size_st = use_online_map ? ikdtree.size() : 0;
 
             /*** ICP and iterated Kalman filter update ***/
             if (feats_down_size < 5)
@@ -1557,7 +1556,7 @@ int main(int argc, char** argv)
             
             feats_down_world->resize(feats_down_size);
 
-            if(feature_pub_en) // If you need to see map point, change to "if(1)"
+            if(feature_pub_en && use_online_map) // If you need to see map point, change to "if(1)"
             {
                 PointVector ().swap(ikdtree.PCL_Storage);
                 ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
@@ -1570,9 +1569,6 @@ int main(int argc, char** argv)
             t2 = omp_get_wtime();
             
             /*** iterated state estimation ***/
-            prior_query_this_scan = flg_EKF_inited && prior_update_en && prior_map_ready &&
-                                    prior_update_interval > 0 &&
-                                    (++prior_frame_counter % prior_update_interval == 0);
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
             kf.update_iterated_dyn_share_modified(adaptive_lidar_cov, solve_H_time);
@@ -1620,8 +1616,8 @@ int main(int argc, char** argv)
             if (scan_pub_en || feat_accum_save_en)      publish_frame_world(pubLaserCloudFull);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
             if (effect_pub_en) publish_effect_world(pubLaserCloudEffect);
-            if (feature_pub_en) publish_map(pubLaserCloudMap);
-            if (feature_pub_en) publish_prior_map(pubLaserCloudPriorMap);
+            if (feature_pub_en && use_online_map) publish_map(pubLaserCloudMap);
+            if (feature_pub_en && use_prior_map) publish_prior_map(pubLaserCloudPriorMap);
             /*** Debug variables ***/
         }
 
@@ -1678,7 +1674,7 @@ int main(int argc, char** argv)
         globalthread.join();
     }
 
-    if (ikdtree_output_save_en && ikdtree.Root_Node != nullptr)
+    if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)
     {
         save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");
         const string ikdtree_snapshot_path = ikdtree_output_dir + "prior_tree.bin";

@@ -1,6 +1,5 @@
 #include "utility.h"
 #include "ros_utils.h"
-
 using namespace std;
 
 // CPU Params
@@ -43,6 +42,43 @@ const Eigen::Matrix3d IMU_FLIP_R = (Eigen::Matrix3d() <<
     1.0,  0.0,  0.0,
     0.0, -1.0,  0.0,
     0.0,  0.0, -1.0).finished();
+
+MappingMode mapping_mode = MappingMode::Online;
+std::string mapping_mode_name = "online";
+bool use_online_map = true;
+bool use_prior_map = false;
+
+void set_mapping_mode(int mode_id)
+{
+    switch (mode_id)
+    {
+        case 1:
+            mapping_mode = MappingMode::Online;
+            mapping_mode_name = "online";
+            use_online_map = true;
+            use_prior_map = false;
+            return;
+        case 2:
+            mapping_mode = MappingMode::Prior;
+            mapping_mode_name = "prior";
+            use_online_map = false;
+            use_prior_map = true;
+            return;
+        case 3:
+            mapping_mode = MappingMode::OnlinePrior;
+            mapping_mode_name = "online+prior";
+            use_online_map = true;
+            use_prior_map = true;
+            return;
+        default:
+            ROS_PRINT_WARN("unknown common/mode: %d, fallback to 1(online)", mode_id);
+            mapping_mode = MappingMode::Online;
+            mapping_mode_name = "online";
+            use_online_map = true;
+            use_prior_map = false;
+            return;
+    }
+}
 
 void read_liosam_params() {
 
