@@ -1,19 +1,19 @@
 common:
-    lid_topic:  "/livox/mid360/lidar"
-    imu_topic:  "/livox/mid360/imu"
+    lid_topic:  "/livox/lidar"
+    imu_topic:  "/livox/imu"
     map_frame: "map"
     odom_frame: "odom"
     base_frame: "base_link"
     high_freq_base_frame: "base_hf_link"
-    mode: 3                     # 1: online / 2: prior / 3: online+prior
+    mode: 1                     # 1: online / 2: prior / 3: online+prior
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
     grav_align: true            # Whether to use gravity alignment for initial roll/pitch estimation.
 
 prior_map:
-    prior_tree_map_path: "/home/right/fastlio_sam_ws/src/FAST-LIO-SAM/RESULTS/TREE_CLOUDS/prior_tree.bin"      # static prior ikdtree snapshot path for prior update
-    prior_lidar_cov_scale: 5.0
+    prior_tree_map_path: "/home/right/Documents/RESULTS/TREE_CLOUDS/prior_tree.bin"      # static prior ikdtree snapshot path for prior update
+    prior_lidar_cov_scale: 1.0
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
