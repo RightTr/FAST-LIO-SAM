@@ -70,7 +70,9 @@ int common_mode = 1;
 std::string prior_tree_map_path;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
-double prior_lidar_cov_scale = 5.0;
+double prior_lidar_cov = 0.001;
+bool prior_init_en = false;
+bool prior_init_done = false;
 // Adaptive ZUPT params
 double zupt_r_min              = 1e-5;
 double zupt_r_max              = 1.0;
@@ -796,6 +798,28 @@ void updatePose()
     geoQuat.w = state_point.rot.coeffs()[3];
 }
 
+bool priorInitAlign(double lidar_cov, double &solve_H_time)
+{
+    if (!use_prior_map || !prior_init_en || prior_init_done || prior_ikdtree.Root_Node == nullptr)
+        return false;
+
+    kf.update_iterated_dyn_share_modified(lidar_cov, solve_H_time);
+
+    state_point = kf.get_x();
+    if (effct_feat_num < 1)
+        return false;
+
+    getCurrPose(state_point);
+    getCurrOffset(state_point);
+    updatePose();
+    prior_init_done = true;
+
+    ROS_PRINT_INFO("prior init done: pos=(%.3f %.3f %.3f), quat=(%.3f %.3f %.3f %.3f)",
+                   state_point.pos.x(), state_point.pos.y(), state_point.pos.z(),
+                   state_point.rot.x(), state_point.rot.y(), state_point.rot.z(), state_point.rot.w());
+    return true;
+}
+
 void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
 {
     if(scan_pub_en)
@@ -1058,7 +1082,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     }
 
     const bool use_prior_this_update = use_prior_map;
-    const double prior_row_scale_base = 1.0 / std::sqrt(std::max(1.0, prior_lidar_cov_scale));
+    const double prior_row_scale_base =
+        std::sqrt(LASER_POINT_COV / std::max(prior_lidar_cov, 1e-9));
     if (use_prior_this_update)
     {
         Prior_Nearest_Points.resize(feats_down_size);
@@ -1266,7 +1291,8 @@ int main(int argc, char** argv)
     rosparam_get("common/mode", common_mode, 1);
     set_mapping_mode(common_mode);
     rosparam_get("prior_map/prior_tree_map_path", prior_tree_map_path, std::string(""));
-    rosparam_get("prior_map/prior_lidar_cov_scale", prior_lidar_cov_scale, 5.0);
+    rosparam_get("prior_map/prior_init", prior_init_en, false);
+    rosparam_get("prior_map/prior_lidar_cov", prior_lidar_cov, 0.001);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
     rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
     rosparam_get("filter_size_map", filter_size_map_min, 0.5);
@@ -1353,6 +1379,7 @@ int main(int argc, char** argv)
         if (!loadPriorTreeMap())
         {
             use_prior_map = false;
+            prior_init_en = false;
         }
     }
 
@@ -1594,14 +1621,25 @@ int main(int argc, char** argv)
             /*** iterated state estimation ***/
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
-            kf.update_iterated_dyn_share_modified(adaptive_lidar_cov, solve_H_time);
-            state_point = kf.get_x();
-            euler_cur = SO3ToEuler(state_point.rot);
-            pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-            geoQuat.x = state_point.rot.coeffs()[0];
-            geoQuat.y = state_point.rot.coeffs()[1];
-            geoQuat.z = state_point.rot.coeffs()[2];
-            geoQuat.w = state_point.rot.coeffs()[3];
+            if (use_prior_map && prior_init_en && !prior_init_done)
+            {
+                if (!priorInitAlign(prior_lidar_cov, solve_H_time))
+                {
+                    ROS_PRINT_WARN("prior init alignment failed, retry on next scan");
+                    continue;
+                }
+            }
+            else
+            {
+                kf.update_iterated_dyn_share_modified(adaptive_lidar_cov, solve_H_time);
+                state_point = kf.get_x();
+                euler_cur = SO3ToEuler(state_point.rot);
+                pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+                geoQuat.x = state_point.rot.coeffs()[0];
+                geoQuat.y = state_point.rot.coeffs()[1];
+                geoQuat.z = state_point.rot.coeffs()[2];
+                geoQuat.w = state_point.rot.coeffs()[3];
+            }
 
             double t_update_end = omp_get_wtime();
 

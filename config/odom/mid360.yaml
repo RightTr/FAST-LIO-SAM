@@ -5,7 +5,7 @@ common:
     odom_frame: "odom"
     base_frame: "base_link"
     high_freq_base_frame: "base_hf_link"
-    mode: 1                     # 1: online / 2: prior / 3: online+prior
+    mode: 2                     # 1: online / 2: prior / 3: online+prior
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
@@ -13,7 +13,8 @@ common:
 
 prior_map:
     prior_tree_map_path: "/home/right/Documents/RESULTS/TREE_CLOUDS/prior_tree.bin"      # static prior ikdtree snapshot path for prior update
-    prior_lidar_cov_scale: 1.0
+    prior_lidar_cov: 0.001      # absolute LiDAR covariance used for prior matching
+    prior_init: true
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 

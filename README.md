@@ -67,7 +67,7 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 ### Relocalization
 
-The modified system supports relocalization using manually set odometry poses. Once odometry poses are published to the */reloc_topic* (according to the following .yaml file), the system will reset the system and the initial pose according to your input.
+The modified system supports relocalization using manually set odometry poses. Once odometry poses are published to the */reloc_topic* (according to the following .yaml file), the system will apply a pose correction and update the current state consistently.
 
 ### Mapping mode
 
@@ -78,6 +78,9 @@ The modified system supports relocalization using manually set odometry poses. O
   - Use only the prior map for constraints.
 - `3`: online+prior
   - Use both the online map and the prior map for constraints.
+
+`prior_map/prior_init` enables one-shot startup alignment in `prior` mode.
+It uses the prior map to refine the initial pose before normal tracking starts.
 
 ### Keyframe export
 
