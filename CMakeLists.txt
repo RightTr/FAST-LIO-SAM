@@ -105,6 +105,10 @@ if(USE_ROS1)
     src/utility.cpp src/mapOptimization.cpp)
   target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} gtsam)
   target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
+
+  add_executable(pcd_to_ikdtree_bin include/ikd-Tree/pcd_to_ikdtree_bin.cpp include/ikd-Tree/ikd_Tree.cpp)
+  target_link_libraries(pcd_to_ikdtree_bin ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
+  target_include_directories(pcd_to_ikdtree_bin PRIVATE ${PYTHON_INCLUDE_DIRS})
 endif()
 
 if(USE_ROS2)
@@ -146,6 +150,10 @@ if(USE_ROS2)
   target_link_libraries(fastlio_mapping "${cpp_typesupport_target}")
   target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} gtsam)
   target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
+
+  add_executable(pcd_to_ikdtree_bin include/ikd-Tree/pcd_to_ikdtree_bin.cpp include/ikd-Tree/ikd_Tree.cpp)
+  target_link_libraries(pcd_to_ikdtree_bin ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
+  target_include_directories(pcd_to_ikdtree_bin PRIVATE ${PYTHON_INCLUDE_DIRS})
   install(
   DIRECTORY
     launch_ROS2
@@ -159,6 +167,8 @@ if(USE_ROS2)
     DESTINATION share/${PROJECT_NAME}/rviz_cfg
   )
   install(TARGETS fastlio_mapping
+    DESTINATION lib/${PROJECT_NAME})
+  install(TARGETS pcd_to_ikdtree_bin
     DESTINATION lib/${PROJECT_NAME})
   install(DIRECTORY include/ DESTINATION include)
 

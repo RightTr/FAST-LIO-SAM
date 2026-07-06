@@ -1,6 +1,6 @@
 common:
-    lid_topic:  "/livox/mid360/lidar"
-    imu_topic:  "/livox/mid360/imu"
+    lid_topic:  "/livox/lidar"
+    imu_topic:  "/livox/imu"
     map_frame: "map"
     odom_frame: "odom"
     base_frame: "base_link"
@@ -10,7 +10,7 @@ common:
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
 
-    grav_align: true            # Whether to use gravity alignment for initial roll/pitch estimation.
+    grav_align: false            # Whether to use gravity alignment for initial roll/pitch estimation.
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
@@ -34,7 +34,7 @@ mapping:
 lio_sam:
 
     # CPU Params
-    numberOfCores: 4                              # number of cores for mapping optimization
+    numberOfCores: 8                              # number of cores for mapping optimization
 
     # Surrounding map
     surroundingkeyframeAddingDistThreshold: 1.0   # meters, regulate keyframe adding threshold
@@ -61,17 +61,19 @@ lio_sam:
     keyframe_global_pcd_en: true                  # stitch exported keyframes into one global PCD
 
 publish:
-    path_en:  false
+    path_en:  true
     scan_publish_en:  true       # false: close all the point cloud output
     dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
     scan_bodyframe_pub_en: true  # true: output the point cloud scans in IMU-body-frame
+    feature_pub_en: true
 
 result_save:
-    feat_accum_save_en: true     # save accumulated world-frame undistorted feature scans as PCD
+    feat_accum_save_en: false     # save accumulated world-frame undistorted feature scans as PCD
     interval: -1                 # how many LiDAR frames to accumulate before writing one PCD; -1 saves only once at shutdown
-    imu_state_save_en: true       # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
-    scan_frame_save_en: true    # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
+    imu_state_save_en: false       # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
+    scan_frame_save_en: false    # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+    ikdtree_output_save_en: true  # true: save the ikdtree point cloud to ROOT_DIR/TREE_CLOUDS/
 
 zupt:
     use_zupt: true                    # enable adaptive zero velocity update

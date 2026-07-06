@@ -516,7 +516,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
     if (keyframe_export_en)
     {
-        const std::string keyframe_frames_dir = root_dir + "/KEY_FRAMES/";
         const std::string stamp_str = format_unix_time(thisPose6D.time);
         const std::string pcd_path = keyframe_frames_dir + "scans/" + stamp_str + ".pcd";
         pcl::PCDWriter pcd_writer;

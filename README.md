@@ -80,13 +80,15 @@ The modified system supports relocalization using manually set odometry poses. O
   - Use both the online map and the prior map for constraints.
 
 `prior_map/prior_init` enables one-shot startup alignment in `prior` mode.
-It uses the prior map to refine the initial pose before normal tracking starts.
+It uses the prior map to refine the initial pose before tracking starts.
+
+You can generate a prior `ikdtree` snapshot from a PCD file with `pcd_to_ikdtree_bin`.
 
 ### Keyframe export
 
-Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-resolution PCD built from `feats_undistort`, together with its pose, under `KEY_FRAMES/scans/` and `ROOT_DIR/RESULTS/KEY_FRAMES/pose.txt`.
+Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-resolution PCD built from `feats_undistort`, together with its pose, under `ROOT_DIR/RESULTS/KEY_FRAMES/scans/` and `ROOT_DIR/RESULTS/KEY_FRAMES/pose.txt`.
 
-Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyframes into one global PCD at `KEY_FRAMES/global.pcd`.
+Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyframes into one global PCD at `ROOT_DIR/RESULTS/KEY_FRAMES/global.pcd`.
 
 ### Result save
 

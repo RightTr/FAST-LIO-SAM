@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <csignal>
 #include <unistd.h>
+#include <limits>
 #include <Python.h>
 #include <so3_math.h>
 #include <Eigen/Core>
@@ -15,6 +16,8 @@
 #include <pcl/point_types.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/common/transforms.h>
+#include <pcl/registration/icp.h>
 #include "preprocess.h"
 #include "ikd-Tree/ikdtree_public.h"
 #include <atomic>
@@ -66,7 +69,6 @@ bool sam_enable = false;
 bool grav_align = false;
 int lidar_type;
 bool use_zupt = false;
-int common_mode = 1;
 std::string prior_tree_map_path;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
@@ -217,35 +219,34 @@ bool fill_match_observation(const VF(4) &pabcd,
     return true;
 }
 
-bool build_point_observation_from_neighbors(const PointVector &points_near,
-                                            const PointType &point_body,
-                                            const PointType &point_world,
-                                            double row_scale,
-                                            MatchObservation &obs_out)
-{
-    if (points_near.size() < NUM_MATCH_POINTS)
-        return false;
-
-    VF(4) pabcd;
-    if (!esti_plane(pabcd, points_near, 0.1f))
-        return false;
-
-    const double pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
-                       pabcd(2) * point_world.z + pabcd(3);
-    return fill_match_observation(pabcd, pd2, point_body, row_scale, obs_out);
-}
-
-bool build_point_observation(KD_TREE_PUBLIC<PointType> &tree,
+bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
+                             const PointVector *points_near,
                              const PointType &point_body,
                              const PointType &point_world,
                              double row_scale,
+                             bool use_tree_search,
                              PointVector *points_near_out,
                              MatchObservation &obs_out)
 {
     VF(4) pabcd;
     double pd2 = 0.0;
-    if (!fill_plane_observation(tree, point_world, points_near_out, nullptr, pabcd, pd2))
-        return false;
+
+    if (use_tree_search)
+    {
+        if (tree == nullptr)
+            return false;
+        if (!fill_plane_observation(*tree, point_world, points_near_out, nullptr, pabcd, pd2))
+            return false;
+    }
+    else
+    {
+        if (points_near == nullptr || points_near->size() < NUM_MATCH_POINTS)
+            return false;
+        if (!esti_plane(pabcd, *points_near, 0.1f))
+            return false;
+        pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
+              pabcd(2) * point_world.z + pabcd(3);
+    }
 
     return fill_match_observation(pabcd, pd2, point_body, row_scale, obs_out);
 }
@@ -273,6 +274,81 @@ bool loadPriorTreeMap()
 
     ROS_PRINT_ERROR("failed to load prior ikdtree snapshot: %s", prior_tree_map_path.c_str());
     return false;
+}
+
+bool coarsePriorIcpAlign(double &fitness_score)
+{
+    fitness_score = std::numeric_limits<double>::infinity();
+
+    if (!use_prior_map || featsFromPriorMap == nullptr || featsFromPriorMap->empty() ||
+        feats_down_body == nullptr || feats_down_body->size() < 20)
+    {
+        return false;
+    }
+
+    PointCloudXYZI::Ptr prior_map_ds(new PointCloudXYZI());
+    if (featsFromPriorMap->size() > 2000)
+    {
+        pcl::VoxelGrid<PointType> downsample;
+        downsample.setLeafSize(0.8f, 0.8f, 0.8f);
+        downsample.setInputCloud(featsFromPriorMap);
+        downsample.filter(*prior_map_ds);
+    }
+    else
+    {
+        *prior_map_ds = *featsFromPriorMap;
+    }
+
+    if (prior_map_ds->size() < 50)
+    {
+        return false;
+    }
+
+    pcl::IterativeClosestPoint<PointType, PointType> icp;
+    icp.setMaxCorrespondenceDistance(8.0);
+    icp.setMaximumIterations(50);
+    icp.setTransformationEpsilon(1e-6);
+    icp.setEuclideanFitnessEpsilon(1e-6);
+    icp.setRANSACIterations(0);
+    icp.setInputSource(feats_down_body);
+    icp.setInputTarget(prior_map_ds);
+
+    const Eigen::Matrix3d R_map_imu_guess = state_point.rot.toRotationMatrix();
+    const Eigen::Matrix3d R_map_lidar_guess = R_map_imu_guess * state_point.offset_R_L_I.toRotationMatrix();
+    const Eigen::Vector3d t_map_lidar_guess = state_point.pos + R_map_imu_guess * state_point.offset_T_L_I;
+
+    Eigen::Affine3f guess = Eigen::Affine3f::Identity();
+    guess.linear() = R_map_lidar_guess.cast<float>();
+    guess.translation() = t_map_lidar_guess.cast<float>();
+    const Eigen::Matrix4f guess_matrix = guess.matrix();
+
+    PointCloudXYZI aligned;
+    icp.align(aligned, guess_matrix);
+    if (!icp.hasConverged())
+    {
+        return false;
+    }
+
+    fitness_score = icp.getFitnessScore();
+    if (!std::isfinite(fitness_score) || fitness_score > 5.0)
+    {
+        return false;
+    }
+
+    const Eigen::Matrix4f final_tf = icp.getFinalTransformation();
+    const Eigen::Matrix3d R_map_lidar = final_tf.block<3, 3>(0, 0).cast<double>();
+    const Eigen::Vector3d t_map_lidar = final_tf.block<3, 1>(0, 3).cast<double>();
+    const Eigen::Matrix3d R_imu_lidar = state_point.offset_R_L_I.toRotationMatrix();
+    const Eigen::Matrix3d R_map_imu = R_map_lidar * R_imu_lidar.transpose();
+
+    state_ikfom state_updated = kf.get_x();
+    state_updated.rot = Eigen::Quaterniond(R_map_imu);
+    state_updated.rot.normalize();
+    state_updated.pos = t_map_lidar - R_map_imu * state_point.offset_T_L_I;
+    state_point = state_updated;
+    kf.change_x(state_updated);
+
+    return true;
 }
 
 void save_scan_frame(const string& scan_frames_dir)
@@ -798,10 +874,48 @@ void updatePose()
     geoQuat.w = state_point.rot.coeffs()[3];
 }
 
+void publishMapToOdomTf(const TimeType& stamp)
+{
+    TransformStampedMsg map_to_odom_msg;
+    map_to_odom_msg.header.stamp = stamp;
+    map_to_odom_msg.header.frame_id = map_frame;
+    map_to_odom_msg.child_frame_id = odom_frame;
+    map_to_odom_msg.transform.translation.x = t_map_odom.x();
+    map_to_odom_msg.transform.translation.y = t_map_odom.y();
+    map_to_odom_msg.transform.translation.z = t_map_odom.z();
+
+    Eigen::Quaterniond q_map_odom(R_map_odom);
+    q_map_odom.normalize();
+    map_to_odom_msg.transform.rotation.x = q_map_odom.x();
+    map_to_odom_msg.transform.rotation.y = q_map_odom.y();
+    map_to_odom_msg.transform.rotation.z = q_map_odom.z();
+    map_to_odom_msg.transform.rotation.w = q_map_odom.w();
+
+#ifdef USE_ROS1
+    static tf::TransformBroadcaster br;
+#elif defined(USE_ROS2)
+    static tf2_ros::TransformBroadcaster br(get_ros_node());
+#endif
+    br.sendTransform(map_to_odom_msg);
+}
+
 bool priorInitAlign(double lidar_cov, double &solve_H_time)
 {
     if (!use_prior_map || !prior_init_en || prior_init_done || prior_ikdtree.Root_Node == nullptr)
         return false;
+
+    const Eigen::Matrix3d R_odom_map_prev = R_map_odom.transpose();
+    const Eigen::Matrix3d R_odom_base_before = R_odom_map_prev * state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_odom_base_before = R_odom_map_prev * (state_point.pos - t_map_odom);
+
+    double icp_fitness_score = std::numeric_limits<double>::infinity();
+    // if (!coarsePriorIcpAlign(icp_fitness_score))
+    // {
+    //     ROS_PRINT_WARN("prior init coarse ICP failed, retry on next scan");
+    //     return false;
+    // }
+
+    ROS_PRINT_INFO("prior init coarse ICP done, fitness=%.6f", icp_fitness_score);
 
     kf.update_iterated_dyn_share_modified(lidar_cov, solve_H_time);
 
@@ -811,12 +925,24 @@ bool priorInitAlign(double lidar_cov, double &solve_H_time)
 
     getCurrPose(state_point);
     getCurrOffset(state_point);
-    updatePose();
+
+    const Eigen::Matrix3d R_map_base = state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_map_base = state_point.pos;
+    R_map_odom = R_map_base * R_odom_base_before.transpose();
+    t_map_odom = t_map_base - R_map_odom * t_odom_base_before;
+
+    euler_cur = SO3ToEuler(state_point.rot);
+    pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
+    geoQuat.x = state_point.rot.coeffs()[0];
+    geoQuat.y = state_point.rot.coeffs()[1];
+    geoQuat.z = state_point.rot.coeffs()[2];
+    geoQuat.w = state_point.rot.coeffs()[3];
+
+    publishMapToOdomTf(get_ros_time(lidar_end_time));
     prior_init_done = true;
 
-    ROS_PRINT_INFO("prior init done: pos=(%.3f %.3f %.3f), quat=(%.3f %.3f %.3f %.3f)",
-                   state_point.pos.x(), state_point.pos.y(), state_point.pos.z(),
-                   state_point.rot.x(), state_point.rot.y(), state_point.rot.z(), state_point.rot.w());
+    ROS_PRINT_INFO("prior init map->odom: t=(%.3f %.3f %.3f)",
+                   t_map_odom.x(), t_map_odom.y(), t_map_odom.z());
     return true;
 }
 
@@ -1023,29 +1149,14 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal,
     tf_msg.child_frame_id  = base_frame;
     fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
-    TransformStampedMsg map_to_odom_msg;
-    map_to_odom_msg.header.stamp = stamp;
-    map_to_odom_msg.header.frame_id = map_frame;
-    map_to_odom_msg.child_frame_id = odom_frame;
-    map_to_odom_msg.transform.translation.x = t_map_odom.x();
-    map_to_odom_msg.transform.translation.y = t_map_odom.y();
-    map_to_odom_msg.transform.translation.z = t_map_odom.z();
-    Eigen::Quaterniond q_map_odom(R_map_odom);
-    q_map_odom.normalize();
-    map_to_odom_msg.transform.rotation.x = q_map_odom.x();
-    map_to_odom_msg.transform.rotation.y = q_map_odom.y();
-    map_to_odom_msg.transform.rotation.z = q_map_odom.z();
-    map_to_odom_msg.transform.rotation.w = q_map_odom.w();
-
     ros_publish(pubOdomAftMappedLocal, odomAftMapped);
     ros_publish(pubOdomAftMappedGlobal, odomAftMappedGlobal);
-
+    publishMapToOdomTf(stamp);
 #ifdef USE_ROS1
     static tf::TransformBroadcaster br;
 #elif defined(USE_ROS2)
     static tf2_ros::TransformBroadcaster br(get_ros_node());
 #endif
-    br.sendTransform(map_to_odom_msg);
     br.sendTransform(tf_msg);
 }
 
@@ -1115,7 +1226,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         if (ekfom_data.converge)
         {
             if (use_online_map &&
-                build_point_observation(ikdtree, point_body, point_world, 1.0, &Nearest_Points[i], online_candidates[i]))
+                build_point_observation(&ikdtree, nullptr, point_body, point_world, 1.0, true, &Nearest_Points[i], online_candidates[i]))
             {
                 online_valid[i] = 1;
                 point_selected_surf[i] = true;
@@ -1129,7 +1240,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         }
         else if (use_online_map && point_selected_surf[i])
         {
-            if (build_point_observation_from_neighbors(Nearest_Points[i], point_body, point_world, 1.0, online_candidates[i]))
+            if (build_point_observation(nullptr, &Nearest_Points[i],
+                                        point_body, point_world, 1.0, false, nullptr, online_candidates[i]))
             {
                 online_valid[i] = 1;
                 normvec->points[i] = online_candidates[i].normal;
@@ -1145,8 +1257,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         {
             if (ekfom_data.converge)
             {
-                if (build_point_observation(prior_ikdtree, point_body, point_world, prior_row_scale_base,
-                                            &Prior_Nearest_Points[i], prior_candidates[i]))
+                if (build_point_observation(&prior_ikdtree, nullptr, point_body, point_world,
+                                            prior_row_scale_base, true, &Prior_Nearest_Points[i], prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
                     prior_point_selected[i] = 1;
@@ -1158,8 +1270,9 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             }
             else if (i < static_cast<int>(prior_point_selected.size()) && prior_point_selected[i])
             {
-                if (build_point_observation_from_neighbors(Prior_Nearest_Points[i], point_body, point_world,
-                                                           prior_row_scale_base, prior_candidates[i]))
+                if (build_point_observation(nullptr, &Prior_Nearest_Points[i],
+                                            point_body, point_world,
+                                            prior_row_scale_base, false, nullptr, prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
                 }
@@ -1288,8 +1401,8 @@ int main(int argc, char** argv)
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
     rosparam_get("common/flip_en", flip_en, false);
     rosparam_get("common/grav_align", grav_align, false);
-    rosparam_get("common/mode", common_mode, 1);
-    set_mapping_mode(common_mode);
+    rosparam_get("common/mode", mapping_mode, 1);
+    set_mapping_mode();
     rosparam_get("prior_map/prior_tree_map_path", prior_tree_map_path, std::string(""));
     rosparam_get("prior_map/prior_init", prior_init_en, false);
     rosparam_get("prior_map/prior_lidar_cov", prior_lidar_cov, 0.001);
@@ -1384,77 +1497,7 @@ int main(int argc, char** argv)
     }
 
     /*** debug record ***/
-    const string result_dir = string(ROOT_DIR) + "RESULTS/";
-    const string scan_frames_dir = result_dir + "/SCAN_FRAMES/";
-    const string imu_states_dir = result_dir + "/IMU_STATES/";
-    const string keyframe_frames_dir = result_dir + "/KEY_FRAMES/";
-    const string ikdtree_output_dir = result_dir + "/TREE_CLOUDS/";
-    
-    if (scan_frame_save_en)
-    {
-        if (!create_directory(scan_frames_dir + "scans/"))
-        {
-            ROS_PRINT_ERROR("Failed to create scan frame save directories, disable scan_frame_save_en");
-            scan_frame_save_en = false;
-        }
-        else if (!create_directory(scan_frames_dir + "scans_tstamp/"))
-        {
-            ROS_PRINT_ERROR("Failed to create tstamp scan frame save directories, disable scan_frame_save_en");
-            scan_frame_save_en = false;
-        }
-        else
-        {
-            string scan_frame_pose_path = scan_frames_dir + "scan_pose.txt";
-            scan_frame_pose_file.open(scan_frame_pose_path.c_str(), ios::out | ios::app);
-            scan_frame_pose_file << std::fixed << std::setprecision(9);
-        }
-    }
-    if (imu_state_save_en)
-    {
-        if (!create_directory(imu_states_dir))
-        {
-            ROS_PRINT_ERROR("Failed to create IMU state save directory, disable imu_state_save_en");
-            imu_state_save_en = false;
-        }
-        else
-        {
-            string imu_state_path = imu_states_dir + "imu_state.txt";
-            imu_pose_file.open(imu_state_path.c_str(), ios::out);
-            imu_pose_file << std::fixed << std::setprecision(9);
-            imu_pose_file << "# imu_states.txt columns:\n";
-            imu_pose_file << "# timestamp[s] pos_x[m] pos_y[m] pos_z[m] qx qy qz qw "
-                             "vel_x[m/s] vel_y[m/s] vel_z[m/s] "
-                             "bg_x[rad/s] bg_y[rad/s] bg_z[rad/s] "
-                             "ba_x[m/s^2] ba_y[m/s^2] ba_z[m/s^2] "
-                             "grav_x[m/s^2] grav_y[m/s^2] grav_z[m/s^2] "
-                             "ext_qx ext_qy ext_qz ext_qw ext_tx[m] ext_ty[m] ext_tz[m]\n";
-        }
-    }
-
-    if (ikdtree_output_save_en)
-    {
-        if (!create_directory(ikdtree_output_dir))
-        {
-            ROS_PRINT_ERROR("Failed to create ikdtree cloud save directory, disable ikdtree_output_save_en");
-            ikdtree_output_save_en = false;
-        }
-    }
-
-    if (keyframe_export_en || keyframe_global_pcd_en)
-    {
-        if (!create_directory(keyframe_frames_dir + "scans/"))
-        {
-            ROS_PRINT_ERROR("Failed to create keyframe save directories, disable keyframe export");
-            keyframe_export_en = false;
-            keyframe_global_pcd_en = false;
-        }
-        else if (keyframe_export_en)
-        {
-            string keyframe_pose_path = keyframe_frames_dir + "keyframe_pose.txt";
-            keyframe_pose_file.open(keyframe_pose_path.c_str(), ios::out | ios::app);
-            keyframe_pose_file << std::fixed << std::setprecision(9);
-        }
-    }
+    prepareResultDirs();
 
     /*** ROS subscribe initialization ***/
     if (p_pre->lidar_type == AVIA) {
@@ -1486,7 +1529,6 @@ int main(int argc, char** argv)
     if (sam_enable) {
         MapOptimizationInit();
         printf("...... LIO-SAM Backend Start......\n");
-
     }
 
     std::thread odomhighthread([&](){
@@ -1527,6 +1569,7 @@ int main(int argc, char** argv)
             transformTobeMapped[4] = reloc_pos(1);
             transformTobeMapped[5] = reloc_pos(2);
             updatePose();
+            publishMapToOdomTf(get_ros_time(lidar_end_time));
 
             ROS_PRINT_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
                 reloc_pos.x(), reloc_pos.y(), reloc_pos.z(),
@@ -1606,7 +1649,7 @@ int main(int argc, char** argv)
             
             feats_down_world->resize(feats_down_size);
 
-            if(feature_pub_en && use_online_map) // If you need to see map point, change to "if(1)"
+            if(feature_pub_en && use_online_map)
             {
                 PointVector ().swap(ikdtree.PCL_Storage);
                 ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
@@ -1674,9 +1717,6 @@ int main(int argc, char** argv)
         rate.sleep();
     }            
 
-    /**************** save accumulated feature scans ****************/
-    /* 1. make sure you have enough memories
-    /* 2. PCD saving will largely influence real-time performance **/
     if (!flg_exit && pcl_wait_save->size() > 0 && feat_accum_save_en)
     {
         const std::string stamp_str = format_unix_time(lidar_end_time);
@@ -1701,7 +1741,7 @@ int main(int argc, char** argv)
 
     if (keyframe_global_pcd_en)
     {
-        string global_keyframe_path = root_dir + "/KEY_FRAMES/global.pcd";
+        string global_keyframe_path = keyframe_frames_dir + "global.pcd";
         pcl::PCDWriter pcd_writer;
         cout << "current global keyframe map saved to " << global_keyframe_path << endl;
 

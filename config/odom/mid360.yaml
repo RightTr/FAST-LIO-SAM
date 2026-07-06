@@ -9,10 +9,10 @@ common:
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
-    grav_align: true            # Whether to use gravity alignment for initial roll/pitch estimation.
+    grav_align: false            # Whether to use gravity alignment for initial roll/pitch estimation.
 
 prior_map:
-    prior_tree_map_path: "/home/right/Documents/RESULTS/TREE_CLOUDS/prior_tree.bin"      # static prior ikdtree snapshot path for prior update
+    prior_tree_map_path: "/home/right/fastlio_ws/map/r2.bin"      # static prior ikdtree snapshot path for prior update
     prior_lidar_cov: 0.001      # absolute LiDAR covariance used for prior matching
     prior_init: true
 
@@ -51,7 +51,7 @@ result_save:
     ikdtree_output_save_en: true  # true: save the ikdtree point cloud to ROOT_DIR/TREE_CLOUDS/
 
 zupt:
-    use_zupt: false                    # enable adaptive zero velocity update
+    use_zupt: true                    # enable adaptive zero velocity update
     zupt_acc_var_threshold:  0.0001   # (m/s²)² per-axis acc variance → full-confidence threshold
     zupt_gyro_var_threshold: 0.00001  # (rad/s)² per-axis gyro variance → full-confidence threshold
 
