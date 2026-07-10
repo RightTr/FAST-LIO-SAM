@@ -579,6 +579,8 @@ void correctPoses()
         }
 
         ReconstructIkdTree();
+        publishMapToOdomTf(get_ros_time(timeLaserInfoCur));
+        ROS_PRINT_INFO("Loop closure: republish map->odom");
         aLoopIsClosed = false;
     }
 }

@@ -38,8 +38,8 @@ fast_lio_params = [
     {'feature_extract_enable': False},
     {'point_filter_num': 3},
     {'max_iteration': 3},
-    {'filter_size_surf': 0.05},
-    {'filter_size_map': 0.05},
+    {'filter_size_surf': 0.1},
+    {'filter_size_map': 0.1},
     {'cube_side_length': 1000.0},
     yaml_params
 ]

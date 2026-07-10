@@ -60,6 +60,7 @@ extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();
 void set_mapping_mode();
+void publishMapToOdomTf(const TimeType& stamp);
 
 inline Eigen::Vector3d standardize(const Eigen::Vector3d &v)
 {
