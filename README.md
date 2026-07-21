@@ -18,6 +18,8 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
   
 * The standard navigation TF tree: **map** → **odom** → **base_link**
 
+* Support mapping mode: Online, Prior and Online+Prior
+
 ## 🛠️ Prerequisites
 
 ### Dependency
@@ -65,19 +67,34 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 ### Relocalization
 
-The modified system supports relocalization using manually set odometry poses. Once odometry poses are published to the */reloc_topic* (according to the following .yaml file), the system will reset the system and the initial pose according to your input.
+The modified system supports relocalization using manually set odometry poses. Once odometry poses are published to the */reloc_topic* (according to the following .yaml file), the system will apply a pose correction and update the current state consistently.
+
+### Mapping mode
+
+`common/mode`:
+- `1`: online
+  - Use only the online map for constraints.
+- `2`: prior
+  - Use only the prior map for constraints.
+- `3`: online+prior
+  - Use both the online map and the prior map for constraints.
+
+`prior_map/prior_init` enables one-shot startup alignment in `prior` mode.
+It uses the prior map to refine the initial pose before tracking starts.
+
+You can generate a prior `ikdtree` snapshot from a PCD file with `pcd_to_ikdtree_bin`.
 
 ### Keyframe export
 
-Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-resolution PCD built from `feats_undistort`, together with its pose, under `KEY_FRAMES/scans/` and `ROOT_DIR/KEY_FRAMES/pose.txt`.
+Enable `lio_sam/keyframe_export_en` to export each accepted keyframe as a full-resolution PCD built from `feats_undistort`, together with its pose, under `ROOT_DIR/RESULTS/KEY_FRAMES/scans/` and `ROOT_DIR/RESULTS/KEY_FRAMES/pose.txt`.
 
-Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyframes into one global PCD at `KEY_FRAMES/global.pcd`.
+Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyframes into one global PCD at `ROOT_DIR/RESULTS/KEY_FRAMES/global.pcd`.
 
 ### Result save
 
-* `result_save/feat_accum_save_en` to accumulate each undistorted scan in the world frame. The merged feature cloud is maintained in memory during runtime and written to `ROOT_DIR/PCD/<lidar_time>.pcd` when the system shuts down. 
-* `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/IMU_STATES/imu_state.txt`. 
-* `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/SCAN_FRAMES/scans/<lidar_time>.pcd`, saves the corresponding timestamped cloud under `ROOT_DIR/SCAN_FRAMES/scans_tstamp/<lidar_time>.pcd`, and writes the pose to `ROOT_DIR/SCAN_FRAMES/scan_pose.txt`.
+* `result_save/feat_accum_save_en` to accumulate each undistorted scan in the world frame. The merged feature cloud is maintained in memory during runtime and written to `ROOT_DIR/RESULTS/PCD/<lidar_time>.pcd` when the system shuts down. 
+* `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/RESULTS/IMU_STATES/imu_state.txt`. 
+* `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/RESULTS/SCAN_FRAMES/scans/<lidar_time>.pcd`, saves the corresponding timestamped cloud under `ROOT_DIR/RESULTS/SCAN_FRAMES/scans_tstamp/<lidar_time>.pcd`, and writes the pose to `ROOT_DIR/RESULTS/SCAN_FRAMES/scan_pose.txt`.
 
 ## Stationary detection and adaptive weight handling
 

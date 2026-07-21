@@ -176,7 +176,7 @@ void Preprocess::avia_handler(const LivoxCustomMsgConstPtr &msg)
       // pl_surf += pl;
     }
     time += omp_get_wtime() - t0;
-    printf("Feature extraction time: %lf \n", time / count);
+    // printf("Feature extraction time: %lf \n", time / count);
   }
   else
   {

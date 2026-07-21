@@ -14,9 +14,9 @@ Panels:
         - /OdometryGlobal1
         - /OdometryGlobal1/Odometry1
         - /OdometryGlobal1/Odometry1/Topic1
-        - /OdometryGlobal1/Odometry2/Topic1
         - /OdometryLocal1
         - /OdometryLocal1/Odometry1/Topic1
+        - /OdometryLocal1/Odometry2/Status1
         - /OdometryLocal1/Odometry2/Topic1
       Splitter Ratio: 0.5
     Tree Height: 1009
@@ -37,7 +37,7 @@ Panels:
     Experimental: false
     Name: Time
     SyncMode: 0
-    SyncSource: KeyframeXYZ
+    SyncSource: ""
 Visualization Manager:
   Class: ""
   Displays:
@@ -95,7 +95,7 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
-      Enabled: false
+      Enabled: true
       Name: Points_accumulated
     - Class: rviz_common/Group
       Displays:
@@ -272,7 +272,7 @@ Visualization Manager:
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
-          Max Intensity: 13
+          Max Intensity: 55
           Min Color: 0; 0; 0
           Min Intensity: 0
           Name: KeyframeXYZ
@@ -328,8 +328,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 6.885067939758301
-            Min Value: -0.43514570593833923
+            Max Value: 11.394532203674316
+            Min Value: -0.7922396063804626
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -599,25 +599,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 18.431427001953125
+      Distance: 22.074785232543945
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 5.45838737487793
-        Y: 0.07051393389701843
-        Z: 0.8081483840942383
+        X: 0
+        Y: 0
+        Z: 0
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.6153988242149353
+      Pitch: 0.7803986668586731
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 2.83355712890625
+      Yaw: 5.998579978942871
     Saved: ~
 Window Geometry:
   Displays:
@@ -635,5 +635,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1920
-  X: 90
-  Y: 187
+  X: 182
+  Y: 258

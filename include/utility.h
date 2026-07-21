@@ -41,6 +41,10 @@ extern int ikdtreeSearchNeighborNum;
 
 extern bool keyframe_export_en;
 extern bool keyframe_global_pcd_en;
+extern bool feat_accum_save_en;
+extern bool scan_frame_save_en;
+extern bool imu_state_save_en;
+extern bool ikdtree_output_save_en;
 
 extern std::string map_frame;
 extern std::string odom_frame;
@@ -48,10 +52,15 @@ extern std::string base_frame;
 extern std::string high_freq_base_frame;
 extern bool flip_en;
 extern const Eigen::Matrix3d IMU_FLIP_R;
+extern int mapping_mode;
+extern bool use_online_map;
+extern bool use_prior_map;
 
 extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();
+void set_mapping_mode();
+void publishMapToOdomTf(const TimeType& stamp);
 
 inline Eigen::Vector3d standardize(const Eigen::Vector3d &v)
 {

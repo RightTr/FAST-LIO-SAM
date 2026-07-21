@@ -5,10 +5,16 @@ common:
     odom_frame: "odom"
     base_frame: "base_link"
     high_freq_base_frame: "base_hf_link"
+    mode: 1                     # 1: online / 2: prior / 3: online+prior
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
-    grav_align: true            # Whether to use gravity alignment for initial roll/pitch estimation.
+    grav_align: false            # Whether to use gravity alignment for initial roll/pitch estimation.
+
+prior_map:
+    prior_tree_map_path: "/home/right/fastlio_ws/map/r2.bin"      # static prior ikdtree snapshot path for prior update
+    prior_lidar_cov: 0.001      # absolute LiDAR covariance used for prior matching
+    prior_init: true
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
@@ -42,11 +48,12 @@ result_save:
                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
     imu_state_save_en: false         # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
     scan_frame_save_en: false      # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
+    ikdtree_output_save_en: true  # true: save the ikdtree point cloud to ROOT_DIR/TREE_CLOUDS/
 
 zupt:
     use_zupt: true                    # enable adaptive zero velocity update
-    zupt_acc_var_threshold:  0.0001   # (m/s²)² per-axis acc variance → full-confidence threshold
-    zupt_gyro_var_threshold: 0.00001  # (rad/s)² per-axis gyro variance → full-confidence threshold
+    zupt_acc_var_threshold:  0.001   # (m/s²)² per-axis acc variance → full-confidence threshold
+    zupt_gyro_var_threshold: 0.0001  # (rad/s)² per-axis gyro variance → full-confidence threshold
 
     # Static confidence: exp(-3 * max_normalized_variance), in [0,1]
     zupt_confidence_min: 0.05         # below this no ZUPT is applied

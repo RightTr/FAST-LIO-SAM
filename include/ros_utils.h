@@ -235,11 +235,15 @@ inline rclcpp::Time get_ros_now(const rclcpp::Node::SharedPtr &node = nullptr)
 #ifdef USE_ROS1
 template<typename PubType, typename MsgType>
 inline void ros_publish(PubType &pub, const MsgType &msg) {
+    if (pub.getNumSubscribers() == 0)
+        return;
     pub.publish(msg);
 }
 #elif defined(USE_ROS2)
 template<typename PubType, typename MsgType>
 inline void ros_publish(const PubType &pub, const MsgType &msg) {
+    if (!pub || pub->get_subscription_count() == 0)
+        return;
     pub->publish(msg);
 }
 #endif
@@ -361,4 +365,3 @@ inline typename rclcpp::Subscription<T>::SharedPtr create_subscriber_qos(const s
 #endif
 
 #endif
-
