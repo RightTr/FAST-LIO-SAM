@@ -18,7 +18,7 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
   
 * The standard navigation TF tree: **map** → **odom** → **base_link**
 
-* Support mapping mode: Online, Prior and Online+Prior
+* Support localization mode: Online, Prior and Online+Prior localization
 
 ## 🛠️ Prerequisites
 
@@ -69,7 +69,7 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 The modified system supports relocalization using manually set odometry poses. Once odometry poses are published to the */reloc_topic* (according to the following .yaml file), the system will apply a pose correction and update the current state consistently.
 
-### Mapping mode
+### Localization mode
 
 `common/mode`:
 - `1`: online
@@ -142,7 +142,8 @@ roslaunch fast_lio_sam odom_airy.launch
 
 * [x] Full ROS2 adaptation
 * [x] ROS2 adaptation Test
-* [x] ZUPT parameter tuning and testing
+* [] ZUPT parameter tuning and testing
+* [] Prior localization test
 
 ## 📚 Related Works
 
