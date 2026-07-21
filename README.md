@@ -142,8 +142,8 @@ roslaunch fast_lio_sam odom_airy.launch
 
 * [x] Full ROS2 adaptation
 * [x] ROS2 adaptation Test
-* [] ZUPT parameter tuning and testing
-* [] Prior localization test
+* [ ] ZUPT parameter tuning and test
+* [ ] Prior localization test
 
 ## 📚 Related Works
 
