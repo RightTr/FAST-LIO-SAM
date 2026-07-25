@@ -98,6 +98,10 @@ void Preprocess::process(const Pcl2MsgConstPtr &msg, PointCloudXYZI::Ptr &pcl_ou
   case KAIST:
     kaist_handler(msg);
     break;
+
+  case LIVOX_PCL2:
+    livox_pcl2_handler(msg);
+    break;
   
   default:
     printf("Error LiDAR Type");
@@ -204,6 +208,51 @@ void Preprocess::avia_handler(const LivoxCustomMsgConstPtr &msg)
       }
     }
   }
+}
+
+void Preprocess::livox_pcl2_handler(const Pcl2MsgConstPtr &msg)
+{
+  pl_surf.clear();
+  pl_corn.clear();
+  pl_full.clear();
+
+  pcl::PointCloud<livox_ros2::Point> pl_orig;
+  pcl::fromROSMsg(*msg, pl_orig);
+  const int plsize = pl_orig.size();
+  if (plsize == 0) return;
+
+  pl_surf.reserve(plsize);
+
+  const double time_head = pl_orig.points[0].timestamp;
+  for (int i = 0; i < plsize; ++i)
+  {
+    if (i % point_filter_num != 0) continue;
+
+    const auto &pt = pl_orig.points[i];
+    if (pt.line >= N_SCANS) continue;
+
+    const double x = pt.x;
+    const double y = pt.y;
+    const double z = pt.z;
+    const double dist_sqr = x * x + y * y + z * z;
+    if (dist_sqr <= blind * blind) continue;
+    if (std::isnan(x) || std::isnan(y) || std::isnan(z)) continue;
+
+    PointType added_pt;
+    added_pt.normal_x = 0;
+    added_pt.normal_y = 0;
+    added_pt.normal_z = 0;
+    added_pt.x = x;
+    added_pt.y = y;
+    added_pt.z = z;
+    added_pt.intensity = pt.intensity;
+    added_pt.curvature = (pt.timestamp - time_head) / 1.0e6;
+    pl_surf.points.push_back(added_pt);
+  }
+
+  std::sort(pl_surf.points.begin(), pl_surf.points.end(), [](const PointType &a, const PointType &b) {
+    return a.curvature < b.curvature;
+  });
 }
 
 void Preprocess::oust64_handler(const Pcl2MsgConstPtr &msg)

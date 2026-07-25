@@ -146,9 +146,6 @@ roslaunch fast_lio_sam odom_airy.launch
 * [ ] Prior localization test
 
 ## 📚 Related Works
-
-[FAST-LIO2: Fast Direct LiDAR-inertial Odometry](doc/Fast_LIO_2.pdf)
-
 [FAST-LIO: A Fast, Robust LiDAR-inertial Odometry Package by Tightly-Coupled Iterated Kalman Filter](https://arxiv.org/abs/2010.08196)
 
 [FAST-LIO official repository](https://github.com/hku-mars/FAST_LIO.git)

@@ -1,6 +1,7 @@
 #ifndef PREPROCESS_H
 #define PREPROCESS_H
 
+#include <algorithm>
 #include <pcl_conversions/pcl_conversions.h>
 #include "ros_utils.h"
 
@@ -11,7 +12,7 @@ using namespace std;
 typedef pcl::PointXYZINormal PointType;
 typedef pcl::PointCloud<PointType> PointCloudXYZI;
 
-enum LID_TYPE{AVIA = 1, VELO16, OUST64, AIRY, UNILIDAR, MARSIM, KAIST}; //{1, 2, 3}
+enum LID_TYPE{AVIA = 1, VELO16, OUST64, AIRY, UNILIDAR, MARSIM, KAIST, LIVOX_PCL2}; // 8: Livox PointCloud2
 enum TIME_UNIT{SEC = 0, MS = 1, US = 2, NS = 3};
 enum Feature{Nor, Poss_Plane, Real_Plane, Edge_Jump, Edge_Plane, Wire, ZeroPoint};
 enum Surround{Prev, Next};
@@ -131,6 +132,27 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(kaist_ros::Point,
     (float, intensity, intensity)
 )
 
+namespace livox_ros2 { // Livox PointCloud2 pointcloud registration
+  struct EIGEN_ALIGN16 Point {
+    PCL_ADD_POINT4D;
+    float intensity;
+    std::uint8_t tag;
+    std::uint8_t line;
+    double timestamp;
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+  };
+}
+
+POINT_CLOUD_REGISTER_POINT_STRUCT(livox_ros2::Point,
+    (float, x, x)
+    (float, y, y)
+    (float, z, z)
+    (float, intensity, intensity)
+    (std::uint8_t, tag, tag)
+    (std::uint8_t, line, line)
+    (double, timestamp, timestamp)
+)
+
 class Preprocess
 {
   public:
@@ -156,6 +178,7 @@ class Preprocess
 
   private:
   void avia_handler(const LivoxCustomMsgConstPtr &msg);
+  void livox_pcl2_handler(const Pcl2MsgConstPtr &msg);
   void oust64_handler(const Pcl2MsgConstPtr &msg);
   void velodyne_handler(const Pcl2MsgConstPtr &msg);
   void airy_handler(const Pcl2MsgConstPtr& msg);
