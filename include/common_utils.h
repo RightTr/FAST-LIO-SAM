@@ -26,6 +26,15 @@ inline std::string format_unix_time(double t)
     return oss.str();
 }
 
+inline double normalizeYaw(double yaw)
+{
+    while (yaw > M_PI)
+        yaw -= 2.0 * M_PI;
+    while (yaw < -M_PI)
+        yaw += 2.0 * M_PI;
+    return yaw;
+}
+
 template<typename PointT>
 inline bool isFinitePoint(const PointT &pt)
 {

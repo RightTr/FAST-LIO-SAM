@@ -13,3 +13,4 @@ IMU_STATES
 .codex
 KEY_FRAMES
 RESULTS/
+.agents/

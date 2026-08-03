@@ -5,6 +5,7 @@
 #include <deque>
 #include <vector>
 #include <atomic>
+#include <mutex>
 #include <type_traits>
 
 #include <Eigen/Geometry>
@@ -50,6 +51,25 @@ extern std::string map_frame;
 extern std::string odom_frame;
 extern std::string base_frame;
 extern std::string high_freq_base_frame;
+extern std::string gnss_topic;
+extern std::string gnss_heading_topic;
+extern bool gpsEnableFlag;
+extern bool gnssPathEnableFlag;
+extern std::vector<double> gnss_extrinsic_T_raw;
+extern std::vector<double> gnss_extrinsic_R_raw;
+extern Eigen::Vector3d gnss_extrinsic_T;
+extern Eigen::Matrix3d gnss_extrinsic_R;
+extern double gnss_heading_offset_deg;
+extern double gnss_time_offset;
+extern bool useGpsElevation;
+extern double gpsCovThreshold;
+extern double poseCovThreshold;
+extern double gnss_heading_deg;
+extern bool gnss_heading_valid;
+extern std::atomic<bool> gnss_map_aligned;
+extern std::deque<OdometryMsg> gps_buffer;
+extern std::mutex mtx_gps;
+extern std::mutex mtx_gnss_heading;
 extern bool flip_en;
 extern const Eigen::Matrix3d IMU_FLIP_R;
 extern int mapping_mode;
@@ -59,6 +79,7 @@ extern bool use_prior_map;
 extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();
+void read_gnss_params();
 void set_mapping_mode();
 void publishMapToOdomTf(const TimeType& stamp);
 

@@ -140,10 +140,10 @@ roslaunch fast_lio_sam odom_airy.launch
 
 ## 📝 TODO List
 
-* [x] Full ROS2 adaptation
 * [x] ROS2 adaptation Test
 * [ ] ZUPT parameter tuning and test
 * [ ] Prior localization test
+* [ ] GNSS fusion test
 
 ## 📚 Related Works
 [FAST-LIO: A Fast, Robust LiDAR-inertial Odometry Package by Tightly-Coupled Iterated Kalman Filter](https://arxiv.org/abs/2010.08196)

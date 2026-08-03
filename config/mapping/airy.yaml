@@ -9,6 +9,21 @@ common:
                                 # Keep extrinsic_R/T in the sensor's original Airy/DIFOP convention; do not pre-flip them manually.
 
     grav_align: true            # Whether to use gravity alignment for initial roll/pitch estimation.
+
+gnss:
+    topic: "handsfree/rtk/gnss"
+    heading_topic: "handsfree/rtk/heading"
+    gpsEnableFlag: true
+    gnssPathEnableFlag: true
+    extrinsic_T: [0.0, 0.0, 0.0] # GNSS antenna position relative to LiDAR center
+    extrinsic_R: [1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0] # GNSS antenna rotation relative to LiDAR frame
+    heading_offset_deg: 0.0
+    time_offset: 0.0 # seconds, corrected_gnss_time = raw_gnss_time + time_offset; positive if GNSS stamp is earlier than LiDAR.
+    useGpsElevation: false
+    gpsCovThreshold: 2.0
+    poseCovThreshold: 25.0
     
 preprocess:
     lidar_type: 4                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 4 for RoboSense LiDAR

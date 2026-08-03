@@ -12,12 +12,12 @@ common:
     grav_align: true            # Whether to use gravity alignment for initial roll/pitch estimation.
 
 prior_map:
-    prior_tree_map_path: "/home/right/fastlio_ws/map/r2.bin"      # static prior ikdtree snapshot path for prior update
+    prior_tree_map_path: ""      # static prior ikdtree snapshot path for prior update
     prior_lidar_cov: 0.001      # absolute LiDAR covariance used for prior matching
     prior_init: true
 
 preprocess:
-    lidar_type: 8                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
+    lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
     scan_line: 4
     blind: 1.0
 

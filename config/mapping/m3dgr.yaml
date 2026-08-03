@@ -1,0 +1,92 @@
+common:
+    lid_topic: "/livox/mid360/lidar"
+    imu_topic: "/livox/mid360/imu"
+    odom_frame: "odom"
+    base_frame: "base_link"
+    high_freq_base_frame: "base_hf_link"
+    mode: 1
+    time_sync_en: false
+    time_offset_lidar_to_imu: 0.0
+    grav_align: false
+
+gnss:
+    topic: "/mavros/global_position/raw/fix"
+    heading_topic: "handsfree/rtk/heading"
+    gpsEnableFlag: true
+    gnssPathEnableFlag: true
+    # M3DGR calibration: GNSS antenna -> MID-360
+    # Computed from GNSS antenna -> Avia and Avia -> MID-360
+    extrinsic_T: [-0.27350224, 0.02408668, -0.25524680]
+    extrinsic_R: [0.8498020, -0.0398291, -0.5255940,
+                  0.0393196,  0.9991530, -0.0121414,
+                  0.5256320, -0.0103484,  0.8506490]
+    heading_offset_deg: 0.0
+    time_offset: 0.0 # seconds, corrected_gnss_time = raw_gnss_time + time_offset; positive if GNSS stamp is earlier than LiDAR.
+    useGpsElevation: false
+    gpsCovThreshold: 2.0
+    poseCovThreshold: 25.0
+
+preprocess:
+    lidar_type: 1
+    scan_line: 4
+    blind: 0.5
+
+mapping:
+    acc_cov: 0.1
+    gyr_cov: 0.1
+    b_acc_cov: 0.0001
+    b_gyr_cov: 0.0001
+    fov_degree: 360.0
+    det_range: 100.0
+    extrinsic_est_en: false
+    extrinsic_R: [0.999996, -0.00129,  -0.00230,
+                0.00129,   0.999999, -0.00130,
+                0.00230,   0.00130,   0.999996]
+    extrinsic_T: [-0.009673, -0.037003, 0.047590]
+
+lio_sam:
+    numberOfCores: 8
+    surroundingkeyframeAddingDistThreshold: 1.0
+    surroundingkeyframeAddingAngleThreshold: 0.2
+    surroundingKeyframeDensity: 2.0
+    surroundingKeyframeSearchRadius: 50.0
+    loopClosureEnableFlag: true
+    loopClosureFrequency: 1.0
+    surroundingKeyframeSize: 50
+    historyKeyframeSearchRadius: 15.0
+    historyKeyframeSearchTimeDiff: 30.0
+    historyKeyframeSearchAngleThreshold: 0.5
+    historyKeyframeSearchNum: 25
+    historyKeyframeFitnessScore: 0.3
+    globalMapVisualizationSearchRadius: 1000.0
+    globalMapVisualizationPoseDensity: 10.0
+    globalMapVisualizationLeafSize: 1.0
+    keyframe_export_en: true
+    keyframe_global_pcd_en: true
+
+publish:
+    path_en: true
+    scan_publish_en: true
+    dense_publish_en: true
+    scan_bodyframe_pub_en: true
+    feature_pub_en: true
+
+result_save:
+    feat_accum_save_en: false
+    interval: -1
+    imu_state_save_en: false
+    scan_frame_save_en: false
+    ikdtree_output_save_en: false
+
+zupt:
+    use_zupt: true
+    zupt_acc_var_threshold: 0.0001
+    zupt_gyro_var_threshold: 0.00001
+    zupt_confidence_min: 0.05
+    zupt_r_min: 1.0e-5
+    zupt_r_max: 1.0
+    lidar_cov_static_scale: 5.0
+    lidar_residual_ref: 0.05
+    cov_inflate_start: 200
+    cov_inflate_pos: 1.0e-7
+    cov_inflate_rot: 1.0e-8

@@ -23,6 +23,21 @@ mapping:
     extrinsic_R: [ 1.0, 0.0, 0.0, # LiDAR rotation in the IMU coordinate frame
                     0.0, 1.0, 0.0,
                     0.0, 0.0, 1.0 ]
+
+gnss:
+    topic: "handsfree/rtk/gnss"
+    heading_topic: "handsfree/rtk/heading"
+    gpsEnableFlag: true
+    gnssPathEnableFlag: true
+    extrinsic_T: [0.0, 0.0, 0.0] # GNSS antenna position relative to LiDAR center
+    extrinsic_R: [1.0, 0.0, 0.0,
+                  0.0, 1.0, 0.0,
+                  0.0, 0.0, 1.0] # GNSS antenna rotation relative to LiDAR frame
+    heading_offset_deg: 0.0
+    time_offset: 0.0 # seconds, corrected_gnss_time = raw_gnss_time + time_offset; positive if GNSS stamp is earlier than LiDAR.
+    useGpsElevation: false
+    gpsCovThreshold: 2.0
+    poseCovThreshold: 25.0
                     
 lio_sam:
     

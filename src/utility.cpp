@@ -37,6 +37,27 @@ std::string map_frame = "map";
 std::string odom_frame = "odom";
 std::string base_frame = "base_link";
 std::string high_freq_base_frame = "base_hf_link";
+std::string gnss_topic = "handsfree/rtk/gnss";
+std::string gnss_heading_topic = "handsfree/rtk/heading";
+bool gpsEnableFlag = false;
+bool gnssPathEnableFlag = false;
+std::vector<double> gnss_extrinsic_T_raw(3, 0.0);
+std::vector<double> gnss_extrinsic_R_raw{1.0, 0.0, 0.0,
+                                         0.0, 1.0, 0.0,
+                                         0.0, 0.0, 1.0};
+Eigen::Vector3d gnss_extrinsic_T = Eigen::Vector3d::Zero();
+Eigen::Matrix3d gnss_extrinsic_R = Eigen::Matrix3d::Identity();
+double gnss_heading_offset_deg = 0.0;
+double gnss_time_offset = 0.0;
+bool useGpsElevation = false;
+double gpsCovThreshold = 2.0;
+double poseCovThreshold = 25.0;
+double gnss_heading_deg = 0.0;
+bool gnss_heading_valid = false;
+std::atomic<bool> gnss_map_aligned(false);
+std::deque<OdometryMsg> gps_buffer;
+std::mutex mtx_gps;
+std::mutex mtx_gnss_heading;
 bool flip_en = false;
 const Eigen::Matrix3d IMU_FLIP_R = (Eigen::Matrix3d() <<
     1.0,  0.0,  0.0,
@@ -102,4 +123,30 @@ void read_liosam_params() {
     rosparam_get("lio_sam/ikdtreeSearchNeighborNum", ikdtreeSearchNeighborNum, 8);
     rosparam_get("lio_sam/keyframe_export_en", keyframe_export_en, false);
     rosparam_get("lio_sam/keyframe_global_pcd_en", keyframe_global_pcd_en, false);
+}
+
+void read_gnss_params() {
+    rosparam_get("gnss/topic", gnss_topic, std::string("handsfree/rtk/gnss"));
+    rosparam_get("gnss/heading_topic", gnss_heading_topic, std::string("handsfree/rtk/heading"));
+    rosparam_get("gnss/gpsEnableFlag", gpsEnableFlag, false);
+    rosparam_get("gnss/gnssPathEnableFlag", gnssPathEnableFlag, false);
+    rosparam_get("gnss/extrinsic_T", gnss_extrinsic_T_raw,
+                 std::vector<double>{0.0, 0.0, 0.0});
+    rosparam_get("gnss/extrinsic_R", gnss_extrinsic_R_raw,
+                 std::vector<double>{1.0, 0.0, 0.0,
+                                     0.0, 1.0, 0.0,
+                                     0.0, 0.0, 1.0});
+    gnss_extrinsic_T = Eigen::Vector3d(
+        gnss_extrinsic_T_raw[0],
+        gnss_extrinsic_T_raw[1],
+        gnss_extrinsic_T_raw[2]);
+    gnss_extrinsic_R <<
+        gnss_extrinsic_R_raw[0], gnss_extrinsic_R_raw[1], gnss_extrinsic_R_raw[2],
+        gnss_extrinsic_R_raw[3], gnss_extrinsic_R_raw[4], gnss_extrinsic_R_raw[5],
+        gnss_extrinsic_R_raw[6], gnss_extrinsic_R_raw[7], gnss_extrinsic_R_raw[8];
+    rosparam_get("gnss/heading_offset_deg", gnss_heading_offset_deg, 0.0);
+    rosparam_get("gnss/time_offset", gnss_time_offset, 0.0);
+    rosparam_get("gnss/useGpsElevation", useGpsElevation, false);
+    rosparam_get("gnss/gpsCovThreshold", gpsCovThreshold, 2.0);
+    rosparam_get("gnss/poseCovThreshold", poseCovThreshold, 25.0);
 }

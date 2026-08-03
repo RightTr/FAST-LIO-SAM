@@ -12,6 +12,7 @@
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
+#include <gtsam/navigation/GPSFactor.h>
 #include <gtsam/navigation/ImuFactor.h>
 #include <gtsam/navigation/CombinedImuFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
@@ -415,6 +416,112 @@ void addLoopFactor()
     aLoopIsClosed = true;
 }
 
+void addGPSFactor()
+{
+    if (!gpsEnableFlag)
+        return;
+
+    if (cloudKeyPoses3D->points.empty())
+        return;
+
+    if (cloudKeyPoses3D->points.size() < 5 ||
+        pointDistance(cloudKeyPoses3D->front(),
+                      cloudKeyPoses3D->back()) < 5.0)
+        return;
+
+    if (poseCovariance.rows() >= 5 && poseCovariance.cols() >= 5)
+    {
+        if (poseCovariance(3, 3) < poseCovThreshold &&
+            poseCovariance(4, 4) < poseCovThreshold)
+            return;
+    }
+
+    OdometryMsg gps_odom;
+    {
+        std::lock_guard<std::mutex> lock(mtx_gps);
+
+        while (!gps_buffer.empty())
+        {
+            double t = get_ros_time_sec(gps_buffer.front().header.stamp);
+
+            if (t < timeLaserInfoCur - 0.2)
+            {
+                gps_buffer.pop_front();
+                continue;
+            }
+
+            if (t > timeLaserInfoCur + 0.2)
+                return;
+
+            gps_odom = gps_buffer.front();
+            gps_buffer.pop_front();
+            break;
+        }
+    }
+
+    double gps_x = gps_odom.pose.pose.position.x;
+    double gps_y = gps_odom.pose.pose.position.y;
+    double gps_z = gps_odom.pose.pose.position.z;
+
+    if (std::abs(gps_x) < 1e-6 &&
+        std::abs(gps_y) < 1e-6)
+        return;
+
+    double cov_x = std::max(gps_odom.pose.covariance[0], 1.0);
+    double cov_y = std::max(gps_odom.pose.covariance[7], 1.0);
+    double cov_z = useGpsElevation ?
+                   std::max(gps_odom.pose.covariance[14], 1.0) :
+                   10000.0;
+
+    if (cov_x > gpsCovThreshold ||
+        cov_y > gpsCovThreshold)
+        return;
+
+    static PointTypeIndex lastGPSPoint;
+    static bool valid = false;
+
+    PointTypeIndex cur;
+    cur.x = gps_x;
+    cur.y = gps_y;
+    cur.z = gps_z;
+
+    if (valid && pointDistance(cur, lastGPSPoint) < 5.0)
+        return;
+
+    const Eigen::Affine3f T_w_i = pcl::getTransformation(
+        transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
+        transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
+    const Eigen::Matrix3d R_w_i = T_w_i.rotation().cast<double>();
+    const Eigen::Vector3d gps_ant(gps_x, gps_y, gps_z);
+    const Eigen::Vector3d gps_lidar = gnss_extrinsic_R * gnss_extrinsic_T;
+    const Eigen::Vector3d gps_imu = gps_ant - R_w_i * (translationLidarToIMU + rotationLidarToIMU * gps_lidar);
+    gps_x = gps_imu.x();
+    gps_y = gps_imu.y();
+    gps_z = gps_imu.z();
+
+    if (!useGpsElevation)
+    {
+        gps_z = transformTobeMapped[5];
+        cov_z = 0.01;
+    }
+
+    gtsam::Vector sigma(3);
+    sigma << std::sqrt(cov_x),
+             std::sqrt(cov_y),
+             std::sqrt(cov_z);
+
+    gtSAMgraph.add(
+        gtsam::GPSFactor(
+            cloudKeyPoses3D->size(),
+            gtsam::Point3(gps_x, gps_y, gps_z),
+            gtsam::noiseModel::Diagonal::Sigmas(sigma)));
+
+    aLoopIsClosed = true;
+
+    lastGPSPoint = cur;
+    valid = true;
+}
+
 void updatePath(const PointTypePose& pose_in)
 {
     PoseStampedMsg pose_stamped;
@@ -435,6 +542,9 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
     // odom factor
     addOdomFactor();
+
+    // gps factor
+    addGPSFactor();
 
     // loop factor
     addLoopFactor();
