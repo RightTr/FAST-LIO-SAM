@@ -13,7 +13,6 @@ gnss:
     topic: "/mavros/global_position/raw/fix"
     heading_topic: "handsfree/rtk/heading"
     gpsEnableFlag: true
-    gnssPathEnableFlag: true
     # M3DGR calibration: GNSS antenna -> MID-360
     # Computed from GNSS antenna -> Avia and Avia -> MID-360
     extrinsic_T: [-0.27350224, 0.02408668, -0.25524680]

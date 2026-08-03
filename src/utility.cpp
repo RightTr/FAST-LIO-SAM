@@ -40,7 +40,6 @@ std::string high_freq_base_frame = "base_hf_link";
 std::string gnss_topic = "handsfree/rtk/gnss";
 std::string gnss_heading_topic = "handsfree/rtk/heading";
 bool gpsEnableFlag = false;
-bool gnssPathEnableFlag = false;
 std::vector<double> gnss_extrinsic_T_raw(3, 0.0);
 std::vector<double> gnss_extrinsic_R_raw{1.0, 0.0, 0.0,
                                          0.0, 1.0, 0.0,
@@ -54,7 +53,7 @@ double gpsCovThreshold = 2.0;
 double poseCovThreshold = 25.0;
 double gnss_heading_deg = 0.0;
 bool gnss_heading_valid = false;
-std::atomic<bool> gnss_map_aligned(false);
+std::atomic<bool> gnss_aligned(false);
 std::deque<OdometryMsg> gps_buffer;
 std::mutex mtx_gps;
 std::mutex mtx_gnss_heading;
@@ -129,7 +128,6 @@ void read_gnss_params() {
     rosparam_get("gnss/topic", gnss_topic, std::string("handsfree/rtk/gnss"));
     rosparam_get("gnss/heading_topic", gnss_heading_topic, std::string("handsfree/rtk/heading"));
     rosparam_get("gnss/gpsEnableFlag", gpsEnableFlag, false);
-    rosparam_get("gnss/gnssPathEnableFlag", gnssPathEnableFlag, false);
     rosparam_get("gnss/extrinsic_T", gnss_extrinsic_T_raw,
                  std::vector<double>{0.0, 0.0, 0.0});
     rosparam_get("gnss/extrinsic_R", gnss_extrinsic_R_raw,

@@ -152,6 +152,16 @@ PointTypePose trans2PointTypePose(float transformIn[])
     return thisPose6D;
 }
 
+static void setTransformTobeMapped(const PointTypePose &pose)
+{
+    transformTobeMapped[0] = pose.roll;
+    transformTobeMapped[1] = pose.pitch;
+    transformTobeMapped[2] = pose.yaw;
+    transformTobeMapped[3] = pose.x;
+    transformTobeMapped[4] = pose.y;
+    transformTobeMapped[5] = pose.z;
+}
+
 void setLaserCurTime(double lidar_end_time)
 {
     timeLaserInfoCur = lidar_end_time;
@@ -421,6 +431,9 @@ void addGPSFactor()
     if (!gpsEnableFlag)
         return;
 
+    if (!gnss_aligned.load())
+        return;
+
     if (cloudKeyPoses3D->points.empty())
         return;
 
@@ -429,35 +442,33 @@ void addGPSFactor()
                       cloudKeyPoses3D->back()) < 5.0)
         return;
 
-    if (poseCovariance.rows() >= 5 && poseCovariance.cols() >= 5)
-    {
-        if (poseCovariance(3, 3) < poseCovThreshold &&
-            poseCovariance(4, 4) < poseCovThreshold)
-            return;
-    }
-
     OdometryMsg gps_odom;
+    bool found_gps = false;
     {
         std::lock_guard<std::mutex> lock(mtx_gps);
 
         while (!gps_buffer.empty())
         {
-            double t = get_ros_time_sec(gps_buffer.front().header.stamp);
+            double t = get_ros_time_sec(gps_buffer.front().header.stamp) + gnss_time_offset;
 
-            if (t < timeLaserInfoCur - 0.2)
+            if (t < timeLaserInfoCur - 0.5)
             {
                 gps_buffer.pop_front();
                 continue;
             }
 
-            if (t > timeLaserInfoCur + 0.2)
+            if (t > timeLaserInfoCur + 0.5)
                 return;
 
             gps_odom = gps_buffer.front();
             gps_buffer.pop_front();
+            found_gps = true;
             break;
         }
     }
+
+    if (!found_gps)
+        return;
 
     double gps_x = gps_odom.pose.pose.position.x;
     double gps_y = gps_odom.pose.pose.position.y;
@@ -485,7 +496,7 @@ void addGPSFactor()
     cur.y = gps_y;
     cur.z = gps_z;
 
-    if (valid && pointDistance(cur, lastGPSPoint) < 5.0)
+    if (valid && pointDistance(cur, lastGPSPoint) < 1.0)
         return;
 
     const Eigen::Affine3f T_w_i = pcl::getTransformation(
@@ -520,6 +531,8 @@ void addGPSFactor()
 
     lastGPSPoint = cur;
     valid = true;
+    ROS_PRINT_INFO("add GNSS factor: key=%zu, gps=(%.3f %.3f %.3f), cov=(%.3f %.3f %.3f)",
+                   cloudKeyPoses3D->size(), gps_x, gps_y, gps_z, cov_x, cov_y, cov_z);
 }
 
 void updatePath(const PointTypePose& pose_in)
@@ -602,12 +615,7 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size()-1);
 
     // save updated transform
-    transformTobeMapped[0] = latestEstimate.rotation().roll();
-    transformTobeMapped[1] = latestEstimate.rotation().pitch();
-    transformTobeMapped[2] = latestEstimate.rotation().yaw();
-    transformTobeMapped[3] = latestEstimate.translation().x();
-    transformTobeMapped[4] = latestEstimate.translation().y();
-    transformTobeMapped[5] = latestEstimate.translation().z();
+    setTransformTobeMapped(thisPose6D);
 
     pcl::PointCloud<PointTypeIndex>::Ptr featCloudKeyFrame(new pcl::PointCloud<PointTypeIndex>());
     PointTypeIndex point;
@@ -661,6 +669,138 @@ void ReconstructIkdTree()
     ikdtreeHistoryKeyPoses->Build(pose_points);
 }
 
+static void transformPose(PointTypePose &pose,
+                          const gtsam::Pose3 &T_new_old)
+{
+    const gtsam::Pose3 pose_new = T_new_old.compose(pclPointTogtsamPose3(pose));
+    const gtsam::Point3 t_new = pose_new.translation();
+
+    pose.x = t_new.x();
+    pose.y = t_new.y();
+    pose.z = t_new.z();
+    pose.roll = pose_new.rotation().roll();
+    pose.pitch = pose_new.rotation().pitch();
+    pose.yaw = pose_new.rotation().yaw();
+}
+
+static void rebuildSamOptimizer()
+{
+    gtSAMgraph.resize(0);
+    initialEstimate.clear();
+    optimizedEstimate.clear();
+    isamCurrentEstimate.clear();
+
+    if (isam != nullptr)
+    {
+        delete isam;
+        isam = nullptr;
+    }
+
+    ISAM2Params parameters;
+    parameters.relinearizeThreshold = 0.1;
+    parameters.relinearizeSkip = 1;
+    isam = new ISAM2(parameters);
+
+    if (cloudKeyPoses6D == nullptr || cloudKeyPoses6D->empty())
+        return;
+
+    NonlinearFactorGraph graph;
+    Values values;
+    const auto priorNoise = noiseModel::Diagonal::Variances(
+        (Vector(6) << 1e-2, 1e-2, M_PI * M_PI, 1e8, 1e8, 1e8).finished());
+    const auto odometryNoise = noiseModel::Diagonal::Variances(
+        (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+
+    for (int i = 0; i < static_cast<int>(cloudKeyPoses6D->size()); ++i)
+    {
+        const Pose3 pose = pclPointTogtsamPose3(cloudKeyPoses6D->points[i]);
+        values.insert(i, pose);
+
+        if (i == 0)
+        {
+            graph.add(PriorFactor<Pose3>(i, pose, priorNoise));
+        }
+        else
+        {
+            const Pose3 prev_pose = pclPointTogtsamPose3(cloudKeyPoses6D->points[i - 1]);
+            graph.add(BetweenFactor<Pose3>(i - 1, i, prev_pose.between(pose), odometryNoise));
+        }
+    }
+
+    isam->update(graph, values);
+    isam->update();
+    isamCurrentEstimate = isam->calculateEstimate();
+    poseCovariance = isam->marginalCovariance(cloudKeyPoses6D->size() - 1);
+    setTransformTobeMapped(cloudKeyPoses6D->back());
+}
+
+void migrateSamFrame(const Eigen::Matrix3d &R_new_old,
+                     const Eigen::Vector3d &t_new_old)
+{
+    std::lock_guard<std::mutex> lock(mtx);
+    const gtsam::Pose3 T_new_old(
+        gtsam::Rot3(R_new_old),
+        gtsam::Point3(t_new_old.x(), t_new_old.y(), t_new_old.z()));
+
+    if (cloudKeyPoses3D != nullptr)
+    {
+        for (auto &pose : cloudKeyPoses3D->points)
+        {
+            const Eigen::Vector3d t_old(pose.x, pose.y, pose.z);
+            const Eigen::Vector3d t_new = transformPoint(t_old, R_new_old, t_new_old);
+            pose.x = t_new.x();
+            pose.y = t_new.y();
+            pose.z = t_new.z();
+        }
+    }
+
+    if (cloudKeyPoses6D != nullptr)
+    {
+        for (auto &pose : cloudKeyPoses6D->points)
+        {
+            transformPose(pose, T_new_old);
+        }
+    }
+
+    if (copy_cloudKeyPoses3D != nullptr)
+    {
+        for (auto &pose : copy_cloudKeyPoses3D->points)
+        {
+            const Eigen::Vector3d t_old(pose.x, pose.y, pose.z);
+            const Eigen::Vector3d t_new = transformPoint(t_old, R_new_old, t_new_old);
+            pose.x = t_new.x();
+            pose.y = t_new.y();
+            pose.z = t_new.z();
+        }
+    }
+
+    if (copy_cloudKeyPoses6D != nullptr)
+    {
+        for (auto &pose : copy_cloudKeyPoses6D->points)
+        {
+            transformPose(pose, T_new_old);
+        }
+    }
+
+    for (auto &pose : initPoses3D)
+    {
+        const Eigen::Vector3d t_old(pose.x, pose.y, pose.z);
+        const Eigen::Vector3d t_new = transformPoint(t_old, R_new_old, t_new_old);
+        pose.x = t_new.x();
+        pose.y = t_new.y();
+        pose.z = t_new.z();
+    }
+
+    transformPath(globalPath, R_new_old, t_new_old);
+
+    ReconstructIkdTree();
+    rebuildSamOptimizer();
+    loopIndexQueue.clear();
+    loopPoseQueue.clear();
+    loopNoiseQueue.clear();
+    aLoopIsClosed = false;
+}
+
 void correctPoses()
 {
     if (cloudKeyPoses3D->points.empty())
@@ -690,7 +830,7 @@ void correctPoses()
 
         ReconstructIkdTree();
         publishMapToOdomTf(get_ros_time(timeLaserInfoCur));
-        ROS_PRINT_INFO("Loop closure: republish map->odom");
+        ROS_PRINT_INFO("Pose graph optimization: republish map->odom");
         aLoopIsClosed = false;
     }
 }

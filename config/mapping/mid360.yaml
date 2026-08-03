@@ -16,7 +16,6 @@ gnss:
     topic: "handsfree/rtk/gnss"
     heading_topic: "handsfree/rtk/heading"
     gpsEnableFlag: true
-    gnssPathEnableFlag: true
     extrinsic_T: [0.0, 0.165, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0,
                   0.0, 1.0, 0.0,

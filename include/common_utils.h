@@ -35,6 +35,49 @@ inline double normalizeYaw(double yaw)
     return yaw;
 }
 
+inline Eigen::Vector3d transformPoint(const Eigen::Vector3d &p_old,
+                                      const Eigen::Matrix3d &R_new_old,
+                                      const Eigen::Vector3d &t_new_old)
+{
+    return R_new_old * p_old + t_new_old;
+}
+
+inline void transformPoseStamped(PoseStampedMsg &pose,
+                                 const Eigen::Matrix3d &R_new_old,
+                                 const Eigen::Vector3d &t_new_old)
+{
+    const Eigen::Vector3d t_old(
+        pose.pose.position.x,
+        pose.pose.position.y,
+        pose.pose.position.z);
+    const Eigen::Quaterniond q_old(
+        pose.pose.orientation.w,
+        pose.pose.orientation.x,
+        pose.pose.orientation.y,
+        pose.pose.orientation.z);
+    const Eigen::Vector3d t_new = transformPoint(t_old, R_new_old, t_new_old);
+    Eigen::Quaterniond q_new(R_new_old * q_old.toRotationMatrix());
+    q_new.normalize();
+
+    pose.pose.position.x = t_new.x();
+    pose.pose.position.y = t_new.y();
+    pose.pose.position.z = t_new.z();
+    pose.pose.orientation.x = q_new.x();
+    pose.pose.orientation.y = q_new.y();
+    pose.pose.orientation.z = q_new.z();
+    pose.pose.orientation.w = q_new.w();
+}
+
+inline void transformPath(PathMsg &path_msg,
+                          const Eigen::Matrix3d &R_new_old,
+                          const Eigen::Vector3d &t_new_old)
+{
+    for (auto &pose : path_msg.poses)
+    {
+        transformPoseStamped(pose, R_new_old, t_new_old);
+    }
+}
+
 template<typename PointT>
 inline bool isFinitePoint(const PointT &pt)
 {
