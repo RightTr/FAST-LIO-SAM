@@ -11,6 +11,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/Float64.h>
+#include <geometry_msgs/Vector3Stamped.h>
 #include <nav_msgs/Path.h>
 #include <nav_msgs/Odometry.h>
 #include <visualization_msgs/Marker.h>
@@ -40,6 +41,7 @@ using PointMsg = geometry_msgs::Point;
 using PoseStampedMsg = geometry_msgs::PoseStamped;
 using ImuMsg = sensor_msgs::Imu;
 using Float64Msg = std_msgs::Float64;
+using Vector3StampedMsg = geometry_msgs::Vector3Stamped;
 using PathPublisher = ros::Publisher;
 using OdomPublisher = ros::Publisher;
 using Pcl2Publisher = ros::Publisher;
@@ -53,6 +55,7 @@ using PoseStampedMsgConstPtr = geometry_msgs::PoseStamped::ConstPtr;
 using ImuMsgConstPtr = sensor_msgs::Imu::ConstPtr;
 using ImuMsgPtr = sensor_msgs::Imu::Ptr;
 using Float64MsgConstPtr = std_msgs::Float64::ConstPtr;
+using Vector3StampedMsgConstPtr = geometry_msgs::Vector3Stamped::ConstPtr;
 using LivoxCustomMsgConstPtr = livox_ros_driver2::CustomMsg::ConstPtr;
 using LivoxCustomMsg = livox_ros_driver2::CustomMsg;
 using Pcl2MsgConstPtr = sensor_msgs::PointCloud2::ConstPtr;
@@ -71,6 +74,7 @@ using TransformStampedMsg = geometry_msgs::TransformStamped;
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/float64.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <tf2/LinearMath/Transform.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -95,6 +99,7 @@ using PointMsg = geometry_msgs::msg::Point;
 using PoseStampedMsg = geometry_msgs::msg::PoseStamped;
 using ImuMsg = sensor_msgs::msg::Imu;
 using Float64Msg = std_msgs::msg::Float64;
+using Vector3StampedMsg = geometry_msgs::msg::Vector3Stamped;
 using PathPublisher = rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr;
 using OdomPublisher = rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr;
 using Pcl2Publisher = rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr;
@@ -108,6 +113,7 @@ using PoseStampedMsgConstPtr = geometry_msgs::msg::PoseStamped::ConstPtr;
 using ImuMsgConstPtr = sensor_msgs::msg::Imu::ConstPtr;
 using ImuMsgPtr = sensor_msgs::msg::Imu::Ptr;
 using Float64MsgConstPtr = std_msgs::msg::Float64::ConstSharedPtr;
+using Vector3StampedMsgConstPtr = geometry_msgs::msg::Vector3Stamped::ConstSharedPtr;
 using LivoxCustomMsgConstPtr = livox_ros_driver2::msg::CustomMsg::ConstPtr;
 using LivoxCustomMsg = livox_ros_driver2::msg::CustomMsg;
 using Pcl2MsgConstPtr = sensor_msgs::msg::PointCloud2::ConstPtr;

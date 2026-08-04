@@ -8,16 +8,17 @@ Panels:
         - /Status1
         - /Points_accumulated1/PointCloud21
         - /Path1/Topic1
+        - /GNSS Path1/Topic1
         - /Axes1
         - /Keyframe1/KeyframeRecent1
         - /Keyframe1/KeyframeGlobal1
-        - /OdometryGlobal1
         - /OdometryGlobal1/Odometry1
         - /OdometryGlobal1/Odometry1/Topic1
-        - /OdometryLocal1
         - /OdometryLocal1/Odometry1/Topic1
-        - /OdometryLocal1/Odometry2/Status1
+        - /OdometryLocal1/Odometry2
         - /OdometryLocal1/Odometry2/Topic1
+        - /Odometry1
+        - /Odometry1/Shape1
       Splitter Ratio: 0.5
     Tree Height: 1009
   - Class: rviz_common/Selection
@@ -76,7 +77,7 @@ Visualization Manager:
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
-          Max Intensity: 150
+          Max Intensity: 113
           Min Color: 0; 0; 0
           Min Intensity: 0
           Name: PointCloud2
@@ -95,7 +96,7 @@ Visualization Manager:
           Use Fixed Frame: true
           Use rainbow: true
           Value: true
-      Enabled: true
+      Enabled: false
       Name: Points_accumulated
     - Class: rviz_common/Group
       Displays:
@@ -194,7 +195,7 @@ Visualization Manager:
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
-        Reliability Policy: Best Effort
+        Reliability Policy: Reliable
         Value: /path
       Value: true
     - Alpha: 1
@@ -222,7 +223,7 @@ Visualization Manager:
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
-        Reliability Policy: Best Effort
+        Reliability Policy: Reliable
         Value: /gnss_path
       Value: true
     - Class: rviz_default_plugins/Axes
@@ -300,7 +301,7 @@ Visualization Manager:
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
-          Max Intensity: 55
+          Max Intensity: 14
           Min Color: 0; 0; 0
           Min Intensity: 0
           Name: KeyframeXYZ
@@ -356,8 +357,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 11.394532203674316
-            Min Value: -0.7922396063804626
+            Max Value: 21.313993453979492
+            Min Value: -0.9825981855392456
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -455,7 +456,7 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Best Effort
+            Reliability Policy: Reliable
             Value: /OdometryGlobal
           Value: true
         - Angle Tolerance: 0.10000000149011612
@@ -497,7 +498,7 @@ Visualization Manager:
             Reliability Policy: Best Effort
             Value: /OdometryHighFreqGlobal
           Value: true
-      Enabled: true
+      Enabled: false
       Name: OdometryGlobal
     - Class: rviz_common/Group
       Displays:
@@ -518,7 +519,7 @@ Visualization Manager:
               Scale: 1
               Value: true
             Value: true
-          Enabled: true
+          Enabled: false
           Keep: 10
           Name: Odometry
           Position Tolerance: 0.10000000149011612
@@ -537,9 +538,9 @@ Visualization Manager:
             Durability Policy: Volatile
             Filter size: 10
             History Policy: Keep Last
-            Reliability Policy: Best Effort
+            Reliability Policy: Reliable
             Value: /Odometry
-          Value: true
+          Value: false
         - Angle Tolerance: 0.10000000149011612
           Class: rviz_default_plugins/Odometry
           Covariance:
@@ -579,8 +580,59 @@ Visualization Manager:
             Reliability Policy: Best Effort
             Value: /OdometryHighFreq
           Value: true
-      Enabled: true
+      Enabled: false
       Name: OdometryLocal
+    - Angle Tolerance: 0.10000000149011612
+      Class: rviz_default_plugins/Odometry
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: true
+        Position:
+          Alpha: 0.30000001192092896
+          Color: 204; 51; 204
+          Scale: 1
+          Value: true
+        Value: false
+      Enabled: true
+      Keep: 1
+      Name: Odometry
+      Position Tolerance: 0.10000000149011612
+      Shape:
+        Alpha: 1
+        Axes Length: 1
+        Axes Radius: 0.10000000149011612
+        Color: 98; 160; 234
+        Head Length: 0.30000001192092896
+        Head Radius: 0.10000000149011612
+        Shaft Length: 1
+        Shaft Radius: 0.10000000149011612
+        Value: Arrow
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gnss_yaw
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /lio_sam/mapping/keyframe_yaw
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -627,7 +679,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 22.074785232543945
+      Distance: 21.01523208618164
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -642,10 +694,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7803986668586731
+      Pitch: 0.9997968673706055
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.998579978942871
+      Yaw: 5.443583011627197
     Saved: ~
 Window Geometry:
   Displays:
@@ -663,5 +715,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1920
-  X: 182
-  Y: 258
+  X: 89
+  Y: 103

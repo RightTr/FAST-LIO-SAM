@@ -2,6 +2,7 @@
 
 #include "utility.h"
 #include "common_utils.h"
+#include "gnssYaw_factor.h"
 #include "map_optimization.h"
 #include "ros_utils.h"
 
@@ -16,6 +17,8 @@
 #include <gtsam/navigation/ImuFactor.h>
 #include <gtsam/navigation/CombinedImuFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/NonlinearFactor.h>
+#include <gtsam/base/numericalDerivative.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/Marginals.h>
 #include <gtsam/nonlinear/Values.h>
@@ -63,6 +66,7 @@ Pcl2Publisher pubIcpKeyFrames;
 Pcl2Publisher pubRecentKeyFrame;
 Pcl2Publisher pubCloudRegisteredRaw;
 MarkerArrayPublisher pubLoopConstraintEdge;
+MarkerArrayPublisher pubKeyFrameYawMarkers;
 
 TimeType timeLaserInfoStamp;
 
@@ -216,6 +220,7 @@ void MapOptimizationInit()
     pubLaserCloudGlobal = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_global", 1);
     pubRecentKeyFrame = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_recent_keyframe", 1);
     pubLoopConstraintEdge = create_publisher<MarkerArrayMsg>("lio_sam/loop_closure_constraints", 1);
+    pubKeyFrameYawMarkers = create_publisher<MarkerArrayMsg>("lio_sam/mapping/keyframe_yaw", 1);
 
     downSizeFilterICP.setLeafSize(mappingICPSize, mappingICPSize, mappingICPSize);
 
@@ -428,19 +433,15 @@ void addLoopFactor()
 
 void addGPSFactor()
 {
-    if (!gpsEnableFlag)
-        return;
+    if (!gpsEnableFlag) return;
 
-    if (!gnss_aligned.load())
-        return;
+    if (!gnss_aligned.load()) return;
 
-    if (cloudKeyPoses3D->points.empty())
-        return;
+    if (cloudKeyPoses3D->points.empty()) return;
 
     if (cloudKeyPoses3D->points.size() < 5 ||
         pointDistance(cloudKeyPoses3D->front(),
-                      cloudKeyPoses3D->back()) < 5.0)
-        return;
+                      cloudKeyPoses3D->back()) < 5.0) return;
 
     OdometryMsg gps_odom;
     bool found_gps = false;
@@ -451,14 +452,13 @@ void addGPSFactor()
         {
             double t = get_ros_time_sec(gps_buffer.front().header.stamp) + gnss_time_offset;
 
-            if (t < timeLaserInfoCur - 0.5)
+            if (t < timeLaserInfoCur - 0.2)
             {
                 gps_buffer.pop_front();
                 continue;
             }
 
-            if (t > timeLaserInfoCur + 0.5)
-                return;
+            if (t > timeLaserInfoCur + 0.2) return;
 
             gps_odom = gps_buffer.front();
             gps_buffer.pop_front();
@@ -474,19 +474,13 @@ void addGPSFactor()
     double gps_y = gps_odom.pose.pose.position.y;
     double gps_z = gps_odom.pose.pose.position.z;
 
-    if (std::abs(gps_x) < 1e-6 &&
-        std::abs(gps_y) < 1e-6)
-        return;
+    if (std::abs(gps_x) < 1e-6 && std::abs(gps_y) < 1e-6) return;
 
     double cov_x = std::max(gps_odom.pose.covariance[0], 1.0);
     double cov_y = std::max(gps_odom.pose.covariance[7], 1.0);
     double cov_z = useGpsElevation ?
                    std::max(gps_odom.pose.covariance[14], 1.0) :
                    std::max(gnssHeightCovThreshold, 1.0);
-
-    if (cov_x > gpsCovThreshold ||
-        cov_y > gpsCovThreshold)
-        return;
 
     static PointTypeIndex lastGPSPoint;
     static bool valid = false;
@@ -496,8 +490,7 @@ void addGPSFactor()
     cur.y = gps_y;
     cur.z = gps_z;
 
-    if (valid && pointDistance(cur, lastGPSPoint) < 1.0)
-        return;
+    if (valid && pointDistance(cur, lastGPSPoint) < 1.0) return;
 
     const Eigen::Affine3f T_w_i = pcl::getTransformation(
         transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
@@ -531,8 +524,37 @@ void addGPSFactor()
 
     lastGPSPoint = cur;
     valid = true;
-    ROS_PRINT_INFO("add GNSS factor: key=%zu, gps=(%.3f %.3f %.3f), cov=(%.3f %.3f %.3f)",
-                   cloudKeyPoses3D->size(), gps_x, gps_y, gps_z, cov_x, cov_y, cov_z);
+}
+
+void addGNSSYawFactor()
+{
+    if (!gpsEnableFlag)
+        return;
+
+    if (!useGnssYawFactor)
+        return;
+
+    if (!gnss_aligned.load())
+        return;
+
+    double desired_yaw = 0.0;
+    if (!getGnssYaw(desired_yaw))
+        return;
+
+    if (cloudKeyPoses3D->points.empty())
+        return;
+
+    const int key = static_cast<int>(cloudKeyPoses3D->size());
+    const PointTypePose &cur_pose = cloudKeyPoses6D->back();
+    const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4); // rad, only constrain yaw
+
+    if (std::abs(normalizeYaw(desired_yaw - cur_pose.yaw)) > 60.0 * M_PI / 180.0) return;
+
+    const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
+
+    gtSAMgraph.add(
+        boost::shared_ptr<GnssYawFactor>(
+            new GnssYawFactor(key, desired_yaw, yawNoise)));
 }
 
 void updatePath(const PointTypePose& pose_in)
@@ -558,6 +580,9 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
     // gps factor
     addGPSFactor();
+
+    // yaw factor
+    addGNSSYawFactor();
 
     // loop factor
     addLoopFactor();
@@ -846,6 +871,44 @@ void publishSamMsg()
         globalPath.header.stamp = timeLaserInfoStamp;
         globalPath.header.frame_id = map_frame;
         ros_publish(pubPath, globalPath);
+    }
+
+    if (ros_subscription_count(pubKeyFrameYawMarkers) != 0)
+    {
+        MarkerArrayMsg markerArray;
+
+        MarkerMsg markerClear;
+        markerClear.header.frame_id = map_frame;
+        markerClear.header.stamp = timeLaserInfoStamp;
+        markerClear.action = MarkerMsg::DELETEALL;
+        markerArray.markers.push_back(markerClear);
+
+        markerArray.markers.reserve(markerArray.markers.size() + cloudKeyPoses6D->points.size());
+        for (size_t i = 0; i < cloudKeyPoses6D->points.size(); ++i)
+        {
+            const auto &pose = cloudKeyPoses6D->points[i];
+            MarkerMsg marker;
+            marker.header.frame_id = map_frame;
+            marker.header.stamp = timeLaserInfoStamp;
+            marker.ns = "keyframe_yaw";
+            marker.id = static_cast<int>(i);
+            marker.action = MarkerMsg::ADD;
+            marker.type = MarkerMsg::ARROW;
+            marker.pose.position.x = pose.x;
+            marker.pose.position.y = pose.y;
+            marker.pose.position.z = pose.z;
+            marker.pose.orientation = quaternion_from_rpy(0.0, 0.0, pose.yaw);
+            marker.scale.x = 0.8;
+            marker.scale.y = 0.12;
+            marker.scale.z = 0.12;
+            marker.color.r = 1.0f;
+            marker.color.g = 1.0f;
+            marker.color.b = 0.0f;
+            marker.color.a = 0.9f;
+            markerArray.markers.push_back(marker);
+        }
+
+        ros_publish(pubKeyFrameYawMarkers, markerArray);
     }
 
     if (ros_subscription_count(pubRecentKeyFrame) != 0)

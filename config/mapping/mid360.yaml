@@ -22,8 +22,11 @@ gnss:
                   0.0, 0.0, 1.0]
     heading_offset_deg: 90.0
     time_offset: 0.0 # seconds, corrected_gnss_time = raw_gnss_time + time_offset; positive if GNSS stamp is earlier than LiDAR.
+    useYawFactor: false
+    yawFactorSigma: 0.05 # rad, softened to avoid over-constraining pose graph
+    positionSigmaXY: 3.0 # m, planar single-point accuracy
+    positionSigmaZ: 5.0  # m, height single-point accuracy
     useGpsElevation: false
-    gpsCovThreshold: 2.25
     poseCovThreshold: 25.0
     heightCovThreshold: 6.25
 

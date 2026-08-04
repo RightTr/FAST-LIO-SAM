@@ -60,12 +60,14 @@ extern Eigen::Vector3d gnss_extrinsic_T;
 extern Eigen::Matrix3d gnss_extrinsic_R;
 extern double gnss_heading_offset_deg;
 extern double gnss_time_offset;
+extern bool useGnssYawFactor;
+extern double gnss_yaw_factor_sigma;
+extern double gnss_pos_sigma_xy;
+extern double gnss_pos_sigma_z;
 extern bool useGpsElevation;
-extern double gpsCovThreshold;
 extern double poseCovThreshold;
 extern double gnssHeightCovThreshold;
 extern double gnss_heading_deg;
-extern bool gnss_heading_valid;
 extern std::atomic<bool> gnss_aligned;
 extern std::deque<OdometryMsg> gps_buffer;
 extern std::mutex mtx_gps;
@@ -82,6 +84,7 @@ void read_liosam_params();
 void read_gnss_params();
 void set_mapping_mode();
 void publishMapToOdomTf(const TimeType& stamp);
+bool getGnssYaw(double &yaw);
 
 inline Eigen::Vector3d standardize(const Eigen::Vector3d &v)
 {

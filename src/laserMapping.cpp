@@ -89,6 +89,7 @@ double lidar_residual_ref      = 0.05;
 
 static std::shared_ptr<GnssProcess> gnss_process = std::make_shared<GnssProcess>();
 PathPublisher pubGnssPath;
+OdomPublisher pubGnssYawOdom;
 static void toOdom(const Eigen::Matrix3d &R_map_body,
                    const Eigen::Vector3d &t_map_body,
                    Eigen::Matrix3d &R_odom_body,
@@ -111,9 +112,6 @@ static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
 bool getGnssYaw(double &yaw)
 {
     std::lock_guard<std::mutex> lock(mtx_gnss_heading);
-    if (!gnss_heading_valid)
-        return false;
-
     // The GNSS heading is expected to be degrees clockwise from north.
     // ROS ENU yaw is radians counter-clockwise from east.
     const double heading_rad =
@@ -696,6 +694,12 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
     }
 
     OdometryMsg gps_odom = gnss_process->ToOdometry(map_frame, "gps");
+    const double cov_xy = gnss_pos_sigma_xy * gnss_pos_sigma_xy;
+    const double cov_z = gnss_pos_sigma_z * gnss_pos_sigma_z;
+    gps_odom.pose.covariance.fill(0.0);
+    gps_odom.pose.covariance[0] = cov_xy;
+    gps_odom.pose.covariance[7] = cov_xy;
+    gps_odom.pose.covariance[14] = cov_z;
     if (!useGpsElevation) {
         gps_odom.pose.covariance[14] = gnssHeightCovThreshold;
     }
@@ -728,6 +732,19 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
         {
             ros_publish(pubGnssPath, gnssPath);
         }
+
+        if (ros_subscription_count(pubGnssYawOdom) != 0)
+        {
+            double yaw = 0.0;
+            if (getGnssYaw(yaw))
+            {
+                OdometryMsg yaw_odom = gps_odom;
+                yaw_odom.header.frame_id = map_frame;
+                yaw_odom.child_frame_id = "gnss";
+                yaw_odom.pose.pose.orientation = quaternion_from_rpy(0.0, 0.0, yaw);
+                ros_publish(pubGnssYawOdom, yaw_odom);
+            }
+        }
     }
 
     std::lock_guard<std::mutex> lock(mtx_gps);
@@ -737,15 +754,17 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
     }
 }
 
-void gnss_heading_cbk(const Float64MsgConstPtr &msg_in)
+void gnss_heading_cbk(const OdometryMsgConstPtr &msg_in)
 {
-    if (!std::isfinite(msg_in->data)) {
+    const auto &q = msg_in->pose.pose.orientation;
+    const double yaw_rad = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                       1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    if (!std::isfinite(yaw_rad)) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(mtx_gnss_heading);
-    gnss_heading_deg = msg_in->data;
-    gnss_heading_valid = true;
+    gnss_heading_deg = yaw_rad * 180.0 / M_PI;
 }
 
 double lidar_mean_scantime = 0.0;
@@ -1045,10 +1064,6 @@ bool initGnssMap(double lidar_stamp_sec)
 
     const double cov_x = gps_odom.pose.covariance[0];
     const double cov_y = gps_odom.pose.covariance[7];
-    if (!std::isfinite(cov_x) || !std::isfinite(cov_y))
-        return false;
-    if (cov_x > gpsCovThreshold || cov_y > gpsCovThreshold)
-        return false;
 
     const Eigen::Matrix3d R_map_imu_before = state_point.rot.toRotationMatrix();
     const Eigen::Vector3d t_map_imu_before = state_point.pos;
@@ -1101,11 +1116,6 @@ bool initGnssMap(double lidar_stamp_sec)
     geoQuat.w = state_point.rot.coeffs()[3];
 
     gnss_aligned.store(true);
-    ROS_PRINT_INFO(
-        "GNSS ENU map initialized: heading_yaw=%.3f rad, yaw_delta=%.3f rad, "
-        "map->odom t=(%.3f %.3f %.3f)",
-        desired_yaw, yaw_delta,
-        t_map_odom.x(), t_map_odom.y(), t_map_odom.z());
     return true;
 }
 
@@ -1747,7 +1757,7 @@ int main(int argc, char** argv)
     auto sub_reloc = create_subscriber<PoseStampedMsg>(reloc_topic, 10, reloc_cbk);
     auto sub_imu = create_subscriber<ImuMsg>(imu_topic, 200000, imu_cbk);
     static auto sub_gnss = create_subscriber<GnssFixMsg>(gnss_topic, 10, gnss_cbk);
-    static auto sub_gnss_heading = create_subscriber<Float64Msg>(gnss_heading_topic, 10, gnss_heading_cbk);
+    static auto sub_gnss_heading = create_subscriber<OdometryMsg>(gnss_heading_topic, 10, gnss_heading_cbk);
     auto pubLaserCloudFull = create_publisher<PointCloud2Msg>("/cloud_registered", 100000);
     auto pubLaserCloudFull_body = create_publisher<PointCloud2Msg>("/cloud_registered_body", 100000);
     auto pubLaserCloudEffect = create_publisher<PointCloud2Msg>("/cloud_effected", 100000);
@@ -1764,6 +1774,7 @@ int main(int argc, char** argv)
     auto pubOdomAftMappedGlobal = create_publisher_qos<OdometryMsg>("/OdometryGlobal", reliable_qos);
     auto pubPath = create_publisher_qos<PathMsg>("/path", reliable_qos);
     pubGnssPath = create_publisher_qos<PathMsg>("/gnss_path", reliable_qos);
+    pubGnssYawOdom = create_publisher_qos<OdometryMsg>("/gnss_yaw", reliable_qos);
     auto pubOdomHighFreq = create_publisher_qos<OdometryMsg>("/OdometryHighFreq", best_qos);
     auto pubOdomHighFreqGlobal = create_publisher_qos<OdometryMsg>("/OdometryHighFreqGlobal", best_qos);
     p_pre->pub_corn = create_publisher<PointCloud2Msg>("/corn_feature", 100000);
