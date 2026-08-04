@@ -1754,22 +1754,24 @@ int main(int argc, char** argv)
     auto pubLaserCloudMap = create_publisher<PointCloud2Msg>("/Laser_map", 100000);
     auto pubLaserCloudPriorMap = create_publisher<PointCloud2Msg>("/Laser_map_prior", 100000);
     #ifdef USE_ROS1
-    int odom_qos = 0;  // ROS1 ignores this parameter
+    int best_qos = 0;  // ROS1 ignores this parameter
+    int reliable_qos = 0;
     #elif defined(USE_ROS2)
-    auto odom_qos = rclcpp::QoS(10).best_effort(); // avoid latency caused by QoS reliability in ROS2
+    auto best_qos = rclcpp::QoS(10).best_effort(); // avoid latency caused by QoS reliability in ROS2
+    auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
     #endif
-    auto pubOdomAftMapped = create_publisher_qos<OdometryMsg>("/Odometry", odom_qos);
-    auto pubOdomAftMappedGlobal = create_publisher_qos<OdometryMsg>("/OdometryGlobal", odom_qos);
-    auto pubPath = create_publisher_qos<PathMsg>("/path", odom_qos);
-    pubGnssPath = create_publisher_qos<PathMsg>("/gnss_path", odom_qos);
-    auto pubOdomHighFreq = create_publisher_qos<OdometryMsg>("/OdometryHighFreq", odom_qos);
-    auto pubOdomHighFreqGlobal = create_publisher_qos<OdometryMsg>("/OdometryHighFreqGlobal", odom_qos);
+    auto pubOdomAftMapped = create_publisher_qos<OdometryMsg>("/Odometry", reliable_qos);
+    auto pubOdomAftMappedGlobal = create_publisher_qos<OdometryMsg>("/OdometryGlobal", reliable_qos);
+    auto pubPath = create_publisher_qos<PathMsg>("/path", reliable_qos);
+    pubGnssPath = create_publisher_qos<PathMsg>("/gnss_path", reliable_qos);
+    auto pubOdomHighFreq = create_publisher_qos<OdometryMsg>("/OdometryHighFreq", best_qos);
+    auto pubOdomHighFreqGlobal = create_publisher_qos<OdometryMsg>("/OdometryHighFreqGlobal", best_qos);
     p_pre->pub_corn = create_publisher<PointCloud2Msg>("/corn_feature", 100000);
     p_pre->pub_surf = create_publisher<PointCloud2Msg>("/surf_feature", 100000);
 
     if (sam_enable) {
         MapOptimizationInit();
-        printf("...... LIO-SAM Backend Start......\n");
+        printf("...... Pose graph optimization backend start......\n");
     }
 
     std::thread odomhighthread([&](){
