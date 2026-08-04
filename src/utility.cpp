@@ -51,6 +51,7 @@ double gnss_time_offset = 0.0;
 bool useGpsElevation = false;
 double gpsCovThreshold = 2.0;
 double poseCovThreshold = 25.0;
+double gnssHeightCovThreshold = 10000.0;
 double gnss_heading_deg = 0.0;
 bool gnss_heading_valid = false;
 std::atomic<bool> gnss_aligned(false);
@@ -147,4 +148,5 @@ void read_gnss_params() {
     rosparam_get("gnss/useGpsElevation", useGpsElevation, false);
     rosparam_get("gnss/gpsCovThreshold", gpsCovThreshold, 2.0);
     rosparam_get("gnss/poseCovThreshold", poseCovThreshold, 25.0);
+    rosparam_get("gnss/heightCovThreshold", gnssHeightCovThreshold, 10000.0);
 }

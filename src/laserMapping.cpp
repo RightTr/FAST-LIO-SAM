@@ -28,7 +28,6 @@
 #include "map_optimization.h"
 #include "utility.h"
 #include "common_utils.h"
-
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
 #define PUBFRAME_PERIOD     (20)
@@ -71,6 +70,7 @@ bool grav_align = false;
 int lidar_type;
 bool use_zupt = false;
 std::string prior_tree_map_path;
+double imu_gap_ = 0.5;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
 double prior_lidar_cov = 0.001;
@@ -89,7 +89,6 @@ double lidar_residual_ref      = 0.05;
 
 static std::shared_ptr<GnssProcess> gnss_process = std::make_shared<GnssProcess>();
 PathPublisher pubGnssPath;
-
 static void toOdom(const Eigen::Matrix3d &R_map_body,
                    const Eigen::Vector3d &t_map_body,
                    Eigen::Matrix3d &R_odom_body,
@@ -572,7 +571,7 @@ void lasermap_fov_segment()
     kdtree_delete_time = omp_get_wtime() - delete_begin;
 }
 
-void standard_pcl_cbk(const Pcl2MsgConstPtr &msg) 
+void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
 {
     mtx_buffer.lock();
     const double stamp_sec = get_ros_time_sec(msg->header.stamp);
@@ -619,7 +618,7 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
-    time_buffer.push_back(last_timestamp_lidar);
+    time_buffer.push_back(stamp_sec);
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
@@ -655,15 +654,13 @@ void imu_cbk(const ImuMsgConstPtr &msg_in)
     double timestamp = get_ros_time_sec(msg->header.stamp);
 
     mtx_buffer.lock();
-
     if (timestamp < last_timestamp_imu)
     {
-        ROS_PRINT_WARN("imu loop back, drop current imu and clear buffer");
-        imu_buffer.clear();
+        // const double loop_back_dt = last_timestamp_imu - timestamp;
+        // ROS_PRINT_WARN("imu loop back by %.6f s, drop current imu only", loop_back_dt);
         mtx_buffer.unlock();
         return;
     }
-
     last_timestamp_imu = timestamp;
 
     imu_buffer.push_back(msg);
@@ -700,7 +697,7 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
 
     OdometryMsg gps_odom = gnss_process->ToOdometry(map_frame, "gps");
     if (!useGpsElevation) {
-        gps_odom.pose.covariance[14] = 10000.0;
+        gps_odom.pose.covariance[14] = gnssHeightCovThreshold;
     }
 
     if (!gpsEnableFlag || gnss_aligned.load())
@@ -1639,6 +1636,8 @@ int main(int argc, char** argv)
     rosparam_get("common/flip_en", flip_en, false);
     rosparam_get("common/grav_align", grav_align, false);
     rosparam_get("common/mode", mapping_mode, 1);
+    rosparam_get("mapping/imu_gap", imu_gap_, 0.5);
+    p_imu->set_imu_gap(imu_gap_);
     set_mapping_mode();
     rosparam_get("prior_map/prior_tree_map_path", prior_tree_map_path, std::string(""));
     rosparam_get("prior_map/prior_init", prior_init_en, false);

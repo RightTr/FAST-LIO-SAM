@@ -22,8 +22,9 @@ gnss:
     heading_offset_deg: 0.0
     time_offset: 0.0 # seconds, corrected_gnss_time = raw_gnss_time + time_offset; positive if GNSS stamp is earlier than LiDAR.
     useGpsElevation: false
-    gpsCovThreshold: 2.0
+    gpsCovThreshold: 2.25
     poseCovThreshold: 25.0
+    heightCovThreshold: 6.25
 
 preprocess:
     lidar_type: 1

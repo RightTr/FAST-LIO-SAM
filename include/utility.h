@@ -63,6 +63,7 @@ extern double gnss_time_offset;
 extern bool useGpsElevation;
 extern double gpsCovThreshold;
 extern double poseCovThreshold;
+extern double gnssHeightCovThreshold;
 extern double gnss_heading_deg;
 extern bool gnss_heading_valid;
 extern std::atomic<bool> gnss_aligned;

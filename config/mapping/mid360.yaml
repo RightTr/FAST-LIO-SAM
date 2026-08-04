@@ -23,8 +23,9 @@ gnss:
     heading_offset_deg: 90.0
     time_offset: 0.0 # seconds, corrected_gnss_time = raw_gnss_time + time_offset; positive if GNSS stamp is earlier than LiDAR.
     useGpsElevation: false
-    gpsCovThreshold: 2.0
+    gpsCovThreshold: 2.25
     poseCovThreshold: 25.0
+    heightCovThreshold: 6.25
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
@@ -36,6 +37,7 @@ mapping:
     gyr_cov: 0.1
     b_acc_cov: 0.0001
     b_gyr_cov: 0.0001
+    imu_gap: 0.5
     fov_degree:    360.0
     det_range:     100.0
     extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic
@@ -57,7 +59,7 @@ lio_sam:
     surroundingKeyframeSearchRadius: 50.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
 
     # Loop closure
-    loopClosureEnableFlag: false
+    loopClosureEnableFlag: true
     loopClosureFrequency: 1.0                     # Hz, regulate loop closure constraint add frequency
     surroundingKeyframeSize: 50                   # submap size (when loop closure enabled)
     historyKeyframeSearchRadius: 15.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
@@ -69,7 +71,7 @@ lio_sam:
     # Visualization
     globalMapVisualizationSearchRadius: 1000.0    # meters, global map visualization radius
     globalMapVisualizationPoseDensity: 10.0       # meters, global map visualization keyframe density
-    globalMapVisualizationLeafSize: 1.0           # meters, global map visualization cloud density
+    globalMapVisualizationLeafSize: 0.1           # meters, global map visualization cloud density
 
     keyframe_export_en: false                      # export each keyframe as a full-resolution PCD
     keyframe_global_pcd_en: false                  # stitch exported keyframes into one global PCD

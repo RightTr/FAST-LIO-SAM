@@ -482,7 +482,7 @@ void addGPSFactor()
     double cov_y = std::max(gps_odom.pose.covariance[7], 1.0);
     double cov_z = useGpsElevation ?
                    std::max(gps_odom.pose.covariance[14], 1.0) :
-                   10000.0;
+                   std::max(gnssHeightCovThreshold, 1.0);
 
     if (cov_x > gpsCovThreshold ||
         cov_y > gpsCovThreshold)
