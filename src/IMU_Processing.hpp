@@ -79,7 +79,6 @@ class ImuProcess
   void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
   void zupt_update(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state, double confidence);
-  void gravity_ref(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state);
 
   bool   use_zupt = false;
   bool   grav_align_ = false;
@@ -105,13 +104,11 @@ class ImuProcess
   V3D Lidar_T_wrt_IMU;
   V3D mean_acc;
   V3D mean_gyr;
-  V3D gravity_ref_;
   V3D angvel_last;
   V3D acc_s_last;
   double start_timestamp_;
   double last_lidar_end_time_;
   double imu_gap_ = 0.5;
-  bool   imu_gap_hold_ = false;
   int    init_iter_num = 1;
   bool   b_first_frame_ = true;
   bool   imu_need_init_ = true;
@@ -153,7 +150,6 @@ ImuProcess::ImuProcess()
   cov_bias_acc  = V3D(0.0001, 0.0001, 0.0001);
   mean_acc      = V3D(0, 0, -1.0);
   mean_gyr      = V3D(0, 0, 0);
-  gravity_ref_  = V3D(0, 0, -G_m_s2);
   angvel_last     = Zero3d;
   Lidar_T_wrt_IMU = Zero3d;
   Lidar_R_wrt_IMU = Eye3d;
@@ -167,9 +163,7 @@ void ImuProcess::Reset()
   // ROS_WARN("Reset ImuProcess");
   mean_acc      = V3D(0, 0, -1.0);
   mean_gyr      = V3D(0, 0, 0);
-  gravity_ref_  = V3D(0, 0, -G_m_s2);
   angvel_last       = Zero3d;
-  imu_gap_hold_     = false;
   imu_need_init_    = true;
   start_timestamp_  = -1;
   init_iter_num     = 1;
@@ -248,29 +242,15 @@ double ImuProcess::gap_handler(double dt)
 {
   if (dt < 0.0)
   {
-    imu_gap_hold_ = true;
-    return 0.0;
+    return -1.0;
   }
 
   if (dt > imu_gap_)
   {
-    imu_gap_hold_ = true;
-    return 0.0;
-  }
-
-  if (imu_gap_hold_)
-  {
-    imu_gap_hold_ = false;
+    return -1.0;
   }
 
   return dt;
-}
-
-void ImuProcess::gravity_ref(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state)
-{
-  state_ikfom x = kf_state.get_x();
-  x.grav = S2(gravity_ref_);
-  kf_state.change_x(x);
 }
 
 // confidence = exp(-3 * max_normalized_variance), in [0,1]
@@ -368,14 +348,12 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   }
   else init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
 
-  gravity_ref_ = V3D(init_state.grav[0], init_state.grav[1], init_state.grav[2]);
   
   //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   init_state.bg  = mean_gyr;
   init_state.offset_T_L_I = Lidar_T_wrt_IMU;
   init_state.offset_R_L_I = Lidar_R_wrt_IMU;
   kf_state.change_x(init_state);
-  gravity_ref(kf_state);
 
   esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = kf_state.get_P();
   init_P.setIdentity();
@@ -508,6 +486,10 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     }
 
     dt = gap_handler(dt);
+    if (dt < 0.0)
+    {
+      continue;
+    }
 
     in.acc = acc_avr;
     in.gyro = angvel_avr;
@@ -517,10 +499,10 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
     kf_state.predict(dt, Q, in);
     if (is_frame_static) zupt_update(kf_state, frame_confidence);
-    gravity_ref(kf_state);
 
     /* save the poses at each IMU measurements */
     imu_state = kf_state.get_x();
+    const V3D grav_vec(imu_state.grav[0], imu_state.grav[1], imu_state.grav[2]);
     Pose pose(imu_state.pos.x(), imu_state.pos.y(), imu_state.pos.z(),
               imu_state.rot.x(), imu_state.rot.y(), imu_state.rot.z(), imu_state.rot.w(),
               tail_time);
@@ -533,9 +515,9 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     pose._bax = imu_state.ba.x();
     pose._bay = imu_state.ba.y();
     pose._baz = imu_state.ba.z();
-    pose._gravx = gravity_ref_[0];
-    pose._gravy = gravity_ref_[1];
-    pose._gravz = gravity_ref_[2];
+    pose._gravx = grav_vec[0];
+    pose._gravy = grav_vec[1];
+    pose._gravz = grav_vec[2];
     pose._exqx = imu_state.offset_R_L_I.x();
     pose._exqy = imu_state.offset_R_L_I.y();
     pose._exqz = imu_state.offset_R_L_I.z();
@@ -548,7 +530,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     acc_s_last  = imu_state.rot * (acc_avr - imu_state.ba);
     for(int i=0; i<3; i++)
     {
-      acc_s_last[i] += gravity_ref_[i];
+      acc_s_last[i] += grav_vec[i];
     }
     const double offs_t = tail_time - last_lidar_end_time_;
     IMUpose.push_back(set_pose6d(offs_t, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot.toRotationMatrix()));
@@ -558,11 +540,17 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   double note = pcl_end_time > imu_end_time ? 1.0 : -1.0;
   dt = note * (pcl_end_time - imu_end_time);
   dt = gap_handler(dt);
+  if (dt < 0.0)
+  {
+    last_imu_ = meas.imu.back();
+    last_lidar_end_time_ = pcl_end_time;
+    return;
+  }
   kf_state.predict(dt, Q, in);
   if (is_frame_static) zupt_update(kf_state, frame_confidence);
-  gravity_ref(kf_state);
 
   imu_state = kf_state.get_x();
+  const V3D grav_vec(imu_state.grav[0], imu_state.grav[1], imu_state.grav[2]);
   last_imu_ = meas.imu.back();
   last_lidar_end_time_ = pcl_end_time;
 
@@ -617,10 +605,6 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
 
   size_t gap_idx = 0;
   double gap_dt = 0.0;
-  if (imu_gap(meas, imu_gap_, gap_idx, gap_dt))
-  {
-    imu_gap_hold_ = true;
-  }
 
   if (imu_need_init_)
   {

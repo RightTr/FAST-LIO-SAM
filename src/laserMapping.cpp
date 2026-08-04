@@ -575,8 +575,9 @@ void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
     const double stamp_sec = get_ros_time_sec(msg->header.stamp);
     if (stamp_sec < last_timestamp_lidar)
     {
-        ROS_PRINT_ERROR("lidar loop back, clear buffer");
-        lidar_buffer.clear();
+        ROS_PRINT_ERROR("lidar loop back, drop current lidar only");
+        mtx_buffer.unlock();
+        return;
     }
 
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
@@ -596,8 +597,9 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
     const double stamp_sec = get_ros_time_sec(msg->header.stamp);
     if (stamp_sec < last_timestamp_lidar)
     {
-        ROS_PRINT_ERROR("lidar loop back, clear buffer");
-        lidar_buffer.clear();
+        ROS_PRINT_ERROR("lidar loop back, drop current lidar only");
+        mtx_buffer.unlock();
+        return;
     }
     last_timestamp_lidar = stamp_sec;
     
