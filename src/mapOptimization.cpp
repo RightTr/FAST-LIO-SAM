@@ -6,8 +6,10 @@
 #include "map_optimization.h"
 #include "ros_utils.h"
 
+#include <cmath>
 #include <algorithm>
 #include <fstream>
+#include <limits>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
@@ -450,15 +452,17 @@ void addGPSFactor()
 
         while (!gps_buffer.empty())
         {
-            double t = get_ros_time_sec(gps_buffer.front().header.stamp) + gnss_time_offset;
-
-            if (t < timeLaserInfoCur - 0.2)
+            const double gps_stamp_sec = get_ros_time_sec(gps_buffer.front().header.stamp);
+            if (!time_in_window(gps_stamp_sec, timeLaserInfoCur, 0.4))
             {
-                gps_buffer.pop_front();
-                continue;
-            }
+                if (gps_stamp_sec < timeLaserInfoCur)
+                {
+                    gps_buffer.pop_front();
+                    continue;
+                }
 
-            if (t > timeLaserInfoCur + 0.2) return;
+                return;
+            }
 
             gps_odom = gps_buffer.front();
             gps_buffer.pop_front();
@@ -476,11 +480,9 @@ void addGPSFactor()
 
     if (std::abs(gps_x) < 1e-6 && std::abs(gps_y) < 1e-6) return;
 
-    double cov_x = std::max(gps_odom.pose.covariance[0], 1.0);
-    double cov_y = std::max(gps_odom.pose.covariance[7], 1.0);
-    double cov_z = useGpsElevation ?
-                   std::max(gps_odom.pose.covariance[14], 1.0) :
-                   std::max(gnssHeightCovThreshold, 1.0);
+    double cov_x = gps_odom.pose.covariance[0];
+    double cov_y = gps_odom.pose.covariance[7];
+    double cov_z = gps_odom.pose.covariance[14];
 
     static PointTypeIndex lastGPSPoint;
     static bool valid = false;
@@ -490,7 +492,7 @@ void addGPSFactor()
     cur.y = gps_y;
     cur.z = gps_z;
 
-    if (valid && pointDistance(cur, lastGPSPoint) < 1.0) return;
+    if (valid && pointDistance(cur, lastGPSPoint) < gpsFactorMinDis) return;
 
     const Eigen::Affine3f T_w_i = pcl::getTransformation(
         transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
@@ -537,11 +539,36 @@ void addGNSSYawFactor()
     if (!gnss_aligned.load())
         return;
 
-    double desired_yaw = 0.0;
-    if (!getGnssYaw(desired_yaw))
+    if (cloudKeyPoses3D->points.empty())
         return;
 
-    if (cloudKeyPoses3D->points.empty())
+    double desired_yaw = 0.0;
+    bool found_heading = false;
+    {
+        std::lock_guard<std::mutex> lock(mtx_gnss_heading);
+        while (!gnss_heading_buffer.empty())
+        {
+            const GnssHeadingSample &sample = gnss_heading_buffer.front();
+            if (!time_in_window(sample.stamp_sec, timeLaserInfoCur, 0.4))
+            {
+                if (sample.stamp_sec < timeLaserInfoCur)
+                {
+                    gnss_heading_buffer.pop_front();
+                    continue;
+                }
+
+                return;
+            }
+
+            desired_yaw = normalizeYaw(M_PI * 0.5 - sample.heading,
+                                       -heading_offset);
+            found_heading = true;
+            gnss_heading_buffer.pop_front();
+            break;
+        }
+    }
+
+    if (!found_heading)
         return;
 
     const int key = static_cast<int>(cloudKeyPoses3D->size());

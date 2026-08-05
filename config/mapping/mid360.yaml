@@ -15,20 +15,17 @@ common:
 gnss:
     topic: "handsfree/rtk/gnss"
     heading_topic: "handsfree/rtk/heading"
+    gpsPathVis: true
     gpsEnableFlag: true
+    gpsFactorMinDis: 5.0
     extrinsic_T: [0.0, 0.165, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0,
                   0.0, 1.0, 0.0,
                   0.0, 0.0, 1.0]
     heading_offset_deg: 90.0
-    time_offset: 0.0 # seconds, corrected_gnss_time = raw_gnss_time + time_offset; positive if GNSS stamp is earlier than LiDAR.
     useYawFactor: false
-    yawFactorSigma: 0.05 # rad, softened to avoid over-constraining pose graph
-    positionSigmaXY: 3.0 # m, planar single-point accuracy
-    positionSigmaZ: 5.0  # m, height single-point accuracy
+    yawFactorSigma: 0.1 # rad, softened to avoid over-constraining pose graph
     useGpsElevation: false
-    poseCovThreshold: 25.0
-    heightCovThreshold: 6.25
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
@@ -40,7 +37,8 @@ mapping:
     gyr_cov: 0.1
     b_acc_cov: 0.0001
     b_gyr_cov: 0.0001
-    imu_gap: 0.5
+    imu_dt: 0.005
+    imu_repair: false
     fov_degree:    360.0
     det_range:     100.0
     extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic

@@ -40,23 +40,20 @@ std::string high_freq_base_frame = "base_hf_link";
 std::string gnss_topic = "handsfree/rtk/gnss";
 std::string gnss_heading_topic = "handsfree/rtk/heading";
 bool gpsEnableFlag = false;
+bool gpsPathVis = false;
+double gpsFactorMinDis = 5.0;
 std::vector<double> gnss_extrinsic_T_raw(3, 0.0);
 std::vector<double> gnss_extrinsic_R_raw{1.0, 0.0, 0.0,
                                          0.0, 1.0, 0.0,
                                          0.0, 0.0, 1.0};
 Eigen::Vector3d gnss_extrinsic_T = Eigen::Vector3d::Zero();
 Eigen::Matrix3d gnss_extrinsic_R = Eigen::Matrix3d::Identity();
-double gnss_heading_offset_deg = 0.0;
-double gnss_time_offset = 0.0;
+double heading_offset = 0.0;
 bool useGnssYawFactor = false;
 double gnss_yaw_factor_sigma = 0.10;
-double gnss_pos_sigma_xy = 1.5;
-double gnss_pos_sigma_z = 2.5;
 bool useGpsElevation = false;
-double poseCovThreshold = 25.0;
-double gnssHeightCovThreshold = 10000.0;
-double gnss_heading_deg = 0.0;
 std::atomic<bool> gnss_aligned(false);
+std::deque<GnssHeadingSample> gnss_heading_buffer;
 std::deque<OdometryMsg> gps_buffer;
 std::mutex mtx_gps;
 std::mutex mtx_gnss_heading;
@@ -130,7 +127,9 @@ void read_liosam_params() {
 void read_gnss_params() {
     rosparam_get("gnss/topic", gnss_topic, std::string("handsfree/rtk/gnss"));
     rosparam_get("gnss/heading_topic", gnss_heading_topic, std::string("handsfree/rtk/heading"));
+    rosparam_get("gnss/gpsPathVis", gpsPathVis, false);
     rosparam_get("gnss/gpsEnableFlag", gpsEnableFlag, false);
+    rosparam_get("gnss/gpsFactorMinDis", gpsFactorMinDis, 5.0);
     rosparam_get("gnss/extrinsic_T", gnss_extrinsic_T_raw,
                  std::vector<double>{0.0, 0.0, 0.0});
     rosparam_get("gnss/extrinsic_R", gnss_extrinsic_R_raw,
@@ -145,13 +144,10 @@ void read_gnss_params() {
         gnss_extrinsic_R_raw[0], gnss_extrinsic_R_raw[1], gnss_extrinsic_R_raw[2],
         gnss_extrinsic_R_raw[3], gnss_extrinsic_R_raw[4], gnss_extrinsic_R_raw[5],
         gnss_extrinsic_R_raw[6], gnss_extrinsic_R_raw[7], gnss_extrinsic_R_raw[8];
-    rosparam_get("gnss/heading_offset_deg", gnss_heading_offset_deg, 0.0);
-    rosparam_get("gnss/time_offset", gnss_time_offset, 0.0);
+    double heading_offset_deg = 0.0;
+    rosparam_get("gnss/heading_offset_deg", heading_offset_deg, 0.0);
+    heading_offset = heading_offset_deg * M_PI / 180.0;
     rosparam_get("gnss/useYawFactor", useGnssYawFactor, false);
     rosparam_get("gnss/yawFactorSigma", gnss_yaw_factor_sigma, 0.10);
-    rosparam_get("gnss/positionSigmaXY", gnss_pos_sigma_xy, 1.5);
-    rosparam_get("gnss/positionSigmaZ", gnss_pos_sigma_z, 2.5);
     rosparam_get("gnss/useGpsElevation", useGpsElevation, false);
-    rosparam_get("gnss/poseCovThreshold", poseCovThreshold, 25.0);
-    rosparam_get("gnss/heightCovThreshold", gnssHeightCovThreshold, 10000.0);
 }

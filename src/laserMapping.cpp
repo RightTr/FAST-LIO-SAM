@@ -53,7 +53,10 @@ string map_file_path, lid_topic, imu_topic;
 string reloc_topic;
 
 double res_mean_last = 0.05, total_residual = 0.0;
-double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
+double last_timestamp_lidar = -1.0, last_timestamp_imu = -1.0;
+double imu_timestamp_offset_sec = 0.0;
+double imu_dt = 0.005;
+bool   imu_repair = true;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
@@ -70,7 +73,6 @@ bool grav_align = false;
 int lidar_type;
 bool use_zupt = false;
 std::string prior_tree_map_path;
-double imu_gap_ = 0.5;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
 double prior_lidar_cov = 0.001;
@@ -90,6 +92,56 @@ double lidar_residual_ref      = 0.05;
 static std::shared_ptr<GnssProcess> gnss_process = std::make_shared<GnssProcess>();
 PathPublisher pubGnssPath;
 OdomPublisher pubGnssYawOdom;
+
+static bool repairTimestamp(const double raw_ts,
+                            double &off,
+                            double &last_ts,
+                            double &cur_ts)
+{
+    if (!imu_repair)
+    {
+        cur_ts = raw_ts;
+        last_ts = cur_ts;
+        return true;
+    }
+
+    static double last_raw_ts = -1.0;
+    cur_ts = raw_ts + off;
+
+    if (last_ts < 0.0)
+    {
+        last_ts = cur_ts;
+        last_raw_ts = raw_ts;
+        return true;
+    }
+
+    if (raw_ts < last_raw_ts)
+    {
+        const double old_off = off;
+        off += std::round(last_ts + imu_dt - cur_ts);
+        cur_ts = raw_ts + off;
+        ROS_PRINT_WARN("timestamp rollback: raw=%.9f offset=%+.0f->%+.0f corrected=%.9f",
+                       raw_ts, old_off, off, cur_ts);
+    }
+    else if (off != 0.0 && raw_ts >= last_ts)
+    {
+        off = 0.0;
+        cur_ts = raw_ts;
+        ROS_PRINT_WARN("timestamp recovered: raw=%.9f offset reset", raw_ts);
+    }
+
+    if (cur_ts <= last_ts)
+    {
+        ROS_PRINT_WARN("drop non-monotonic message: raw=%.9f corrected=%.9f last=%.9f",
+                       raw_ts, cur_ts, last_ts);
+        return false;
+    }
+
+    last_ts = cur_ts;
+    last_raw_ts = raw_ts;
+    return true;
+}
+
 static void toOdom(const Eigen::Matrix3d &R_map_body,
                    const Eigen::Vector3d &t_map_body,
                    Eigen::Matrix3d &R_odom_body,
@@ -107,17 +159,6 @@ static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
 {
     R_map_odom = R_map_body * R_odom_body.transpose();
     t_map_odom = t_map_body - R_map_odom * t_odom_body;
-}
-
-bool getGnssYaw(double &yaw)
-{
-    std::lock_guard<std::mutex> lock(mtx_gnss_heading);
-    // The GNSS heading is expected to be degrees clockwise from north.
-    // ROS ENU yaw is radians counter-clockwise from east.
-    const double heading_rad =
-        (gnss_heading_deg + gnss_heading_offset_deg) * M_PI / 180.0;
-    yaw = normalizeYaw(M_PI * 0.5 - heading_rad);
-    return true;
 }
 
 Eigen::Vector3d gnssLeverArmImu();
@@ -573,12 +614,6 @@ void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
 {
     mtx_buffer.lock();
     const double stamp_sec = get_ros_time_sec(msg->header.stamp);
-    if (stamp_sec < last_timestamp_lidar)
-    {
-        ROS_PRINT_ERROR("lidar loop back, drop current lidar only");
-        mtx_buffer.unlock();
-        return;
-    }
 
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
@@ -595,12 +630,6 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
 {
     mtx_buffer.lock();
     const double stamp_sec = get_ros_time_sec(msg->header.stamp);
-    if (stamp_sec < last_timestamp_lidar)
-    {
-        ROS_PRINT_ERROR("lidar loop back, drop current lidar only");
-        mtx_buffer.unlock();
-        return;
-    }
     last_timestamp_lidar = stamp_sec;
     
     if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
@@ -608,7 +637,8 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
         printf("IMU and LiDAR not Synced, IMU time: %lf, lidar header time: %lf \n",last_timestamp_imu, last_timestamp_lidar);
     }
 
-    if (time_sync_en && !timediff_set_flg && abs(last_timestamp_lidar - last_timestamp_imu) > 1 && !imu_buffer.empty())
+    if (time_sync_en && !timediff_set_flg && last_timestamp_imu > 0.0 && last_timestamp_lidar > 0.0 &&
+        abs(last_timestamp_lidar - last_timestamp_imu) > 1 && !imu_buffer.empty())
     {
         timediff_set_flg = true;
         timediff_lidar_wrt_imu = last_timestamp_lidar + 0.1 - last_timestamp_imu;
@@ -651,17 +681,20 @@ void imu_cbk(const ImuMsgConstPtr &msg_in)
     {
         msg->header.stamp = get_ros_time(timediff_lidar_wrt_imu + msg_in_stamp_sec);
     }
-    double timestamp = get_ros_time_sec(msg->header.stamp);
+    const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
 
     mtx_buffer.lock();
-    if (timestamp < last_timestamp_imu)
+    double corrected_timestamp = 0.0;
+    if (!repairTimestamp(raw_timestamp,
+                         imu_timestamp_offset_sec,
+                         last_timestamp_imu,
+                         corrected_timestamp))
     {
-        // const double loop_back_dt = last_timestamp_imu - timestamp;
-        // ROS_PRINT_WARN("imu loop back by %.6f s, drop current imu only", loop_back_dt);
         mtx_buffer.unlock();
         return;
     }
-    last_timestamp_imu = timestamp;
+
+    msg->header.stamp = get_ros_time(corrected_timestamp);
 
     imu_buffer.push_back(msg);
     mtx_buffer.unlock();
@@ -696,17 +729,7 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
     }
 
     OdometryMsg gps_odom = gnss_process->ToOdometry(map_frame, "gps");
-    const double cov_xy = gnss_pos_sigma_xy * gnss_pos_sigma_xy;
-    const double cov_z = gnss_pos_sigma_z * gnss_pos_sigma_z;
-    gps_odom.pose.covariance.fill(0.0);
-    gps_odom.pose.covariance[0] = cov_xy;
-    gps_odom.pose.covariance[7] = cov_xy;
-    gps_odom.pose.covariance[14] = cov_z;
-    if (!useGpsElevation) {
-        gps_odom.pose.covariance[14] = gnssHeightCovThreshold;
-    }
-
-    if (!gpsEnableFlag || gnss_aligned.load())
+    if (gnss_aligned.load())
     {
         const Eigen::Vector3d gps_ant(
             gps_odom.pose.pose.position.x,
@@ -730,23 +753,29 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
         gnssPath.header.frame_id = map_frame;
         gnssPath.poses.push_back(gnss_pose);
 
-        if (ros_subscription_count(pubGnssPath) != 0)
+        if (gpsPathVis && ros_subscription_count(pubGnssPath) != 0)
         {
             ros_publish(pubGnssPath, gnssPath);
         }
 
         if (ros_subscription_count(pubGnssYawOdom) != 0)
         {
-            double yaw = 0.0;
-            if (getGnssYaw(yaw))
+            std::lock_guard<std::mutex> heading_lock(mtx_gnss_heading);
+            if (!gnss_heading_buffer.empty())
             {
+                const GnssHeadingSample &sample = gnss_heading_buffer.back();
                 OdometryMsg yaw_odom = gps_odom;
+                yaw_odom.header.stamp = gps_odom.header.stamp;
                 yaw_odom.header.frame_id = map_frame;
                 yaw_odom.child_frame_id = "gnss";
-                yaw_odom.pose.pose.orientation = quaternion_from_rpy(0.0, 0.0, yaw);
+                const double display_yaw = normalizeYaw(M_PI * 0.5 - sample.heading,
+                                                        -heading_offset);
+                yaw_odom.pose.pose.orientation =
+                    quaternion_from_rpy(0.0, 0.0, display_yaw);
                 ros_publish(pubGnssYawOdom, yaw_odom);
             }
         }
+
     }
 
     std::lock_guard<std::mutex> lock(mtx_gps);
@@ -766,7 +795,12 @@ void gnss_heading_cbk(const OdometryMsgConstPtr &msg_in)
     }
 
     std::lock_guard<std::mutex> lock(mtx_gnss_heading);
-    gnss_heading_deg = yaw_rad * 180.0 / M_PI;
+    const double stamp_sec = get_ros_time_sec(msg_in->header.stamp);
+    gnss_heading_buffer.push_back({stamp_sec, yaw_rad});
+    while (gnss_heading_buffer.size() > 2000)
+    {
+        gnss_heading_buffer.pop_front();
+    }
 }
 
 double lidar_mean_scantime = 0.0;
@@ -1027,11 +1061,36 @@ static void resetLio(const Eigen::Matrix3d &R_new_old,
 
 bool initGnssMap(double lidar_stamp_sec)
 {
-    if (!gpsEnableFlag || gnss_aligned.load())
+    if (gnss_aligned.load())
         return true;
 
     double desired_yaw = 0.0;
-    if (!getGnssYaw(desired_yaw))
+    bool found_heading = false;
+    {
+        std::lock_guard<std::mutex> lock(mtx_gnss_heading);
+        while (!gnss_heading_buffer.empty())
+        {
+            const GnssHeadingSample &sample = gnss_heading_buffer.front();
+            if (!time_in_window(sample.stamp_sec, lidar_stamp_sec, 0.4))
+            {
+                if (sample.stamp_sec < lidar_stamp_sec)
+                {
+                    gnss_heading_buffer.pop_front();
+                    continue;
+                }
+
+                return false;
+            }
+
+            desired_yaw = normalizeYaw(M_PI * 0.5 - sample.heading,
+                                       -heading_offset);
+            found_heading = true;
+            gnss_heading_buffer.pop_front();
+            break;
+        }
+    }
+
+    if (!found_heading)
         return false;
 
     OdometryMsg gps_odom;
@@ -1043,16 +1102,16 @@ bool initGnssMap(double lidar_stamp_sec)
         {
             const double gps_stamp_sec =
                 get_ros_time_sec(gps_buffer.front().header.stamp);
-            const double gps_time_aligned = gps_stamp_sec + gnss_time_offset;
-
-            if (gps_time_aligned < lidar_stamp_sec - 0.5)
+            if (!time_in_window(gps_stamp_sec, lidar_stamp_sec, 0.4))
             {
-                gps_buffer.pop_front();
-                continue;
-            }
+                if (gps_stamp_sec < lidar_stamp_sec)
+                {
+                    gps_buffer.pop_front();
+                    continue;
+                }
 
-            if (gps_time_aligned > lidar_stamp_sec + 0.5)
                 return false;
+            }
 
             gps_odom = gps_buffer.front();
             gps_buffer.pop_front();
@@ -1648,8 +1707,8 @@ int main(int argc, char** argv)
     rosparam_get("common/flip_en", flip_en, false);
     rosparam_get("common/grav_align", grav_align, false);
     rosparam_get("common/mode", mapping_mode, 1);
-    rosparam_get("mapping/imu_gap", imu_gap_, 0.5);
-    p_imu->set_imu_gap(imu_gap_);
+    rosparam_get("mapping/imu_dt", imu_dt, 0.005);
+    rosparam_get("mapping/imu_repair", imu_repair, true);
     set_mapping_mode();
     rosparam_get("prior_map/prior_tree_map_path", prior_tree_map_path, std::string(""));
     rosparam_get("prior_map/prior_init", prior_init_en, false);
@@ -1698,8 +1757,6 @@ int main(int argc, char** argv)
         read_liosam_params();
     }
     read_gnss_params();
-    if (gpsEnableFlag) grav_align = true;
-
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
 
@@ -1718,6 +1775,10 @@ int main(int argc, char** argv)
     // extrinT/extrinR must stay in the sensor's native Airy/DIFOP IMU convention.
     // When flip_en is enabled, IMU measurements, local point clouds, and these
     // extrinsics are all standardized to the Mid360 convention before estimation.
+    if (gpsEnableFlag || gpsPathVis)
+    {
+        grav_align = true;
+    }
     Lidar_T_wrt_IMU<<VEC_FROM_ARRAY(extrinT);
     Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
     Lidar_T_wrt_IMU = standardize(Lidar_T_wrt_IMU);
@@ -1863,9 +1924,13 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            // Try to establish map as the local GNSS ENU frame. If GNSS is
-            // not ready yet, keep running normal LIO.
-            initGnssMap(Measures.lidar_end_time);
+            // Try to establish map as the local GNSS ENU frame when GNSS is
+            // enabled for fusion or path visualization. If GNSS is not ready
+            // yet, keep running normal LIO.
+            if (gpsEnableFlag || gpsPathVis)
+            {
+                initGnssMap(Measures.lidar_end_time);
+            }
 
             if (scan_frame_save_en) save_scan_frame(scan_frames_dir);
 

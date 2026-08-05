@@ -26,13 +26,22 @@ inline std::string format_unix_time(double t)
     return oss.str();
 }
 
-inline double normalizeYaw(double yaw)
+inline double normalizeYaw(double yaw, double offset = 0.0)
 {
+    yaw += offset;
     while (yaw > M_PI)
         yaw -= 2.0 * M_PI;
     while (yaw < -M_PI)
         yaw += 2.0 * M_PI;
     return yaw;
+}
+
+inline bool time_in_window(double source_stamp_sec,
+                           double target_stamp_sec,
+                           double window_sec)
+{
+    return source_stamp_sec >= target_stamp_sec - window_sec / 2 &&
+           source_stamp_sec <= target_stamp_sec + window_sec / 2;
 }
 
 inline Eigen::Vector3d transformPoint(const Eigen::Vector3d &p_old,

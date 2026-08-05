@@ -39,7 +39,6 @@ class ImuProcess
   ~ImuProcess();
   
   void Reset();
-  void Reset(double start_timestamp, const ImuMsgConstPtr &lastimu);
   void set_extrinsic(const V3D &transl, const M3D &rot);
   void set_extrinsic(const V3D &transl);
   void set_extrinsic(const MD(4,4) &T);
@@ -52,7 +51,6 @@ class ImuProcess
   void set_zupt_thresholds(double acc_norm_threshold, double gyro_threshold);
   void set_zupt_adaptive_params(double r_min, double r_max, double conf_min,
                                  double inflate_pos, double inflate_rot, int inflate_start);
-  void set_imu_gap(double threshold) { imu_gap_ = threshold; }
 
   double compute_static_confidence(const MeasureGroup &meas);
   double get_static_confidence() const { return static_confidence_; }
@@ -74,7 +72,6 @@ class ImuProcess
   PoseBuffer pbuffer;
 
  private:
-  bool imu_gap(const MeasureGroup &group, double gap_threshold, size_t &gap_idx, double &gap_dt) const;
   double gap_handler(double dt);
   void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
   void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
@@ -113,31 +110,6 @@ class ImuProcess
   bool   b_first_frame_ = true;
   bool   imu_need_init_ = true;
 };
-
-bool ImuProcess::imu_gap(const MeasureGroup &group, double gap_threshold, size_t &gap_idx, double &gap_dt) const
-{
-  gap_idx = 0;
-  gap_dt = 0.0;
-  if (!last_imu_ || group.imu.empty())
-  {
-    return false;
-  }
-
-  double prev_time = get_ros_time_sec(last_imu_->header.stamp);
-  for (size_t i = 0; i < group.imu.size(); ++i)
-  {
-    const double cur_time = get_ros_time_sec(group.imu[i]->header.stamp);
-    const double dt = cur_time - prev_time;
-    if (dt < 0.0 || dt > gap_threshold)
-    {
-      gap_idx = i;
-      gap_dt = dt;
-      return true;
-    }
-    prev_time = cur_time;
-  }
-  return false;
-}
 
 ImuProcess::ImuProcess()
     : b_first_frame_(true), imu_need_init_(true), start_timestamp_(-1)
@@ -462,7 +434,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     const double head_time = get_ros_time_sec(head->header.stamp);
     const double tail_time = get_ros_time_sec(tail->header.stamp);
 
-    if (head_time < last_lidar_end_time_) continue;
+    if (tail_time < last_lidar_end_time_) continue;
 
     angvel_avr<<0.5 * (head->angular_velocity.x + tail->angular_velocity.x),
                 0.5 * (head->angular_velocity.y + tail->angular_velocity.y),
@@ -602,9 +574,6 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
 
   if(meas.imu.empty()) {return;};
   assert(meas.lidar != nullptr);
-
-  size_t gap_idx = 0;
-  double gap_dt = 0.0;
 
   if (imu_need_init_)
   {

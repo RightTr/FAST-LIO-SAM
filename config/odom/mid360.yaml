@@ -9,7 +9,7 @@ common:
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
-    grav_align: true            # Whether to use gravity alignment for initial roll/pitch estimation.
+    grav_align: false            # Whether to use gravity alignment for initial roll/pitch estimation.
 
 prior_map:
     prior_tree_map_path: ""      # static prior ikdtree snapshot path for prior update
@@ -26,7 +26,8 @@ mapping:
     gyr_cov: 0.1
     b_acc_cov: 0.0001
     b_gyr_cov: 0.0001
-    imu_gap: 0.01
+    imu_dt: 0.005
+    imu_repair: true
     fov_degree:    360.0
     det_range:     100.0
     extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic
