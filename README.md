@@ -85,12 +85,9 @@ The modified system supports relocalization using manually set odometry poses. O
 ### Localization mode
 
 `common/mode`:
-- `1`: online
-  - Use only the online map for constraints.
-- `2`: prior
-  - Use only the prior map for constraints.
-- `3`: online+prior
-  - Use both the online map and the prior map for constraints.
+- `1`: online: Use only the online map for constraints.
+- `2`: prior: Use only the prior map for constraints.
+- `3`: online+prior: Use both the online map and the prior map for constraints.
 
 `prior_map/prior_init` enables one-shot startup alignment in `prior` mode.
 It uses the prior map to refine the initial pose before tracking starts.
