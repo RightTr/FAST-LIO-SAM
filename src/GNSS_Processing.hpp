@@ -1,11 +1,13 @@
 #ifndef GNSS_PROCESSING_HPP
 #define GNSS_PROCESSING_HPP
 
-#include <array>
+#include <algorithm>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <string>
 
 #include <Eigen/Core>
@@ -19,32 +21,53 @@
 using GnssFixMsg = sensor_msgs::NavSatFix;
 using GnssFixMsgConstPtr = sensor_msgs::NavSatFix::ConstPtr;
 using GnssOdomMsg = nav_msgs::Odometry;
+using GnssOdomMsgConstPtr = nav_msgs::Odometry::ConstPtr;
 #elif defined(USE_ROS2)
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 using GnssFixMsg = sensor_msgs::msg::NavSatFix;
 using GnssFixMsgConstPtr = sensor_msgs::msg::NavSatFix::ConstSharedPtr;
 using GnssOdomMsg = nav_msgs::msg::Odometry;
+using GnssOdomMsgConstPtr = nav_msgs::msg::Odometry::ConstSharedPtr;
 #endif
 
-class GnssProcess {
+struct PosData
+{
+  double t = -1.0;
+  Eigen::Vector3d p = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+};
+
+struct YawData
+{
+  double t = -1.0;
+  double yaw = 0.0;
+};
+
+class GnssProcess
+{
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   GnssProcess() { Reset(); }
 
-  GnssProcess(double origin_lat, double origin_lon, double origin_alt) {
+  GnssProcess(double origin_lat, double origin_lon, double origin_alt)
+  {
     Reset();
     InitOriginPosition(origin_lat, origin_lon, origin_alt);
   }
 
-  void Reset() {
+  void Reset()
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+
     origin_ready_ = false;
     origin_lat_ = 0.0;
     origin_lon_ = 0.0;
     origin_alt_ = 0.0;
     origin_ecef_.setZero();
     origin_rot_.setIdentity();
+
     cur_lat_ = 0.0;
     cur_lon_ = 0.0;
     cur_alt_ = 0.0;
@@ -55,9 +78,23 @@ class GnssProcess {
     cur_service_ = 0;
     cur_valid_ = false;
     cur_stamp_ = 0.0;
+
+    fix_buf_.clear();
+    yaw_msg_buf_.clear();
+    pos_buf_.clear();
+    yaw_buf_.clear();
+    has_pos_ = false;
+    has_yaw_ = false;
+    last_pos_ = PosData();
+    last_yaw_ = YawData();
+
+    lever_.setZero();
+    off_ = 0.0;
+    tol_ = 0.4;
   }
 
-  void InitOriginPosition(double latitude, double longitude, double altitude) {
+  void InitOriginPosition(double latitude, double longitude, double altitude)
+  {
     origin_lat_ = latitude;
     origin_lon_ = longitude;
     origin_alt_ = altitude;
@@ -66,7 +103,8 @@ class GnssProcess {
     origin_ready_ = true;
   }
 
-  bool InitOriginPosition(const GnssFixMsg &fix) {
+  bool InitOriginPosition(const GnssFixMsg &fix)
+  {
     if (!IsFixUsable(fix)) {
       return false;
     }
@@ -74,7 +112,196 @@ class GnssProcess {
     return true;
   }
 
-  bool UpdateXYZ(double latitude, double longitude, double altitude) {
+  void setLever(const Eigen::Vector3d &lever)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    lever_ = lever;
+  }
+
+  void setOff(double off)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    off_ = off;
+  }
+
+  void setTol(double tol)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    tol_ = std::max(0.0, tol);
+  }
+
+  void pushFix(const GnssFixMsgConstPtr &msg)
+  {
+    if (!msg) {
+      return;
+    }
+
+    const GnssFixMsg &fix = *msg;
+    if (!IsFixUsable(fix)) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!origin_ready_) {
+      InitOriginPosition(fix);
+    }
+    if (!UpdateXYZ(fix)) {
+      return;
+    }
+
+    PosData data;
+    data.t = get_ros_time_sec(fix.header.stamp);
+    data.p = cur_enu_;
+    data.cov = cur_cov_;
+
+    pos_buf_.push_back(data);
+    while (pos_buf_.size() > 2000) {
+      pos_buf_.pop_front();
+    }
+
+    last_pos_ = data;
+    has_pos_ = true;
+    fix_buf_.push_back(msg);
+    while (fix_buf_.size() > 2000) {
+      fix_buf_.pop_front();
+    }
+  }
+
+  void pushYaw(const GnssOdomMsgConstPtr &msg)
+  {
+    if (!msg) {
+      return;
+    }
+
+    const auto &q = msg->pose.pose.orientation;
+    const double raw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    if (!std::isfinite(raw)) {
+      return;
+    }
+
+    YawData data;
+    data.t = get_ros_time_sec(msg->header.stamp);
+    data.yaw = WrapYaw(M_PI * 0.5 - raw - off_);
+
+    std::lock_guard<std::mutex> lock(mtx_);
+    yaw_buf_.push_back(data);
+    while (yaw_buf_.size() > 2000) {
+      yaw_buf_.pop_front();
+    }
+
+    last_yaw_ = data;
+    has_yaw_ = true;
+    yaw_msg_buf_.push_back(msg);
+    while (yaw_msg_buf_.size() > 2000) {
+      yaw_msg_buf_.pop_front();
+    }
+  }
+
+  bool pickPos(double t, PosData &out)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return pickData(pos_buf_, t, tol_, out, "GNSS pos");
+  }
+
+  bool pickYaw(double t, YawData &out)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return pickData(yaw_buf_, t, tol_, out, "GNSS yaw");
+  }
+
+  bool pickInitPair(PosData &pos_out, YawData &yaw_out)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+
+    while (!pos_buf_.empty() && !yaw_buf_.empty()) {
+      const double pos_t = pos_buf_.front().t;
+      const double yaw_t = yaw_buf_.front().t;
+
+      if (std::abs(pos_t - yaw_t) <= tol_) {
+        pos_out = pos_buf_.front();
+        yaw_out = yaw_buf_.front();
+        pos_buf_.pop_front();
+        yaw_buf_.pop_front();
+        return true;
+      }
+
+      if (pos_t < yaw_t) {
+        pos_buf_.pop_front();
+      } else {
+        yaw_buf_.pop_front();
+      }
+    }
+
+    return false;
+  }
+
+  bool pickPair(double t, PosData &pos_out, YawData &yaw_out)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+
+    while (!pos_buf_.empty() && pos_buf_.front().t < t - tol_) {
+      pos_buf_.pop_front();
+    }
+    while (!yaw_buf_.empty() && yaw_buf_.front().t < t - tol_) {
+      yaw_buf_.pop_front();
+    }
+
+    if (pos_buf_.empty() || yaw_buf_.empty()) {
+      return false;
+    }
+
+    while (!pos_buf_.empty() && !yaw_buf_.empty()) {
+      const double pos_t = pos_buf_.front().t;
+      const double yaw_t = yaw_buf_.front().t;
+
+      if (std::abs(pos_t - t) <= tol_ &&
+          std::abs(yaw_t - t) <= tol_ &&
+          std::abs(pos_t - yaw_t) <= tol_) {
+        pos_out = pos_buf_.front();
+        yaw_out = yaw_buf_.front();
+        pos_buf_.pop_front();
+        yaw_buf_.pop_front();
+        return true;
+      }
+
+      if (pos_t < yaw_t) {
+        pos_buf_.pop_front();
+      } else {
+        yaw_buf_.pop_front();
+      }
+    }
+    return false;
+  }
+
+  bool latestPos(PosData &out) const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!has_pos_) {
+      return false;
+    }
+    out = last_pos_;
+    return true;
+  }
+
+  bool latestYaw(YawData &out) const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!has_yaw_) {
+      return false;
+    }
+    out = last_yaw_;
+    return true;
+  }
+
+  Eigen::Vector3d lever() const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return lever_;
+  }
+
+  bool UpdateXYZ(double latitude, double longitude, double altitude)
+  {
     if (!origin_ready_) {
       return false;
     }
@@ -88,7 +315,8 @@ class GnssProcess {
     return true;
   }
 
-  bool UpdateXYZ(const GnssFixMsg &fix) {
+  bool UpdateXYZ(const GnssFixMsg &fix)
+  {
     if (!IsFixUsable(fix)) {
       cur_valid_ = false;
       return false;
@@ -105,7 +333,8 @@ class GnssProcess {
     return UpdateXYZ(fix.latitude, fix.longitude, fix.altitude);
   }
 
-  bool UpdateXYZ(const GnssFixMsg &fix, Eigen::Vector3d &enu_out) {
+  bool UpdateXYZ(const GnssFixMsg &fix, Eigen::Vector3d &enu_out)
+  {
     if (!UpdateXYZ(fix)) {
       return false;
     }
@@ -113,63 +342,9 @@ class GnssProcess {
     return true;
   }
 
-  bool Reverse(double east, double north, double up,
-               double &latitude, double &longitude, double &altitude) const {
-    if (!origin_ready_) {
-      return false;
-    }
-
-    const Eigen::Vector3d ecef = origin_ecef_ + origin_rot_.transpose() * Eigen::Vector3d(east, north, up);
-    ECEFToGeodetic(ecef, latitude, longitude, altitude);
-    return true;
-  }
-
-  Eigen::Vector3d CurrentLLA() const {
-    return Eigen::Vector3d(cur_lat_, cur_lon_, cur_alt_);
-  }
-
-  Eigen::Vector3d CurrentECEF() const {
-    return cur_ecef_;
-  }
-
-  Eigen::Vector3d CurrentENU() const {
-    return cur_enu_;
-  }
-
-  Eigen::Vector3d OriginLLA() const {
-    return Eigen::Vector3d(origin_lat_, origin_lon_, origin_alt_);
-  }
-
-  Eigen::Vector3d OriginECEF() const {
-    return origin_ecef_;
-  }
-
-  bool origin_ready() const {
-    return origin_ready_;
-  }
-
-  bool valid() const {
-    return cur_valid_;
-  }
-
-  double stamp_sec() const {
-    return cur_stamp_;
-  }
-
-  int fix_status() const {
-    return cur_fix_status_;
-  }
-
-  uint16_t service() const {
-    return cur_service_;
-  }
-
-  Eigen::Matrix3d covariance() const {
-    return cur_cov_;
-  }
-
   GnssOdomMsg ToOdometry(const std::string &frame_id = "map",
-                         const std::string &child_frame_id = "gps") const {
+                         const std::string &child_frame_id = "gps") const
+  {
     GnssOdomMsg msg;
     msg.header.stamp = get_ros_time(cur_stamp_);
     msg.header.frame_id = frame_id;
@@ -182,12 +357,41 @@ class GnssProcess {
     msg.pose.pose.orientation.z = 0.0;
     msg.pose.pose.orientation.w = 1.0;
 
-    const Eigen::Matrix3d cov = cur_cov_;
     msg.pose.covariance.fill(0.0);
-    msg.pose.covariance[0] = cov(0, 0);
-    msg.pose.covariance[7] = cov(1, 1);
-    msg.pose.covariance[14] = cov(2, 2);
+    msg.pose.covariance[0] = cur_cov_(0, 0);
+    msg.pose.covariance[7] = cur_cov_(1, 1);
+    msg.pose.covariance[14] = cur_cov_(2, 2);
     return msg;
+  }
+
+  bool origin_ready() const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return origin_ready_;
+  }
+
+  bool valid() const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return cur_valid_;
+  }
+
+  double stamp_sec() const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return cur_stamp_;
+  }
+
+  Eigen::Vector3d CurrentENU() const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return cur_enu_;
+  }
+
+  Eigen::Matrix3d covariance() const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return cur_cov_;
   }
 
  private:
@@ -196,17 +400,68 @@ class GnssProcess {
   static constexpr double kWgs84E2 = kWgs84F * (2.0 - kWgs84F);
   static constexpr double kPi = 3.14159265358979323846;
 
-  static bool IsFinite(double value) {
+  template <typename T>
+  static bool pickData(std::deque<T> &buf, double t, double tol, T &out, const char *name)
+  {
+    while (!buf.empty() && buf.front().t < t - tol) {
+      buf.pop_front();
+    }
+    if (buf.empty()) {
+      ROS_PRINT_WARN("%s pick failed: empty buffer, t=%.9f tol=%.3f", name, t, tol);
+      return false;
+    }
+    if (buf.front().t > t + tol) {
+      ROS_PRINT_WARN("%s pick failed: too new, t=%.9f front=%.9f tol=%.3f", name, t, buf.front().t, tol);
+      return false;
+    }
+
+    size_t best_idx = 0;
+    double best_dt = std::abs(buf.front().t - t);
+    for (size_t i = 1; i < buf.size(); ++i) {
+      const double sample_t = buf[i].t;
+      if (sample_t > t + tol) {
+        break;
+      }
+
+      const double dt = std::abs(sample_t - t);
+      if (dt < best_dt) {
+        best_dt = dt;
+        best_idx = i;
+      }
+    }
+
+    out = buf[best_idx];
+    buf.erase(buf.begin() + static_cast<std::ptrdiff_t>(best_idx));
+    return true;
+  }
+
+  static double WrapYaw(double yaw)
+  {
+    while (yaw > M_PI) {
+      yaw -= 2.0 * M_PI;
+    }
+    while (yaw < -M_PI) {
+      yaw += 2.0 * M_PI;
+    }
+    return yaw;
+  }
+
+  static bool IsFinite(double value)
+  {
     return std::isfinite(value);
   }
 
-  static bool IsFixUsable(const GnssFixMsg &fix) {
+  static bool IsFixUsable(const GnssFixMsg &fix)
+  {
     const bool has_valid_status = fix.status.status >= 0;
-    const bool has_finite_lla = IsFinite(fix.latitude) && IsFinite(fix.longitude) && IsFinite(fix.altitude);
+    const bool has_finite_lla = IsFinite(fix.latitude) &&
+                                IsFinite(fix.longitude) &&
+                                IsFinite(fix.altitude);
     return has_valid_status && has_finite_lla;
   }
 
-  static Eigen::Matrix3d EnuRotation(double latitude_deg, double longitude_deg) {
+  static Eigen::Matrix3d EnuRotation(double latitude_deg, double longitude_deg)
+  {
     const double lat = DegToRad(latitude_deg);
     const double lon = DegToRad(longitude_deg);
     const double sin_lat = std::sin(lat);
@@ -215,13 +470,16 @@ class GnssProcess {
     const double cos_lon = std::cos(lon);
 
     Eigen::Matrix3d rot;
-    rot << -sin_lon,              cos_lon,             0.0,
-           -sin_lat * cos_lon,   -sin_lat * sin_lon,    cos_lat,
-            cos_lat * cos_lon,    cos_lat * sin_lon,    sin_lat;
+    rot << -sin_lon,            cos_lon,           0.0,
+           -sin_lat * cos_lon,  -sin_lat * sin_lon, cos_lat,
+            cos_lat * cos_lon,   cos_lat * sin_lon, sin_lat;
     return rot;
   }
 
-  static Eigen::Vector3d GeodeticToECEF(double latitude_deg, double longitude_deg, double altitude) {
+  static Eigen::Vector3d GeodeticToECEF(double latitude_deg,
+                                        double longitude_deg,
+                                        double altitude)
+  {
     const double lat = DegToRad(latitude_deg);
     const double lon = DegToRad(longitude_deg);
     const double sin_lat = std::sin(lat);
@@ -240,7 +498,8 @@ class GnssProcess {
   static void ECEFToGeodetic(const Eigen::Vector3d &ecef,
                              double &latitude_deg,
                              double &longitude_deg,
-                             double &altitude) {
+                             double &altitude)
+  {
     const double x = ecef.x();
     const double y = ecef.y();
     const double z = ecef.z();
@@ -260,19 +519,23 @@ class GnssProcess {
     longitude_deg = RadToDeg(lon);
   }
 
-  Eigen::Vector3d ECEFToENU(const Eigen::Vector3d &ecef) const {
+  Eigen::Vector3d ECEFToENU(const Eigen::Vector3d &ecef) const
+  {
     return origin_rot_ * (ecef - origin_ecef_);
   }
 
-  static double DegToRad(double deg) {
+  static double DegToRad(double deg)
+  {
     return deg * kPi / 180.0;
   }
 
-  static double RadToDeg(double rad) {
+  static double RadToDeg(double rad)
+  {
     return rad * 180.0 / kPi;
   }
 
-  static Eigen::Matrix3d covarianceFromMsg(const GnssFixMsg &fix) {
+  static Eigen::Matrix3d covarianceFromMsg(const GnssFixMsg &fix)
+  {
     Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
 
     if (fix.position_covariance_type == GnssFixMsg::COVARIANCE_TYPE_APPROXIMATED ||
@@ -293,19 +556,35 @@ class GnssProcess {
     return cov;
   }
 
+  mutable std::mutex mtx_;
+
+  std::deque<GnssFixMsgConstPtr> fix_buf_;
+  std::deque<GnssOdomMsgConstPtr> yaw_msg_buf_;
+  std::deque<PosData> pos_buf_;
+  std::deque<YawData> yaw_buf_;
+
+  PosData last_pos_;
+  YawData last_yaw_;
+  bool has_pos_ = false;
+  bool has_yaw_ = false;
+
+  Eigen::Vector3d lever_ = Eigen::Vector3d::Zero();
+  double off_ = 0.0;
+  double tol_ = 0.4;
+
   bool origin_ready_ = false;
   double origin_lat_ = 0.0;
   double origin_lon_ = 0.0;
   double origin_alt_ = 0.0;
-  Eigen::Vector3d origin_ecef_{Eigen::Vector3d::Zero()};
-  Eigen::Matrix3d origin_rot_{Eigen::Matrix3d::Identity()};
+  Eigen::Vector3d origin_ecef_ = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d origin_rot_ = Eigen::Matrix3d::Identity();
 
   double cur_lat_ = 0.0;
   double cur_lon_ = 0.0;
   double cur_alt_ = 0.0;
-  Eigen::Vector3d cur_ecef_{Eigen::Vector3d::Zero()};
-  Eigen::Vector3d cur_enu_{Eigen::Vector3d::Zero()};
-  Eigen::Matrix3d cur_cov_{Eigen::Matrix3d::Zero()};
+  Eigen::Vector3d cur_ecef_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d cur_enu_ = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d cur_cov_ = Eigen::Matrix3d::Zero();
   int cur_fix_status_ = -1;
   uint16_t cur_service_ = 0;
   bool cur_valid_ = false;

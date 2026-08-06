@@ -6,6 +6,7 @@
 #include <vector>
 #include <atomic>
 #include <mutex>
+#include <memory>
 #include <type_traits>
 
 #include <Eigen/Geometry>
@@ -54,6 +55,7 @@ extern std::string high_freq_base_frame;
 extern std::string gnss_topic;
 extern std::string gnss_heading_topic;
 extern bool gpsEnableFlag;
+extern bool gpsInitAlign;
 extern bool gpsPathVis;
 extern double gpsFactorMinDis;
 extern std::vector<double> gnss_extrinsic_T_raw;
@@ -64,16 +66,11 @@ extern double heading_offset;
 extern bool useGnssYawFactor;
 extern double gnss_yaw_factor_sigma;
 extern bool useGpsElevation;
+extern double gnss_factor_max_age;
+extern bool gnss_fuse_en;
+extern bool gnss_init_en;
+extern bool gnss_vis_en;
 extern std::atomic<bool> gnss_aligned;
-struct GnssHeadingSample
-{
-    double stamp_sec;
-    double heading;
-};
-extern std::deque<GnssHeadingSample> gnss_heading_buffer;
-extern std::deque<OdometryMsg> gps_buffer;
-extern std::mutex mtx_gps;
-extern std::mutex mtx_gnss_heading;
 extern bool flip_en;
 extern const Eigen::Matrix3d IMU_FLIP_R;
 extern int mapping_mode;
@@ -84,6 +81,7 @@ extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();
 void read_gnss_params();
+void set_gnss_mode();
 void set_mapping_mode();
 
 inline Eigen::Vector3d standardize(const Eigen::Vector3d &v)

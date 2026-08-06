@@ -13,6 +13,8 @@ common:
 gnss:
     topic: "handsfree/rtk/gnss"
     heading_topic: "handsfree/rtk/heading"
+    gpsPathVis: true
+    gpsInitAlign: true
     gpsEnableFlag: true
     gpsFactorMinDis: 5.0
     extrinsic_T: [0.0, 0.0, 0.0] # GNSS antenna position relative to LiDAR center

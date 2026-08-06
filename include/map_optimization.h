@@ -2,6 +2,7 @@
 #define MAP_OPTIMIZATION_H
 
 #include <vector>
+#include <Eigen/Core>
 
 /*
     * A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
@@ -36,7 +37,11 @@ extern pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 
 void MapOptimizationInit();
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
+void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
+                            const Eigen::Vector3d *gps_pos = nullptr,
+                            const Eigen::Matrix3d *gps_cov = nullptr,
+                            const double *gnss_yaw = nullptr);
+bool isKeyFrame();
 
 void correctPoses();
 

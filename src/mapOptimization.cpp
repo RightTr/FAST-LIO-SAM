@@ -220,7 +220,7 @@ void MapOptimizationInit()
     allocateMemory();
 }
 
-bool saveFrame()
+bool isKeyFrame()
 {
     if (cloudKeyOdomPoses6D->points.empty())
         return true;
@@ -437,86 +437,49 @@ void addLoopFactor()
     aLoopIsClosed = true;
 }
 
-void addGPSFactor()
+void addGNSSFactor(const Eigen::Vector3d &pos, const Eigen::Matrix3d &cov)
 {
-    if (!gpsEnableFlag) return;
-
-    if (!gnss_aligned.load()) return;
-
-    if (cloudKeyPoses3D->points.empty()) return;
+    if (cloudKeyPoses3D->points.empty())
+    {
+        ROS_PRINT_WARN("GNSS factor skipped: no key poses yet");
+        return;
+    }
 
     if (cloudKeyPoses3D->points.size() < 5 ||
         pointDistance(cloudKeyPoses3D->front(),
-                      cloudKeyPoses3D->back()) < gpsFactorMinDis) return;
-
-    OdometryMsg gps_odom;
-    bool found_gps = false;
+                      cloudKeyPoses3D->back()) < gpsFactorMinDis)
     {
-        std::lock_guard<std::mutex> lock(mtx_gps);
-
-        while (!gps_buffer.empty())
-        {
-            const double gps_stamp_sec = get_ros_time_sec(gps_buffer.front().header.stamp);
-            if (!time_in_window(gps_stamp_sec, timeLaserInfoCur, 0.4))
-            {
-                if (gps_stamp_sec < timeLaserInfoCur)
-                {
-                    gps_buffer.pop_front();
-                    continue;
-                }
-
-                return;
-            }
-
-            gps_odom = gps_buffer.front();
-            gps_buffer.pop_front();
-            found_gps = true;
-            break;
-        }
+        ROS_PRINT_WARN("GNSS factor skipped: path too short, size=%zu dis=%.3f min=%.3f",
+                       cloudKeyPoses3D->points.size(),
+                       pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()),
+                       gpsFactorMinDis);
+        return;
     }
 
-    if (!found_gps)
-        return;
+    const double gps_x = pos.x();
+    const double gps_y = pos.y();
+    const double gps_z = pos.z();
 
-    double gps_x = gps_odom.pose.pose.position.x;
-    double gps_y = gps_odom.pose.pose.position.y;
-    double gps_z = gps_odom.pose.pose.position.z;
-
-    if (std::abs(gps_x) < 1e-6 && std::abs(gps_y) < 1e-6) return;
-
-    double cov_x = gps_odom.pose.covariance[0];
-    double cov_y = gps_odom.pose.covariance[7];
-    double cov_z = gps_odom.pose.covariance[14];
-
-    static PointTypeIndex lastGPSPoint;
-    static bool valid = false;
-
-    PointTypeIndex cur;
-    cur.x = gps_x;
-    cur.y = gps_y;
-    cur.z = gps_z;
-
-    if (valid && pointDistance(cur, lastGPSPoint) < gpsFactorMinDis) return;
-
-    const gtsam::Pose3 curOdomPose = trans2gtsamPose(transformTobeMapped);
-    const Eigen::Matrix3d R_odom_body = curOdomPose.rotation().matrix();
-    const Eigen::Vector3d t_odom_body(curOdomPose.translation().x(),
-                                      curOdomPose.translation().y(),
-                                      curOdomPose.translation().z());
-    Eigen::Matrix3d R_w_i;
-    Eigen::Vector3d t_w_i;
-    composeMapPose(R_odom_body, t_odom_body, R_w_i, t_w_i);
-    const Eigen::Vector3d gps_ant(gps_x, gps_y, gps_z);
-    const Eigen::Vector3d gps_lidar = gnss_extrinsic_R * gnss_extrinsic_T;
-    const Eigen::Vector3d gps_imu = gps_ant - R_w_i * (translationLidarToIMU + rotationLidarToIMU * gps_lidar);
-    gps_x = gps_imu.x();
-    gps_y = gps_imu.y();
-    gps_z = gps_imu.z();
-
-    if (!useGpsElevation)
+    if (std::abs(gps_x) < 1e-6 && std::abs(gps_y) < 1e-6)
     {
-        gps_z = t_w_i.z();
-        cov_z = 0.01;
+        ROS_PRINT_WARN("GNSS factor skipped: near zero position (%.6f, %.6f, %.6f)", gps_x, gps_y, gps_z);
+        return;
+    }
+
+    const double cov_x = cov(0, 0);
+    const double cov_y = cov(1, 1);
+    const double cov_z = cov(2, 2);
+
+    if (!std::isfinite(cov_x) ||
+        !std::isfinite(cov_y) ||
+        !std::isfinite(cov_z) ||
+        cov_x <= 0.0 ||
+        cov_y <= 0.0 ||
+        cov_z <= 0.0)
+    {
+        ROS_PRINT_WARN("GNSS factor skipped: invalid covariance [%g %g %g]",
+                       cov_x, cov_y, cov_z);
+        return;
     }
 
     gtsam::Vector sigma(3);
@@ -531,53 +494,24 @@ void addGPSFactor()
             gtsam::noiseModel::Diagonal::Sigmas(sigma)));
 
     aLoopIsClosed = true;
-
-    lastGPSPoint = cur;
-    valid = true;
+    ROS_PRINT_INFO("GNSS factor added: key=%zu pos=(%.3f, %.3f, %.3f)",
+                   cloudKeyPoses3D->size(),
+                   gps_x, gps_y, gps_z);
 }
 
-void addGNSSYawFactor()
+void addGNSSYawFactor(double yaw)
 {
-    if (!gpsEnableFlag)
-        return;
-
     if (!useGnssYawFactor)
-        return;
-
-    if (!gnss_aligned.load())
-        return;
-
-    if (cloudKeyPoses3D->points.empty())
-        return;
-
-    double desired_yaw = 0.0;
-    bool found_heading = false;
     {
-        std::lock_guard<std::mutex> lock(mtx_gnss_heading);
-        while (!gnss_heading_buffer.empty())
-        {
-            const GnssHeadingSample &sample = gnss_heading_buffer.front();
-            if (!time_in_window(sample.stamp_sec, timeLaserInfoCur, 0.4))
-            {
-                if (sample.stamp_sec < timeLaserInfoCur)
-                {
-                    gnss_heading_buffer.pop_front();
-                    continue;
-                }
-
-                return;
-            }
-
-            desired_yaw = normalizeYaw(M_PI * 0.5 - sample.heading,
-                                       -heading_offset);
-            found_heading = true;
-            gnss_heading_buffer.pop_front();
-            break;
-        }
+        ROS_PRINT_INFO("GNSS yaw factor disabled by config");
+        return;
     }
 
-    if (!found_heading)
+    if (cloudKeyPoses3D->points.empty())
+    {
+        ROS_PRINT_WARN("GNSS yaw factor skipped: no key poses yet");
         return;
+    }
 
     const int key = static_cast<int>(cloudKeyPoses3D->size());
     const gtsam::Pose3 curOdomPose = trans2gtsamPose(transformTobeMapped);
@@ -591,13 +525,20 @@ void addGNSSYawFactor()
     const double cur_yaw = std::atan2(R_map_cur(1, 0), R_map_cur(0, 0));
     const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4); // rad, only constrain yaw
 
-    if (std::abs(normalizeYaw(desired_yaw - cur_yaw)) > 60.0 * M_PI / 180.0) return;
+    if (std::abs(normalizeYaw(yaw - cur_yaw)) > 60.0 * M_PI / 180.0)
+    {
+        ROS_PRINT_WARN("GNSS yaw factor skipped: residual too large, yaw=%.3f cur=%.3f",
+                       yaw, cur_yaw);
+        return;
+    }
 
     const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
 
     gtSAMgraph.add(
         boost::shared_ptr<GnssYawFactor>(
-            new GnssYawFactor(key, desired_yaw, yawNoise)));
+            new GnssYawFactor(key, yaw, yawNoise)));
+
+    ROS_PRINT_INFO("GNSS yaw factor added: key=%d yaw=%.3f", key, yaw);
 }
 
 void updatePath(const PointTypePose& pose_in)
@@ -613,21 +554,27 @@ void updatePath(const PointTypePose& pose_in)
     globalPath.poses.push_back(pose_stamped);
 }
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort)
+void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
+                            const Eigen::Vector3d *gps_pos,
+                            const Eigen::Matrix3d *gps_cov,
+                            const double *gnss_yaw)
 {
-    if (saveFrame() == false)
-        return;
-
     const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
 
     // odom factor
     addOdomFactor();
 
     // gps factor
-    addGPSFactor();
+    if (gps_pos != nullptr)
+    {
+        addGNSSFactor(*gps_pos, *gps_cov);
+    }
 
     // yaw factor
-    addGNSSYawFactor();
+    if (gnss_yaw != nullptr)
+    {
+        addGNSSYawFactor(*gnss_yaw);
+    }
 
     // loop factor
     addLoopFactor();
