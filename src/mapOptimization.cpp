@@ -52,7 +52,6 @@ extern std::string root_dir;
 // gtsam
 NonlinearFactorGraph gtSAMgraph;
 Values initialEstimate;
-Values optimizedEstimate;
 ISAM2 *isam;
 Values isamCurrentEstimate;
 Eigen::MatrixXd poseCovariance;
@@ -157,16 +156,6 @@ PointTypePose trans2PointTypePose(float transformIn[])
     thisPose6D.pitch = transformIn[1];
     thisPose6D.yaw   = transformIn[2];
     return thisPose6D;
-}
-
-static void setTransformTobeMapped(const PointTypePose &pose)
-{
-    transformTobeMapped[0] = pose.roll;
-    transformTobeMapped[1] = pose.pitch;
-    transformTobeMapped[2] = pose.yaw;
-    transformTobeMapped[3] = pose.x;
-    transformTobeMapped[4] = pose.y;
-    transformTobeMapped[5] = pose.z;
 }
 
 void setLaserCurTime(double lidar_end_time)
@@ -746,137 +735,6 @@ void ReconstructIkdTree()
     }
 
     ikdtreeHistoryKeyPoses->Build(pose_points);
-}
-
-static void transformPose(PointTypePose &pose,
-                          const gtsam::Pose3 &T_new_old)
-{
-    const gtsam::Pose3 pose_new = T_new_old.compose(pclPointTogtsamPose3(pose));
-    const gtsam::Point3 t_new = pose_new.translation();
-
-    pose.x = t_new.x();
-    pose.y = t_new.y();
-    pose.z = t_new.z();
-    pose.roll = pose_new.rotation().roll();
-    pose.pitch = pose_new.rotation().pitch();
-    pose.yaw = pose_new.rotation().yaw();
-}
-
-static void rebuildSamOptimizer()
-{
-    gtSAMgraph.resize(0);
-    initialEstimate.clear();
-    optimizedEstimate.clear();
-    isamCurrentEstimate.clear();
-
-    if (isam != nullptr)
-    {
-        delete isam;
-        isam = nullptr;
-    }
-
-    ISAM2Params parameters;
-    parameters.relinearizeThreshold = 0.1;
-    parameters.relinearizeSkip = 1;
-    isam = new ISAM2(parameters);
-
-    if (cloudKeyPoses6D == nullptr || cloudKeyPoses6D->empty())
-        return;
-
-    NonlinearFactorGraph graph;
-    Values values;
-    const auto priorNoise = noiseModel::Diagonal::Variances(
-        (Vector(6) << 1e-2, 1e-2, M_PI * M_PI, 1e8, 1e8, 1e8).finished());
-    const auto odometryNoise = noiseModel::Diagonal::Variances(
-        (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
-
-    for (int i = 0; i < static_cast<int>(cloudKeyPoses6D->size()); ++i)
-    {
-        const Pose3 pose = pclPointTogtsamPose3(cloudKeyPoses6D->points[i]);
-        values.insert(i, pose);
-
-        if (i == 0)
-        {
-            graph.add(PriorFactor<Pose3>(i, pose, priorNoise));
-        }
-        else
-        {
-            const Pose3 prev_pose = pclPointTogtsamPose3(cloudKeyPoses6D->points[i - 1]);
-            graph.add(BetweenFactor<Pose3>(i - 1, i, prev_pose.between(pose), odometryNoise));
-        }
-    }
-
-    isam->update(graph, values);
-    isam->update();
-    isamCurrentEstimate = isam->calculateEstimate();
-    poseCovariance = isam->marginalCovariance(cloudKeyPoses6D->size() - 1);
-}
-
-void migrateSamFrame(const Eigen::Matrix3d &R_new_old,
-                     const Eigen::Vector3d &t_new_old)
-{
-    std::lock_guard<std::mutex> lock(mtx);
-    const gtsam::Pose3 T_new_old(
-        gtsam::Rot3(R_new_old),
-        gtsam::Point3(t_new_old.x(), t_new_old.y(), t_new_old.z()));
-
-    if (cloudKeyPoses3D != nullptr)
-    {
-        for (auto &pose : cloudKeyPoses3D->points)
-        {
-            const Eigen::Vector3d t_old(pose.x, pose.y, pose.z);
-            const Eigen::Vector3d t_new = transformPoint(t_old, R_new_old, t_new_old);
-            pose.x = t_new.x();
-            pose.y = t_new.y();
-            pose.z = t_new.z();
-        }
-    }
-
-    if (cloudKeyPoses6D != nullptr)
-    {
-        for (auto &pose : cloudKeyPoses6D->points)
-        {
-            transformPose(pose, T_new_old);
-        }
-    }
-
-    if (copy_cloudKeyPoses3D != nullptr)
-    {
-        for (auto &pose : copy_cloudKeyPoses3D->points)
-        {
-            const Eigen::Vector3d t_old(pose.x, pose.y, pose.z);
-            const Eigen::Vector3d t_new = transformPoint(t_old, R_new_old, t_new_old);
-            pose.x = t_new.x();
-            pose.y = t_new.y();
-            pose.z = t_new.z();
-        }
-    }
-
-    if (copy_cloudKeyPoses6D != nullptr)
-    {
-        for (auto &pose : copy_cloudKeyPoses6D->points)
-        {
-            transformPose(pose, T_new_old);
-        }
-    }
-
-    for (auto &pose : initPoses3D)
-    {
-        const Eigen::Vector3d t_old(pose.x, pose.y, pose.z);
-        const Eigen::Vector3d t_new = transformPoint(t_old, R_new_old, t_new_old);
-        pose.x = t_new.x();
-        pose.y = t_new.y();
-        pose.z = t_new.z();
-    }
-
-    transformPath(globalPath, R_new_old, t_new_old);
-
-    ReconstructIkdTree();
-    rebuildSamOptimizer();
-    loopIndexQueue.clear();
-    loopPoseQueue.clear();
-    loopNoiseQueue.clear();
-    aLoopIsClosed = false;
 }
 
 void correctPoses()

@@ -238,7 +238,7 @@ Visualization Manager:
             Filter size: 10
             History Policy: Keep Last
             Reliability Policy: Best Effort
-            Value: /OdometryGlobal
+            Value: /Odometry
           Value: true
         - Angle Tolerance: 0.10000000149011612
           Class: rviz_default_plugins/Odometry
@@ -277,7 +277,7 @@ Visualization Manager:
             Filter size: 10
             History Policy: Keep Last
             Reliability Policy: Best Effort
-            Value: /OdometryHighFreqGlobal
+            Value: /OdometryHighFreq
           Value: true
       Enabled: true
       Name: OdometryLocal

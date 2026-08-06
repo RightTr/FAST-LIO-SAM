@@ -46,9 +46,6 @@ void loopClosureThread();
 
 void setLaserCurTime(double lidar_end_time);
 
-void migrateSamFrame(const Eigen::Matrix3d &R_new_old,
-                     const Eigen::Vector3d &t_new_old);
-
 void visualizeGlobalMapThread();
 
 pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, PointTypePose* transformIn);

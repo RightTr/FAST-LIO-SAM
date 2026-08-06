@@ -32,8 +32,8 @@
 #define LASER_POINT_COV     (0.001)
 #define PUBFRAME_PERIOD     (20)
 
-double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
-double match_time = 0, solve_time = 0, solve_const_H_time = 0;
+double kdtree_incremental_time = 0.0, kdtree_delete_time = 0.0;
+double match_time = 0, solve_time = 0;
 int    kdtree_size_st = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   feat_accum_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
 bool   imu_state_save_en = false, scan_frame_save_en = false, ikdtree_output_save_en = false;
@@ -757,13 +757,14 @@ void reloc_cbk(const PoseStampedMsgConstPtr &msg_in)
     double qy = msg_in->pose.orientation.y;
     double qz = msg_in->pose.orientation.z;
     double qw = msg_in->pose.orientation.w;
+    Eigen::Quaterniond q(qw, qx, qy, qz);
     
     std::lock_guard<std::mutex> lock(mtx_reloc);
     reloc_state = Pose(x, y, z,
-                    qx, qy, qz, qw, timestamp);
+                    q.x(), q.y(), q.z(), q.w(), timestamp);
     relocalize_flag.store(true); 
     ROS_PRINT_INFO("Reloc received: (%.3f, %.3f, %.3f), quat=(%.3f, %.3f, %.3f, %.3f)",
-        x, y, z, qx, qy, qz, qw);
+        x, y, z, q.x(), q.y(), q.z(), q.w());
 }
 
 void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
@@ -1035,72 +1036,11 @@ void fillOdometryCovariance(OdomMsg& odom_msg, const CovT& P)
     }
 }
 
-void update_state_ikfom()
-{
-    state_ikfom state_updated = kf.get_x();
-    Eigen::Vector3d pos(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5]);
-    Eigen::Quaterniond q = Eigen::Quaterniond(Eigen::AngleAxisd(transformTobeMapped[2], Eigen::Vector3d::UnitZ()) *
-                             Eigen::AngleAxisd(transformTobeMapped[1], Eigen::Vector3d::UnitY()) *
-                             Eigen::AngleAxisd(transformTobeMapped[0], Eigen::Vector3d::UnitX()));
-
-    // Only update pose
-    state_updated.pos = pos;
-    state_updated.rot =  q;
-    state_point = state_updated;
-
-    kf.change_x(state_updated);
-}
-
-void updatePose()
-{
-    Eigen::Matrix3d R_odom_base_before;
-    Eigen::Vector3d t_odom_base_before;
-    composeOdomPose(state_point.rot.toRotationMatrix(), state_point.pos,
-                    R_odom_base_before, t_odom_base_before);
-
-    update_state_ikfom();
-
-    const Eigen::Matrix3d R_map_base = state_point.rot.toRotationMatrix();
-    const Eigen::Vector3d t_map_base = state_point.pos;
-    updateMapOdom(R_map_base, t_map_base, R_odom_base_before, t_odom_base_before);
-
-    euler_cur = SO3ToEuler(state_point.rot);
-    pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-    geoQuat.x = state_point.rot.coeffs()[0];
-    geoQuat.y = state_point.rot.coeffs()[1];
-    geoQuat.z = state_point.rot.coeffs()[2];
-    geoQuat.w = state_point.rot.coeffs()[3];
-}
-
 Eigen::Vector3d gnssLeverArmImu()
 {
     const Eigen::Vector3d gps_lidar = gnss_extrinsic_R * gnss_extrinsic_T;
     return state_point.offset_T_L_I +
            state_point.offset_R_L_I.toRotationMatrix() * gps_lidar;
-}
-
-static void resetLio(const Eigen::Matrix3d &R_new_old,
-                     const Eigen::Vector3d &t_new_old)
-{
-    if (use_online_map && ikdtree.Root_Node != nullptr)
-    {
-        ikdtree.delete_tree_nodes(&ikdtree.Root_Node);
-        PointVector().swap(ikdtree.PCL_Storage);
-    }
-
-    if (featsFromMap != nullptr)
-    {
-        featsFromMap->clear();
-    }
-
-    transformPath(path, R_new_old, t_new_old);
-    path.header.stamp = get_ros_time(lidar_end_time);
-    path.header.frame_id = map_frame;
-
-    gnssPath.header.stamp = get_ros_time(lidar_end_time);
-    gnssPath.header.frame_id = map_frame;
-
-    Localmap_Initialized = false;
 }
 
 bool initGnssMap(double lidar_stamp_sec)
@@ -1192,13 +1132,6 @@ bool initGnssMap(double lidar_stamp_sec)
     Eigen::Vector3d t_map_imu = gps_ant - R_map_imu * gnssLeverArmImu();
     if (!useGpsElevation)
         t_map_imu.z() = t_map_imu_before.z();
-
-    const Eigen::Matrix3d R_new_old = R_yaw;
-    const Eigen::Vector3d t_new_old = t_map_imu - R_new_old * t_map_imu_before;
-    if (sam_enable)
-    {
-        migrateSamFrame(R_new_old, t_new_old);
-    }
 
     updateMapOdom(R_map_imu, t_map_imu, R_odom_imu_before, t_odom_imu_before);
 
@@ -1292,13 +1225,6 @@ bool priorInitAlign(double lidar_cov, double &solve_H_time)
     const Eigen::Vector3d t_map_base = t_map_lidar - R_map_base * state_point.offset_T_L_I;
 
     updateMapOdom(R_map_base, t_map_base, R_odom_base_before, t_odom_base_before);
-
-    if (sam_enable)
-    {
-        const Eigen::Matrix3d R_new_old = R_map_base * R_map_base_before.transpose();
-        const Eigen::Vector3d t_new_old = t_map_base - R_new_old * t_map_base_before;
-        migrateSamFrame(R_new_old, t_new_old);
-    }
 
     publishMapToOdomTf(get_ros_time(lidar_end_time));
     prior_init_done = true;
@@ -1420,8 +1346,7 @@ void publish_prior_map(const Pcl2Publisher & pubLaserCloudPriorMap)
 }
 
 void publish_odometryhighfreq(PoseBuffer& pbuffer,
-                              const OdomPublisher& pubOdomHighFreqLocal,
-                              const OdomPublisher& pubOdomHighFreqGlobal)
+                              const OdomPublisher& pubOdomHighFreqLocal)
 {
     while (ros_ok() && !flg_exit){
         Pose pose;
@@ -1431,16 +1356,11 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
             continue;
         }
         OdomMsg msg_local;
-        OdomMsg msg_global;
         const auto stamp = get_ros_time(pose._timestamp);
 
         const Eigen::Matrix3d R_odom_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
         const Eigen::Vector3d t_odom_base(pose._x, pose._y, pose._z);
-        Eigen::Matrix3d R_map_base;
-        Eigen::Vector3d t_map_base;
-        composeMapPose(R_odom_base, t_odom_base, R_map_base, t_map_base);
         fillOdometryMsg(msg_local, odom_frame, high_freq_base_frame, stamp, R_odom_base, t_odom_base);
-        fillOdometryMsg(msg_global, map_frame, high_freq_base_frame, stamp, R_map_base, t_map_base);
 
         TransformStampedMsg tf_msg;
         tf_msg.header.stamp = stamp;
@@ -1449,7 +1369,6 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
         fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
         ros_publish(pubOdomHighFreqLocal, msg_local);
-        ros_publish(pubOdomHighFreqGlobal, msg_global);
 
 #ifdef USE_ROS1
         static tf::TransformBroadcaster br_hf;
@@ -1492,23 +1411,16 @@ void set_posestamp(T & out)
     
 }
 
-void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal,
-                      const OdomPublisher & pubOdomAftMappedGlobal)
+void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
 {
-    OdomMsg odomAftMappedGlobal;
     const auto stamp = get_ros_time(lidar_end_time);
 
     const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
     const Eigen::Vector3d t_odom_base = state_point.pos;
-    Eigen::Matrix3d R_map_base;
-    Eigen::Vector3d t_map_base;
-    composeMapPose(R_odom_base, t_odom_base, R_map_base, t_map_base);
     fillOdometryMsg(odomAftMapped, odom_frame, base_frame, stamp, R_odom_base, t_odom_base);
-    fillOdometryMsg(odomAftMappedGlobal, map_frame, base_frame, stamp, R_map_base, t_map_base);
 
     const auto& P = kf.get_P();
     fillOdometryCovariance(odomAftMapped, P);
-    fillOdometryCovariance(odomAftMappedGlobal, P);
 
     TransformStampedMsg tf_msg;
     tf_msg.header.stamp = stamp;
@@ -1517,7 +1429,6 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal,
     fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
     ros_publish(pubOdomAftMappedLocal, odomAftMapped);
-    ros_publish(pubOdomAftMappedGlobal, odomAftMappedGlobal);
     publishMapToOdomTf(stamp);
 #ifdef USE_ROS1
     static tf::TransformBroadcaster br;
@@ -1762,7 +1673,7 @@ int main(int argc, char** argv)
     rosparam_get("common/map_frame", map_frame, std::string("map"));
     rosparam_get("common/odom_frame", odom_frame, std::string("odom"));
     rosparam_get("common/base_frame", base_frame, std::string("base_link"));
-    rosparam_get("common/high_freq_base_frame", high_freq_base_frame, base_frame);
+    rosparam_get("common/high_freq_base_frame", high_freq_base_frame, std::string("base_link_hf"));
     rosparam_get("reloc/reloc_topic", reloc_topic, std::string("/reloc/manual"));
     rosparam_get("common/time_sync_en", time_sync_en, false);
     rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
@@ -1896,12 +1807,10 @@ int main(int argc, char** argv)
     auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
     #endif
     auto pubOdomAftMapped = create_publisher_qos<OdometryMsg>("/Odometry", reliable_qos);
-    auto pubOdomAftMappedGlobal = create_publisher_qos<OdometryMsg>("/OdometryGlobal", reliable_qos);
     auto pubPath = create_publisher_qos<PathMsg>("/path", reliable_qos);
     pubGnssPath = create_publisher_qos<PathMsg>("/gnss_path", reliable_qos);
     pubGnssYawOdom = create_publisher_qos<OdometryMsg>("/gnss_yaw", reliable_qos);
     auto pubOdomHighFreq = create_publisher_qos<OdometryMsg>("/OdometryHighFreq", best_qos);
-    auto pubOdomHighFreqGlobal = create_publisher_qos<OdometryMsg>("/OdometryHighFreqGlobal", best_qos);
     p_pre->pub_corn = create_publisher<PointCloud2Msg>("/corn_feature", 100000);
     p_pre->pub_surf = create_publisher<PointCloud2Msg>("/surf_feature", 100000);
 
@@ -1911,7 +1820,7 @@ int main(int argc, char** argv)
     }
 
     std::thread odomhighthread([&](){
-        publish_odometryhighfreq(p_imu->pbuffer, pubOdomHighFreq, pubOdomHighFreqGlobal);
+        publish_odometryhighfreq(p_imu->pbuffer, pubOdomHighFreq);
     });
 
     std::thread loopthread;
@@ -1940,21 +1849,17 @@ int main(int argc, char** argv)
             Eigen::Quaterniond reloc_rot(reloc_pose._qw, reloc_pose._qx, reloc_pose._qy, reloc_pose._qz);
             reloc_rot.normalize();
             const Eigen::Vector3d reloc_pos(reloc_pose._x, reloc_pose._y, reloc_pose._z);
-            const Eigen::Vector3d reloc_euler = reloc_rot.toRotationMatrix().eulerAngles(2, 1, 0);
-            transformTobeMapped[0] = reloc_euler(2);
-            transformTobeMapped[1] = reloc_euler(1);
-            transformTobeMapped[2] = reloc_euler(0);
-            transformTobeMapped[3] = reloc_pos(0);
-            transformTobeMapped[4] = reloc_pos(1);
-            transformTobeMapped[5] = reloc_pos(2);
-            updatePose();
-            publishMapToOdomTf(get_ros_time(lidar_end_time));
+
+            const Eigen::Matrix3d R_map_base = reloc_rot.toRotationMatrix();
+            const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
+            const Eigen::Vector3d t_odom_base = state_point.pos;
+            updateMapOdom(R_map_base, reloc_pos, R_odom_base, t_odom_base);
+            publishMapToOdomTf(get_ros_time(reloc_pose._timestamp));
 
             ROS_PRINT_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
                 reloc_pos.x(), reloc_pos.y(), reloc_pos.z(),
                 reloc_rot.x(), reloc_rot.y(), reloc_rot.z(), reloc_rot.w());
             relocalize_flag.store(false);
-            continue;
         }
 
         if(sync_packages(Measures)) 
@@ -1967,14 +1872,8 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            double t0,t1,t2,t3,t4,t5,match_start, solve_start, svd_time;
-
             match_time = 0;
-            kdtree_search_time = 0.0;
             solve_time = 0;
-            solve_const_H_time = 0;
-            svd_time   = 0;
-            t0 = omp_get_wtime();
 
             p_imu->Process(Measures, kf, feats_undistort);
             state_point = kf.get_x();
@@ -2005,7 +1904,6 @@ int main(int argc, char** argv)
             /*** downsample the feature points in a scan ***/
             downSizeFilterSurf.setInputCloud(feats_undistort);
             downSizeFilterSurf.filter(*feats_down_body);
-            t1 = omp_get_wtime();
             feats_down_size = feats_down_body->points.size();
             /*** initialize the online map kdtree ***/
             if (use_online_map && ikdtree.Root_Node == nullptr)
@@ -2046,10 +1944,7 @@ int main(int argc, char** argv)
 
             Nearest_Points.resize(feats_down_size);
 
-            t2 = omp_get_wtime();
-            
             /*** iterated state estimation ***/
-            double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
             if (use_prior_map && prior_init_en && !prior_init_done)
             {
@@ -2071,8 +1966,6 @@ int main(int argc, char** argv)
                 geoQuat.w = state_point.rot.coeffs()[3];
             }
 
-            double t_update_end = omp_get_wtime();
-
             if (sam_enable) {
                 getCurrPose(state_point);
                 getCurrOffset(state_point);
@@ -2083,12 +1976,10 @@ int main(int argc, char** argv)
             }
 
             /******* Publish odometry *******/
-            publish_odometry(pubOdomAftMapped, pubOdomAftMappedGlobal);
+            publish_odometry(pubOdomAftMapped);
 
             /*** add the feature points to map kdtree ***/
-            t3 = omp_get_wtime();
             map_incremental();
-            t5 = omp_get_wtime();
             
             /******* Publish points *******/
             if (path_en)                         publish_path(pubPath);
