@@ -51,6 +51,32 @@ inline Eigen::Vector3d transformPoint(const Eigen::Vector3d &p_old,
     return R_new_old * p_old + t_new_old;
 }
 
+extern Eigen::Matrix3d R_map_odom;
+extern Eigen::Vector3d t_map_odom;
+
+inline void composeMapPose(const Eigen::Matrix3d &R_odom_body,
+                           const Eigen::Vector3d &t_odom_body,
+                           Eigen::Matrix3d &R_map_body,
+                           Eigen::Vector3d &t_map_body)
+{
+    R_map_body = R_map_odom * R_odom_body;
+    t_map_body = R_map_odom * t_odom_body + t_map_odom;
+}
+
+inline void composeOdomPose(const Eigen::Matrix3d &R_map_body,
+                            const Eigen::Vector3d &t_map_body,
+                            Eigen::Matrix3d &R_odom_body,
+                            Eigen::Vector3d &t_odom_body)
+{
+    const Eigen::Matrix3d R_odom_map = R_map_odom.transpose();
+    R_odom_body = R_odom_map * R_map_body;
+    t_odom_body = R_odom_map * (t_map_body - t_map_odom);
+}
+
+void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
+                const Eigen::Vector3d &t_map_odom_);
+void publishMapToOdomTf(const TimeType& stamp);
+
 inline void transformPoseStamped(PoseStampedMsg &pose,
                                  const Eigen::Matrix3d &R_new_old,
                                  const Eigen::Vector3d &t_new_old)

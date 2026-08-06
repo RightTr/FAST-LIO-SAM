@@ -74,6 +74,7 @@ TimeType timeLaserInfoStamp;
 
 pcl::PointCloud<PointTypeIndex>::Ptr cloudKeyPoses3D; // Store keyframe poses and indexes 
 pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
+pcl::PointCloud<PointTypePose>::Ptr cloudKeyOdomPoses6D;
 pcl::PointCloud<PointTypeIndex>::Ptr copy_cloudKeyPoses3D;
 pcl::PointCloud<PointTypePose>::Ptr copy_cloudKeyPoses6D;
 
@@ -198,6 +199,7 @@ void allocateMemory()
 {
     cloudKeyPoses3D.reset(new pcl::PointCloud<PointTypeIndex>());
     cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
+    cloudKeyOdomPoses6D.reset(new pcl::PointCloud<PointTypePose>());
     copy_cloudKeyPoses3D.reset(new pcl::PointCloud<PointTypeIndex>());
     copy_cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
 
@@ -231,10 +233,10 @@ void MapOptimizationInit()
 
 bool saveFrame()
 {
-    if (cloudKeyPoses3D->points.empty())
+    if (cloudKeyOdomPoses6D->points.empty())
         return true;
 
-    Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyPoses6D->back());
+    Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyOdomPoses6D->back());
     Eigen::Affine3f transFinal = pcl::getTransformation(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
                                                         transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
     Eigen::Affine3f transBetween = transStart.inverse() * transFinal;
@@ -402,14 +404,27 @@ void addOdomFactor()
     {
         // TODO: use IKFoM covariance as prior covariance
         noiseModel::Diagonal::shared_ptr priorNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-2, 1e-2, M_PI*M_PI, 1e8, 1e8, 1e8).finished()); // rad*rad, meter*meter
-        gtSAMgraph.add(PriorFactor<Pose3>(0, trans2gtsamPose(transformTobeMapped), priorNoise));
-        initialEstimate.insert(0, trans2gtsamPose(transformTobeMapped));
+        const gtsam::Pose3 poseTo = [&]() {
+            const gtsam::Pose3 poseOdom = trans2gtsamPose(transformTobeMapped);
+            const Eigen::Matrix3d R_map_body = R_map_odom * poseOdom.rotation().matrix();
+            const Eigen::Vector3d t_map_body = R_map_odom *
+                Eigen::Vector3d(poseOdom.translation().x(),
+                                poseOdom.translation().y(),
+                                poseOdom.translation().z()) + t_map_odom;
+            return gtsam::Pose3(gtsam::Rot3(R_map_body),
+                                gtsam::Point3(t_map_body.x(), t_map_body.y(), t_map_body.z()));
+        }();
+        gtSAMgraph.add(PriorFactor<Pose3>(0, poseTo, priorNoise));
+        initialEstimate.insert(0, poseTo);
     }else{
         noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
-        gtsam::Pose3 poseFrom = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
-        gtsam::Pose3 poseTo   = trans2gtsamPose(transformTobeMapped);
-        gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size(), poseFrom.between(poseTo), odometryNoise));
-        initialEstimate.insert(cloudKeyPoses3D->size(), poseTo);
+        const gtsam::Pose3 poseFromFront = pclPointTogtsamPose3(cloudKeyOdomPoses6D->points.back());
+        const gtsam::Pose3 poseToFront = trans2gtsamPose(transformTobeMapped);
+        const gtsam::Pose3 odomDelta = poseFromFront.between(poseToFront);
+        const gtsam::Pose3 poseFromOpt = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
+        const gtsam::Pose3 poseToOpt = poseFromOpt.compose(odomDelta);
+        gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size(), odomDelta, odometryNoise));
+        initialEstimate.insert(cloudKeyPoses3D->size(), poseToOpt);
     }
 }
 
@@ -443,7 +458,7 @@ void addGPSFactor()
 
     if (cloudKeyPoses3D->points.size() < 5 ||
         pointDistance(cloudKeyPoses3D->front(),
-                      cloudKeyPoses3D->back()) < 5.0) return;
+                      cloudKeyPoses3D->back()) < gpsFactorMinDis) return;
 
     OdometryMsg gps_odom;
     bool found_gps = false;
@@ -494,10 +509,14 @@ void addGPSFactor()
 
     if (valid && pointDistance(cur, lastGPSPoint) < gpsFactorMinDis) return;
 
-    const Eigen::Affine3f T_w_i = pcl::getTransformation(
-        transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
-        transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
-    const Eigen::Matrix3d R_w_i = T_w_i.rotation().cast<double>();
+    const gtsam::Pose3 curOdomPose = trans2gtsamPose(transformTobeMapped);
+    const Eigen::Matrix3d R_odom_body = curOdomPose.rotation().matrix();
+    const Eigen::Vector3d t_odom_body(curOdomPose.translation().x(),
+                                      curOdomPose.translation().y(),
+                                      curOdomPose.translation().z());
+    Eigen::Matrix3d R_w_i;
+    Eigen::Vector3d t_w_i;
+    composeMapPose(R_odom_body, t_odom_body, R_w_i, t_w_i);
     const Eigen::Vector3d gps_ant(gps_x, gps_y, gps_z);
     const Eigen::Vector3d gps_lidar = gnss_extrinsic_R * gnss_extrinsic_T;
     const Eigen::Vector3d gps_imu = gps_ant - R_w_i * (translationLidarToIMU + rotationLidarToIMU * gps_lidar);
@@ -507,7 +526,7 @@ void addGPSFactor()
 
     if (!useGpsElevation)
     {
-        gps_z = transformTobeMapped[5];
+        gps_z = t_w_i.z();
         cov_z = 0.01;
     }
 
@@ -572,10 +591,18 @@ void addGNSSYawFactor()
         return;
 
     const int key = static_cast<int>(cloudKeyPoses3D->size());
-    const PointTypePose &cur_pose = cloudKeyPoses6D->back();
+    const gtsam::Pose3 curOdomPose = trans2gtsamPose(transformTobeMapped);
+    const Eigen::Matrix3d R_odom_cur = curOdomPose.rotation().matrix();
+    const Eigen::Vector3d t_odom_cur(curOdomPose.translation().x(),
+                                     curOdomPose.translation().y(),
+                                     curOdomPose.translation().z());
+    Eigen::Matrix3d R_map_cur;
+    Eigen::Vector3d t_map_cur;
+    composeMapPose(R_odom_cur, t_odom_cur, R_map_cur, t_map_cur);
+    const double cur_yaw = std::atan2(R_map_cur(1, 0), R_map_cur(0, 0));
     const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4); // rad, only constrain yaw
 
-    if (std::abs(normalizeYaw(desired_yaw - cur_pose.yaw)) > 60.0 * M_PI / 180.0) return;
+    if (std::abs(normalizeYaw(desired_yaw - cur_yaw)) > 60.0 * M_PI / 180.0) return;
 
     const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
 
@@ -601,6 +628,8 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 {
     if (saveFrame() == false)
         return;
+
+    const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
 
     // odom factor
     addOdomFactor();
@@ -666,9 +695,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     // cout << isam->marginalCovariance(isamCurrentEstimate.size()-1) << endl << endl;
     poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size()-1);
 
-    // save updated transform
-    setTransformTobeMapped(thisPose6D);
-
     pcl::PointCloud<PointTypeIndex>::Ptr featCloudKeyFrame(new pcl::PointCloud<PointTypeIndex>());
     PointTypeIndex point;
     for (const auto &pt : feats_undistort->points) {
@@ -683,6 +709,7 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     }
 
     featCloudKeyFrames.push_back(featCloudKeyFrame);
+    cloudKeyOdomPoses6D->push_back(OdomPose);
 
     if (keyframe_export_en)
     {
@@ -783,7 +810,6 @@ static void rebuildSamOptimizer()
     isam->update();
     isamCurrentEstimate = isam->calculateEstimate();
     poseCovariance = isam->marginalCovariance(cloudKeyPoses6D->size() - 1);
-    setTransformTobeMapped(cloudKeyPoses6D->back());
 }
 
 void migrateSamFrame(const Eigen::Matrix3d &R_new_old,
@@ -881,9 +907,26 @@ void correctPoses()
         }
 
         ReconstructIkdTree();
-        publishMapToOdomTf(get_ros_time(timeLaserInfoCur));
-        ROS_PRINT_INFO("Pose graph optimization: republish map->odom");
         aLoopIsClosed = false;
+    }
+
+    if (!cloudKeyOdomPoses6D->points.empty() &&
+        cloudKeyOdomPoses6D->points.size() == cloudKeyPoses6D->points.size())
+    {
+        const size_t ref = cloudKeyPoses6D->points.size() - 1;
+        const gtsam::Pose3 pose_map_ref = pclPointTogtsamPose3(cloudKeyPoses6D->points[ref]);
+        const gtsam::Pose3 pose_odom_ref = pclPointTogtsamPose3(cloudKeyOdomPoses6D->points[ref]);
+        const Eigen::Matrix3d R_map_odom =
+            pose_map_ref.rotation().matrix() * pose_odom_ref.rotation().matrix().transpose();
+        const Eigen::Vector3d t_map_odom =
+            Eigen::Vector3d(pose_map_ref.translation().x(),
+                             pose_map_ref.translation().y(),
+                             pose_map_ref.translation().z()) -
+            R_map_odom * Eigen::Vector3d(pose_odom_ref.translation().x(),
+                                             pose_odom_ref.translation().y(),
+                                             pose_odom_ref.translation().z());
+        setMapOdom(R_map_odom, t_map_odom);
+        publishMapToOdomTf(get_ros_time(timeLaserInfoCur));
     }
 }
 
@@ -941,7 +984,7 @@ void publishSamMsg()
     if (ros_subscription_count(pubRecentKeyFrame) != 0)
     {
         pcl::PointCloud<PointTypeIndex>::Ptr cloudOut(new pcl::PointCloud<PointTypeIndex>());
-        PointTypePose thisPose6D = trans2PointTypePose(transformTobeMapped);
+        PointTypePose thisPose6D = cloudKeyPoses6D->back();
         *cloudOut += *transformPointCloud(featCloudKeyFrames.back(),  &thisPose6D);
         publishCloud(pubRecentKeyFrame, cloudOut, timeLaserInfoStamp, map_frame);
     }

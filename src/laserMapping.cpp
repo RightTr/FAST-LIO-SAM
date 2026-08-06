@@ -142,16 +142,6 @@ static bool repairTimestamp(const double raw_ts,
     return true;
 }
 
-static void toOdom(const Eigen::Matrix3d &R_map_body,
-                   const Eigen::Vector3d &t_map_body,
-                   Eigen::Matrix3d &R_odom_body,
-                   Eigen::Vector3d &t_odom_body)
-{
-    const Eigen::Matrix3d R_odom_map = R_map_odom.transpose();
-    R_odom_body = R_odom_map * R_map_body;
-    t_odom_body = R_odom_map * (t_map_body - t_map_odom);
-}
-
 static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
                           const Eigen::Vector3d &t_map_body,
                           const Eigen::Matrix3d &R_odom_body,
@@ -159,6 +149,13 @@ static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
 {
     R_map_odom = R_map_body * R_odom_body.transpose();
     t_map_odom = t_map_body - R_map_odom * t_odom_body;
+}
+
+void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
+                const Eigen::Vector3d &t_map_odom_)
+{
+    R_map_odom = R_map_odom_;
+    t_map_odom = t_map_odom_;
 }
 
 Eigen::Vector3d gnssLeverArmImu();
@@ -420,13 +417,6 @@ bool coarsePriorIcpAlign(double &fitness_score)
     const Eigen::Matrix3d R_imu_lidar = state_point.offset_R_L_I.toRotationMatrix();
     const Eigen::Matrix3d R_map_imu = R_map_lidar * R_imu_lidar.transpose();
 
-    state_ikfom state_updated = kf.get_x();
-    state_updated.rot = Eigen::Quaterniond(R_map_imu);
-    state_updated.rot.normalize();
-    state_updated.pos = t_map_lidar - R_map_imu * state_point.offset_T_L_I;
-    state_point = state_updated;
-    kf.change_x(state_updated);
-
     return true;
 }
 
@@ -497,10 +487,16 @@ void SigHandle(int sig)
     sig_buffer.notify_all();
 }
 
+static inline V3D transformBodyPointToGlobal(const V3D &p_body,
+                                             const Eigen::Matrix3d &R_world_body,
+                                             const Eigen::Vector3d &t_world_body,
+                                             const state_ikfom &state);
+
 void pointBodyToWorld_ikfom(PointType const * const pi, PointType * const po, state_ikfom &s)
 {
-    V3D p_body(pi->x, pi->y, pi->z);
-    V3D p_global(s.rot * (s.offset_R_L_I*p_body + s.offset_T_L_I) + s.pos);
+    const V3D p_body(pi->x, pi->y, pi->z);
+    const V3D p_global = transformBodyPointToGlobal(
+        p_body, s.rot.toRotationMatrix(), s.pos, s);
 
     po->x = p_global(0);
     po->y = p_global(1);
@@ -508,12 +504,32 @@ void pointBodyToWorld_ikfom(PointType const * const pi, PointType * const po, st
     po->intensity = pi->intensity;
 }
 
+static inline V3D transformBodyPointToGlobal(const V3D &p_body,
+                                             const Eigen::Matrix3d &R_world_body,
+                                             const Eigen::Vector3d &t_world_body,
+                                             const state_ikfom &state)
+{
+    return R_world_body * (state.offset_R_L_I * p_body + state.offset_T_L_I) + t_world_body;
+}
 
 void pointBodyToWorld(PointType const * const pi, PointType * const po)
 {
-    V3D p_body(pi->x, pi->y, pi->z);
-    V3D p_global(state_point.rot * (state_point.offset_R_L_I*p_body + state_point.offset_T_L_I) + state_point.pos);
+    const V3D p_body(pi->x, pi->y, pi->z);
+    const V3D p_global = transformBodyPointToGlobal(
+        p_body, state_point.rot.toRotationMatrix(), state_point.pos, state_point);
+    po->x = p_global(0);
+    po->y = p_global(1);
+    po->z = p_global(2);
+    po->intensity = pi->intensity;
+}
 
+void pointBodyToMap(PointType const * const pi, PointType * const po)
+{
+    const V3D p_body(pi->x, pi->y, pi->z);
+    Eigen::Matrix3d R_map_body;
+    Eigen::Vector3d t_map_body;
+    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
+    const V3D p_global = transformBodyPointToGlobal(p_body, R_map_body, t_map_body, state_point);
     po->x = p_global(0);
     po->y = p_global(1);
     po->z = p_global(2);
@@ -523,8 +539,23 @@ void pointBodyToWorld(PointType const * const pi, PointType * const po)
 template<typename T>
 void pointBodyToWorld(const Matrix<T, 3, 1> &pi, Matrix<T, 3, 1> &po)
 {
-    V3D p_body(pi[0], pi[1], pi[2]);
-    V3D p_global(state_point.rot * (state_point.offset_R_L_I*p_body + state_point.offset_T_L_I) + state_point.pos);
+    const V3D p_body(pi[0], pi[1], pi[2]);
+    const V3D p_global = transformBodyPointToGlobal(
+        p_body, state_point.rot.toRotationMatrix(), state_point.pos, state_point);
+
+    po[0] = p_global(0);
+    po[1] = p_global(1);
+    po[2] = p_global(2);
+}
+
+template<typename T>
+void pointBodyToMap(const Matrix<T, 3, 1> &pi, Matrix<T, 3, 1> &po)
+{
+    const V3D p_body(pi[0], pi[1], pi[2]);
+    Eigen::Matrix3d R_map_body;
+    Eigen::Vector3d t_map_body;
+    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
+    const V3D p_global = transformBodyPointToGlobal(p_body, R_map_body, t_map_body, state_point);
 
     po[0] = p_global(0);
     po[1] = p_global(1);
@@ -533,9 +564,22 @@ void pointBodyToWorld(const Matrix<T, 3, 1> &pi, Matrix<T, 3, 1> &po)
 
 void RGBpointBodyToWorld(PointType const * const pi, PointType * const po)
 {
-    V3D p_body(pi->x, pi->y, pi->z);
-    V3D p_global(state_point.rot * (state_point.offset_R_L_I*p_body + state_point.offset_T_L_I) + state_point.pos);
+    const V3D p_body(pi->x, pi->y, pi->z);
+    const V3D p_global = transformBodyPointToGlobal(
+        p_body, state_point.rot.toRotationMatrix(), state_point.pos, state_point);
+    po->x = p_global(0);
+    po->y = p_global(1);
+    po->z = p_global(2);
+    po->intensity = pi->intensity;
+}
 
+void RGBpointBodyToMap(PointType const * const pi, PointType * const po)
+{
+    const V3D p_body(pi->x, pi->y, pi->z);
+    Eigen::Matrix3d R_map_body;
+    Eigen::Vector3d t_map_body;
+    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
+    const V3D p_global = transformBodyPointToGlobal(p_body, R_map_body, t_map_body, state_point);
     po->x = p_global(0);
     po->y = p_global(1);
     po->z = p_global(2);
@@ -1011,8 +1055,8 @@ void updatePose()
 {
     Eigen::Matrix3d R_odom_base_before;
     Eigen::Vector3d t_odom_base_before;
-    toOdom(state_point.rot.toRotationMatrix(), state_point.pos,
-           R_odom_base_before, t_odom_base_before);
+    composeOdomPose(state_point.rot.toRotationMatrix(), state_point.pos,
+                    R_odom_base_before, t_odom_base_before);
 
     update_state_ikfom();
 
@@ -1126,11 +1170,11 @@ bool initGnssMap(double lidar_stamp_sec)
     const double cov_x = gps_odom.pose.covariance[0];
     const double cov_y = gps_odom.pose.covariance[7];
 
-    const Eigen::Matrix3d R_map_imu_before = state_point.rot.toRotationMatrix();
-    const Eigen::Vector3d t_map_imu_before = state_point.pos;
-    Eigen::Matrix3d R_odom_imu;
-    Eigen::Vector3d t_odom_imu;
-    toOdom(R_map_imu_before, t_map_imu_before, R_odom_imu, t_odom_imu);
+    const Eigen::Matrix3d R_odom_imu_before = state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_odom_imu_before = state_point.pos;
+    Eigen::Matrix3d R_map_imu_before;
+    Eigen::Vector3d t_map_imu_before;
+    composeMapPose(R_odom_imu_before, t_odom_imu_before, R_map_imu_before, t_map_imu_before);
 
     // Gravity alignment has already made both worlds Z-up.  Apply only a
     // world-frame yaw so the IMU/LiDAR forward axis agrees with GNSS ENU.
@@ -1151,32 +1195,15 @@ bool initGnssMap(double lidar_stamp_sec)
 
     const Eigen::Matrix3d R_new_old = R_yaw;
     const Eigen::Vector3d t_new_old = t_map_imu - R_new_old * t_map_imu_before;
-    resetLio(R_new_old, t_new_old);
     if (sam_enable)
     {
         migrateSamFrame(R_new_old, t_new_old);
     }
 
-    state_ikfom state_updated = kf.get_x();
-    state_updated.rot = Eigen::Quaterniond(R_map_imu);
-    state_updated.pos = t_map_imu;
-    state_updated.vel = R_yaw * state_updated.vel;
-    kf.change_x(state_updated);
-    state_point = state_updated;
-    p_imu->pbuffer.Clear();
-
-    updateMapOdom(R_map_imu, t_map_imu, R_odom_imu, t_odom_imu);
-
-    getCurrPose(state_point);
-    getCurrOffset(state_point);
-    euler_cur = SO3ToEuler(state_point.rot);
-    pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-    geoQuat.x = state_point.rot.coeffs()[0];
-    geoQuat.y = state_point.rot.coeffs()[1];
-    geoQuat.z = state_point.rot.coeffs()[2];
-    geoQuat.w = state_point.rot.coeffs()[3];
+    updateMapOdom(R_map_imu, t_map_imu, R_odom_imu_before, t_odom_imu_before);
 
     gnss_aligned.store(true);
+    publishMapToOdomTf(get_ros_time(lidar_end_time));
     return true;
 }
 
@@ -1210,45 +1237,74 @@ bool priorInitAlign(double lidar_cov, double &solve_H_time)
     if (!use_prior_map || !prior_init_en || prior_init_done || prior_ikdtree.Root_Node == nullptr)
         return false;
 
-    Eigen::Matrix3d R_odom_base_before;
-    Eigen::Vector3d t_odom_base_before;
-    toOdom(state_point.rot.toRotationMatrix(), state_point.pos,
-           R_odom_base_before, t_odom_base_before);
-
-    double icp_fitness_score = std::numeric_limits<double>::infinity();
-    // if (!coarsePriorIcpAlign(icp_fitness_score))
-    // {
-    //     ROS_PRINT_WARN("prior init coarse ICP failed, retry on next scan");
-    //     return false;
-    // }
-
-    ROS_PRINT_INFO("prior init coarse ICP done, fitness=%.6f", icp_fitness_score);
-
-    kf.update_iterated_dyn_share_modified(lidar_cov, solve_H_time);
-
-    state_point = kf.get_x();
-    if (effct_feat_num < 1)
+    if (feats_down_body == nullptr || feats_down_body->size() < 20)
         return false;
 
-    getCurrPose(state_point);
-    getCurrOffset(state_point);
+    PointCloudXYZI::Ptr prior_map_ds(new PointCloudXYZI());
+    if (featsFromPriorMap->size() > 2000)
+    {
+        pcl::VoxelGrid<PointType> downsample;
+        downsample.setLeafSize(0.8f, 0.8f, 0.8f);
+        downsample.setInputCloud(featsFromPriorMap);
+        downsample.filter(*prior_map_ds);
+    }
+    else
+    {
+        *prior_map_ds = *featsFromPriorMap;
+    }
 
-    const Eigen::Matrix3d R_map_base = state_point.rot.toRotationMatrix();
-    const Eigen::Vector3d t_map_base = state_point.pos;
+    if (prior_map_ds->size() < 50)
+        return false;
+
+    pcl::IterativeClosestPoint<PointType, PointType> icp;
+    icp.setMaxCorrespondenceDistance(8.0);
+    icp.setMaximumIterations(50);
+    icp.setTransformationEpsilon(1e-6);
+    icp.setEuclideanFitnessEpsilon(1e-6);
+    icp.setRANSACIterations(0);
+    icp.setInputSource(feats_down_body);
+    icp.setInputTarget(prior_map_ds);
+
+    const Eigen::Matrix3d R_odom_base_before = state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_odom_base_before = state_point.pos;
+    Eigen::Matrix3d R_map_base_before;
+    Eigen::Vector3d t_map_base_before;
+    composeMapPose(R_odom_base_before, t_odom_base_before, R_map_base_before, t_map_base_before);
+
+    Eigen::Affine3f guess = Eigen::Affine3f::Identity();
+    guess.linear() = R_map_base_before.cast<float>();
+    guess.translation() = t_map_base_before.cast<float>();
+
+    PointCloudXYZI aligned;
+    icp.align(aligned, guess.matrix());
+    if (!icp.hasConverged())
+        return false;
+
+    const double icp_fitness_score = icp.getFitnessScore();
+    if (!std::isfinite(icp_fitness_score) || icp_fitness_score > 5.0)
+        return false;
+
+    const Eigen::Matrix4f final_tf = icp.getFinalTransformation();
+    const Eigen::Matrix3d R_map_lidar = final_tf.block<3, 3>(0, 0).cast<double>();
+    const Eigen::Vector3d t_map_lidar = final_tf.block<3, 1>(0, 3).cast<double>();
+    const Eigen::Matrix3d R_imu_lidar = state_point.offset_R_L_I.toRotationMatrix();
+    const Eigen::Matrix3d R_map_base = R_map_lidar * R_imu_lidar.transpose();
+    const Eigen::Vector3d t_map_base = t_map_lidar - R_map_base * state_point.offset_T_L_I;
+
     updateMapOdom(R_map_base, t_map_base, R_odom_base_before, t_odom_base_before);
 
-    euler_cur = SO3ToEuler(state_point.rot);
-    pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-    geoQuat.x = state_point.rot.coeffs()[0];
-    geoQuat.y = state_point.rot.coeffs()[1];
-    geoQuat.z = state_point.rot.coeffs()[2];
-    geoQuat.w = state_point.rot.coeffs()[3];
+    if (sam_enable)
+    {
+        const Eigen::Matrix3d R_new_old = R_map_base * R_map_base_before.transpose();
+        const Eigen::Vector3d t_new_old = t_map_base - R_new_old * t_map_base_before;
+        migrateSamFrame(R_new_old, t_new_old);
+    }
 
     publishMapToOdomTf(get_ros_time(lidar_end_time));
     prior_init_done = true;
 
-    ROS_PRINT_INFO("prior init map->odom: t=(%.3f %.3f %.3f)",
-                   t_map_odom.x(), t_map_odom.y(), t_map_odom.z());
+    ROS_PRINT_INFO("prior init map->odom: fitness=%.6f, t=(%.3f %.3f %.3f)",
+                   icp_fitness_score, t_map_odom.x(), t_map_odom.y(), t_map_odom.z());
     return true;
 }
 
@@ -1263,7 +1319,7 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
 
         for (int i = 0; i < size; i++)
         {
-            RGBpointBodyToWorld(&laserCloudFullRes->points[i], \
+            RGBpointBodyToMap(&laserCloudFullRes->points[i], \
                                 &laserCloudWorld->points[i]);
         }
         Pcl2Msg laserCloudmsg;
@@ -1285,7 +1341,7 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
 
         for (int i = 0; i < size; i++)
         {
-            RGBpointBodyToWorld(&feats_undistort->points[i], \
+            RGBpointBodyToMap(&feats_undistort->points[i], \
                                 &laserCloudWorld->points[i]);
         }
         *pcl_wait_save += *laserCloudWorld;
@@ -1330,7 +1386,7 @@ void publish_effect_world(const Pcl2Publisher & pubLaserCloudEffect)
                     new PointCloudXYZI(effct_feat_num, 1));
     for (int i = 0; i < effct_feat_num; i++)
     {
-        RGBpointBodyToWorld(&laserCloudOri->points[i], \
+        RGBpointBodyToMap(&laserCloudOri->points[i], \
                             &laserCloudWorld->points[i]);
     }
     Pcl2Msg laserCloudFullRes3;
@@ -1345,7 +1401,9 @@ void publish_map(const Pcl2Publisher & pubLaserCloudMap)
     Pcl2Msg laserCloudMap;
     pcl::toROSMsg(*featsFromMap, laserCloudMap);
     laserCloudMap.header.stamp = get_ros_time(lidar_end_time);
-    laserCloudMap.header.frame_id = map_frame;
+    // featsFromMap is maintained in the local odom frame by the frontend map.
+    // Let TF apply map->odom for visualization instead of relabeling it as map.
+    laserCloudMap.header.frame_id = odom_frame;
     ros_publish(pubLaserCloudMap, laserCloudMap);
 }
 
@@ -1376,12 +1434,11 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
         OdomMsg msg_global;
         const auto stamp = get_ros_time(pose._timestamp);
 
-        const Eigen::Matrix3d R_map_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
-        const Eigen::Vector3d t_map_base(pose._x, pose._y, pose._z);
-
-        Eigen::Matrix3d R_odom_base;
-        Eigen::Vector3d t_odom_base;
-        toOdom(R_map_base, t_map_base, R_odom_base, t_odom_base);
+        const Eigen::Matrix3d R_odom_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
+        const Eigen::Vector3d t_odom_base(pose._x, pose._y, pose._z);
+        Eigen::Matrix3d R_map_base;
+        Eigen::Vector3d t_map_base;
+        composeMapPose(R_odom_base, t_odom_base, R_map_base, t_map_base);
         fillOdometryMsg(msg_local, odom_frame, high_freq_base_frame, stamp, R_odom_base, t_odom_base);
         fillOdometryMsg(msg_global, map_frame, high_freq_base_frame, stamp, R_map_base, t_map_base);
 
@@ -1420,13 +1477,18 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
 template<typename T>
 void set_posestamp(T & out)
 {
-    out.pose.position.x = state_point.pos(0);
-    out.pose.position.y = state_point.pos(1);
-    out.pose.position.z = state_point.pos(2);
-    out.pose.orientation.x = geoQuat.x;
-    out.pose.orientation.y = geoQuat.y;
-    out.pose.orientation.z = geoQuat.z;
-    out.pose.orientation.w = geoQuat.w;
+    Eigen::Matrix3d R_map_base;
+    Eigen::Vector3d t_map_base;
+    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_base, t_map_base);
+    const Eigen::Quaterniond q_map_base(R_map_base);
+
+    out.pose.position.x = t_map_base(0);
+    out.pose.position.y = t_map_base(1);
+    out.pose.position.z = t_map_base(2);
+    out.pose.orientation.x = q_map_base.x();
+    out.pose.orientation.y = q_map_base.y();
+    out.pose.orientation.z = q_map_base.z();
+    out.pose.orientation.w = q_map_base.w();
     
 }
 
@@ -1436,11 +1498,11 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal,
     OdomMsg odomAftMappedGlobal;
     const auto stamp = get_ros_time(lidar_end_time);
 
-    const Eigen::Matrix3d R_map_base = state_point.rot.toRotationMatrix();
-    const Eigen::Vector3d t_map_base = state_point.pos;
-    Eigen::Matrix3d R_odom_base;
-    Eigen::Vector3d t_odom_base;
-    toOdom(R_map_base, t_map_base, R_odom_base, t_odom_base);
+    const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_odom_base = state_point.pos;
+    Eigen::Matrix3d R_map_base;
+    Eigen::Vector3d t_map_base;
+    composeMapPose(R_odom_base, t_odom_base, R_map_base, t_map_base);
     fillOdometryMsg(odomAftMapped, odom_frame, base_frame, stamp, R_odom_base, t_odom_base);
     fillOdometryMsg(odomAftMappedGlobal, map_frame, base_frame, stamp, R_map_base, t_map_base);
 
@@ -2015,7 +2077,6 @@ int main(int argc, char** argv)
                 getCurrPose(state_point);
                 getCurrOffset(state_point);
                 saveKeyFramesAndFactor(feats_undistort);
-                updatePose();
                 correctPoses();
 
                 publishSamMsg();
