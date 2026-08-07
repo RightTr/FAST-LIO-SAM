@@ -89,7 +89,7 @@ int    zupt_inflate_start      = 200;
 double lidar_cov_static_scale  = 5.0;
 double lidar_residual_ref      = 0.05;
 
-static std::shared_ptr<GnssProcess> p_gnss = std::make_shared<GnssProcess>();
+std::shared_ptr<GnssProcess> p_gnss = std::make_shared<GnssProcess>();
 PathPublisher pubGnssPath;
 
 static bool repairTimestamp(const double raw_ts,
@@ -158,7 +158,6 @@ void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
 }
 
 void publishGnssPath(const PosData &pos);
-void publishGnssTf(const PosData &pos, const YawData &yaw, double stamp);
 bool initGnssMap(double lidar_stamp_sec);
 
 vector<vector<int>>  pointSearchInd_surf; 
@@ -789,6 +788,17 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
 
     last_gnss_timestamp = t;
     p_gnss->pushFix(msg_in);
+
+    if (!(gnssEnableFlag || gnssPathVis) || !gnss_aligned.load())
+    {
+        return;
+    }
+
+    PosData pos;
+    if (p_gnss->latestPos(pos) && pos.t >= 0.0)
+    {
+        publishGnssPath(pos);
+    }
 }
 
 void gnss_heading_cbk(const OdometryMsgConstPtr &msg_in)
@@ -1005,7 +1015,7 @@ void fillOdometryCovariance(OdomMsg& odom_msg, const CovT& P)
 
 void publishGnssPath(const PosData &pos)
 {
-    if (! gnss_vis_en) return;
+    if (!gnssPathVis) return;
     PoseStampedMsg gnss_pose;
     gnss_pose.header.stamp = get_ros_time(pos.t);
     gnss_pose.header.frame_id = map_frame;
@@ -1020,41 +1030,16 @@ void publishGnssPath(const PosData &pos)
     ros_publish(pubGnssPath, gnssPath);
 }
 
-void publishGnssTf(const PosData &pos, const YawData &yaw, double stamp)
-{
-    if (gnss_vis_en && pos.t >= 0.0 && yaw.t >= 0.0)
-    {
-        TransformStampedMsg tf_msg;
-        tf_msg.header.stamp = get_ros_time(stamp);
-        tf_msg.header.frame_id = map_frame;
-        tf_msg.child_frame_id = "gnss_visual";
-        tf_msg.transform.translation.x = pos.p.x();
-        tf_msg.transform.translation.y = pos.p.y();
-        tf_msg.transform.translation.z = pos.p.z();
-        tf_msg.transform.rotation = quaternion_from_rpy(0.0, 0.0, yaw.yaw);
-
-    #ifdef USE_ROS1
-        static tf::TransformBroadcaster br;
-    #elif defined(USE_ROS2)
-        static tf2_ros::TransformBroadcaster br(get_ros_node());
-    #endif
-        br.sendTransform(tf_msg);
-    }
-}
-
 bool initGnssMap(double lidar_stamp_sec)
 {
-    if (gnss_aligned.load())
-        return true;
-
     if (!p_gnss)
     {
         return false;
     }
 
-    PosData gps_pos;
+    PosData gnss_pos;
     YawData heading;
-    if (!p_gnss->pickInitPair(gps_pos, heading))
+    if (!p_gnss->pickInitPair(gnss_pos, heading))
     {
         return false;
     }
@@ -1065,8 +1050,8 @@ bool initGnssMap(double lidar_stamp_sec)
     const Eigen::Matrix3d R_init_now = Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
 
     const Eigen::Vector3d p_odom_ant = state_point.pos + R_odom * p_gnss->lever();
-    Eigen::Vector3d t_map_odom_now = gps_pos.p - R_init_now * p_odom_ant;
-    if (!useGpsElevation)
+    Eigen::Vector3d t_map_odom_now = gnss_pos.p - R_init_now * p_odom_ant;
+    if (!useGnssElevation)
     {
         t_map_odom_now.z() = t_map_odom.z();
     }
@@ -1075,7 +1060,6 @@ bool initGnssMap(double lidar_stamp_sec)
 
     publishMapToOdomTf(get_ros_time(lidar_stamp_sec));
     gnss_aligned.store(true);
-    ROS_PRINT_INFO("GNSS init done: yaw=1 pos=1");
     return true;
 }
 
@@ -1669,11 +1653,9 @@ int main(int argc, char** argv)
         read_liosam_params();
     }
     read_gnss_params();
-    set_gnss_mode();
     if (p_gnss)
     {
-        p_gnss->setOff(heading_offset);
-        p_gnss->setTol(gnss_factor_max_age);
+        p_gnss->setOffset(heading_offset);
     }
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
@@ -1693,7 +1675,7 @@ int main(int argc, char** argv)
     // extrinT/extrinR must stay in the sensor's native Airy/DIFOP IMU convention.
     // When flip_en is enabled, IMU measurements, local point clouds, and these
     // extrinsics are all standardized to the Mid360 convention before estimation.
-    if (gnss_init_en)
+    if (gnssEnableFlag || gnssPathVis)
     {
         grav_align = true;
     }
@@ -1777,14 +1759,16 @@ int main(int argc, char** argv)
 
     std::thread loopthread;
     std::thread globalthread;
+    std::thread gnssthread;
     if (sam_enable)
     {
         loopthread = std::thread(&loopClosureThread);
         globalthread = std::thread(&visualizeGlobalMapThread);
+        if (gnssEnableFlag)
+        {
+            gnssthread = std::thread(&gnssMatchingThread);
+        }
     }
-
-    static PosData vis_pos;
-    static YawData vis_yaw;
 
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
@@ -1843,35 +1827,9 @@ int main(int argc, char** argv)
             // Try to establish map as the local GNSS ENU frame when GNSS is
             // enabled for fusion or path visualization. If GNSS is not ready
             // yet, keep running normal LIO.
-            if (gnss_init_en)
+            if ((gnssEnableFlag || gnssPathVis) && !gnss_aligned.load())
             {
                 initGnssMap(Measures.lidar_end_time);
-            }
-
-            if (gnss_vis_en && p_gnss)
-            {
-                PosData vis_gps;
-                if (p_gnss->latestPos(vis_gps) && vis_gps.t >= 0.0 && vis_gps.t > vis_pos.t)
-                {
-                    vis_pos = vis_gps;
-                    publishGnssPath(vis_pos);
-                }
-
-                YawData vis_yaw_sample;
-                if (p_gnss->latestYaw(vis_yaw_sample) && vis_yaw_sample.t >= 0.0 && vis_yaw_sample.t > vis_yaw.t)
-                {
-                    vis_yaw = vis_yaw_sample;
-                }
-
-                if (vis_pos.t >= 0.0 && vis_yaw.t >= 0.0)
-                {
-                    const double pos_age = std::abs(Measures.lidar_end_time - vis_pos.t);
-                    const double yaw_age = std::abs(Measures.lidar_end_time - vis_yaw.t);
-                    if (pos_age < gnss_factor_max_age && yaw_age < gnss_factor_max_age)
-                    {
-                        publishGnssTf(vis_pos, vis_yaw, Measures.lidar_end_time);
-                    }
-                }
             }
 
             if (scan_frame_save_en) save_scan_frame(scan_frames_dir);
@@ -1960,81 +1918,10 @@ int main(int argc, char** argv)
             // LiDAR/IMU processing are visible before factor selection.
             spin_once();
 
-            const bool factor_gnss = gnss_fuse_en && keyframe && gnss_aligned.load();
-            Eigen::Vector3d gps_factor_pos;
-            Eigen::Matrix3d gps_factor_cov;
-            double yaw_factor = 0.0;
-            double gps_factor_dt = std::numeric_limits<double>::quiet_NaN();
-            double yaw_factor_dt = std::numeric_limits<double>::quiet_NaN();
-            const Eigen::Vector3d *gps_pos_arg = nullptr;
-            const Eigen::Matrix3d *gps_cov_arg = nullptr;
-            const double *yaw_arg = nullptr;
-
-            if (factor_gnss && p_gnss)
-            {
-                PosData gps;
-                YawData heading;
-                if (p_gnss->pickPos(Measures.lidar_end_time, gps))
-                {
-                    Eigen::Matrix3d R_map_imu;
-                    Eigen::Vector3d p_map_imu;
-                    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_imu, p_map_imu);
-
-                    gps_factor_pos = gps.p - R_map_imu * p_gnss->lever();
-                    gps_factor_cov = gps.cov;
-
-                    if (!useGpsElevation)
-                    {
-                        gps_factor_pos.z() = p_map_imu.z();
-                        gps_factor_cov(2, 2) = 0.01;
-                    }
-
-                    gps_pos_arg = &gps_factor_pos;
-                    gps_cov_arg = &gps_factor_cov;
-                    gps_factor_dt = Measures.lidar_end_time - gps.t;
-                }
-
-                if (p_gnss->pickYaw(Measures.lidar_end_time, heading))
-                {
-                    yaw_factor = heading.yaw;
-                    yaw_arg = &yaw_factor;
-                    yaw_factor_dt = Measures.lidar_end_time - heading.t;
-                }
-
-                if (gps_pos_arg == nullptr || yaw_arg == nullptr)
-                {
-                    ROS_PRINT_INFO(
-                        "GNSS factor miss: key=%zu lidar=%.3f gps_ptr=%d yaw_ptr=%d dt_g=%.3f dt_y=%.3f gate=%.3f",
-                        cloudKeyPoses6D ? cloudKeyPoses6D->size() : 0UL,
-                        Measures.lidar_end_time,
-                        static_cast<int>(gps_pos_arg != nullptr),
-                        static_cast<int>(yaw_arg != nullptr),
-                        gps_factor_dt,
-                        yaw_factor_dt,
-                        gnss_factor_max_age);
-                }
-            }
-
             if (sam_enable) {
                 if (keyframe)
                 {
-                    PosData dbg_pos;
-                    YawData dbg_yaw;
-                    const bool has_dbg_pos = p_gnss && p_gnss->latestPos(dbg_pos);
-                    const bool has_dbg_yaw = p_gnss && p_gnss->latestYaw(dbg_yaw);
-                    ROS_PRINT_INFO(
-                        "GNSS keyframe gate: key=%zu aligned=%d fuse=%d gps_ptr=%d yaw_ptr=%d buf_pos_t=%.3f buf_yaw_t=%.3f dt_g=%.3f dt_y=%.3f gate=%.3f",
-                        cloudKeyPoses6D ? cloudKeyPoses6D->size() : 0UL,
-                        static_cast<int>(gnss_aligned.load()),
-                        static_cast<int>(gnss_fuse_en),
-                        static_cast<int>(gps_pos_arg != nullptr),
-                        static_cast<int>(yaw_arg != nullptr),
-                        has_dbg_pos ? dbg_pos.t : -1.0,
-                        has_dbg_yaw ? dbg_yaw.t : -1.0,
-                        gps_factor_dt,
-                        yaw_factor_dt,
-                        gnss_factor_max_age);
-                    saveKeyFramesAndFactor(feats_undistort, gps_pos_arg, gps_cov_arg, yaw_arg);
+                    saveKeyFramesAndFactor(feats_undistort);
                 }
                 correctPoses();
                 publishSamMsg();
@@ -2104,6 +1991,9 @@ int main(int argc, char** argv)
     }
     if (globalthread.joinable()) {
         globalthread.join();
+    }
+    if (gnssthread.joinable()) {
+        gnssthread.join();
     }
 
     if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)

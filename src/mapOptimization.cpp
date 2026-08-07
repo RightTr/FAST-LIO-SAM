@@ -2,6 +2,7 @@
 
 #include "utility.h"
 #include "common_utils.h"
+#include "GNSS_Processing.hpp"
 #include "gnssYaw_factor.h"
 #include "map_optimization.h"
 #include "ros_utils.h"
@@ -10,6 +11,9 @@
 #include <algorithm>
 #include <fstream>
 #include <limits>
+#include <tuple>
+#include <utility>
+#include <unordered_set>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
@@ -89,12 +93,22 @@ PathMsg globalPath;
 
 std::mutex mtx;
 std::mutex mtxLoopInfo;
+std::mutex mtxGnssFactor;
 
 bool aLoopIsClosed = false;
 map<int, int> loopIndexContainer; // from new to old
 vector<pair<int, int>> loopIndexQueue;
 vector<gtsam::Pose3> loopPoseQueue;
 vector<gtsam::noiseModel::Diagonal::shared_ptr> loopNoiseQueue;
+
+std::deque<std::tuple<int, Eigen::Vector3d, Eigen::Matrix3d>> gnssPosFactorQueue;
+std::deque<std::pair<int, double>> gnssYawFactorQueue;
+double last_pos_t = -1.0;
+double last_yaw_t = -1.0;
+std::unordered_set<int> pos_keys;
+std::unordered_set<int> yaw_keys;
+
+void correctPoses();
 
 pcl::VoxelGrid<PointTypeIndex> downSizeFilterICP;
 
@@ -437,108 +451,321 @@ void addLoopFactor()
     aLoopIsClosed = true;
 }
 
-void addGNSSFactor(const Eigen::Vector3d &pos, const Eigen::Matrix3d &cov)
+bool findNearestKeyframeByTime(const std::vector<PointTypePose> &keyposes,
+                                      double stamp,
+                                      int &key_out)
 {
-    if (cloudKeyPoses3D->points.empty())
+    key_out = -1;
+    if (keyposes.empty())
+        return false;
+
+    const double first_time = keyposes.front().time;
+    const double last_time = keyposes.back().time;
+    constexpr double gnss_keyframe_tol = 0.12;
+
+    auto it = std::lower_bound(
+        keyposes.begin(),
+        keyposes.end(),
+        stamp,
+        [](const PointTypePose &pose, double t)
+        {
+            return pose.time < t;
+        });
+
+    size_t best_idx = 0;
+    double best_dt = std::numeric_limits<double>::infinity();
+
+    if (it == keyposes.begin())
     {
-        ROS_PRINT_WARN("GNSS factor skipped: no key poses yet");
-        return;
+        best_idx = 0;
+        best_dt = std::abs(keyposes[0].time - stamp);
+    }
+    else if (it == keyposes.end())
+    {
+        best_idx = keyposes.size() - 1;
+        best_dt = std::abs(keyposes.back().time - stamp);
+    }
+    else
+    {
+        const size_t upper_idx = static_cast<size_t>(std::distance(keyposes.begin(), it));
+        const size_t lower_idx = upper_idx - 1;
+        const double lower_dt = std::abs(keyposes[lower_idx].time - stamp);
+        const double upper_dt = std::abs(keyposes[upper_idx].time - stamp);
+        if (lower_dt <= upper_dt)
+        {
+            best_idx = lower_idx;
+            best_dt = lower_dt;
+        }
+        else
+        {
+            best_idx = upper_idx;
+            best_dt = upper_dt;
+        }
     }
 
-    if (cloudKeyPoses3D->points.size() < 5 ||
-        pointDistance(cloudKeyPoses3D->front(),
-                      cloudKeyPoses3D->back()) < gpsFactorMinDis)
-    {
-        ROS_PRINT_WARN("GNSS factor skipped: path too short, size=%zu dis=%.3f min=%.3f",
-                       cloudKeyPoses3D->points.size(),
-                       pointDistance(cloudKeyPoses3D->front(), cloudKeyPoses3D->back()),
-                       gpsFactorMinDis);
-        return;
-    }
-
-    const double gps_x = pos.x();
-    const double gps_y = pos.y();
-    const double gps_z = pos.z();
-
-    if (std::abs(gps_x) < 1e-6 && std::abs(gps_y) < 1e-6)
-    {
-        ROS_PRINT_WARN("GNSS factor skipped: near zero position (%.6f, %.6f, %.6f)", gps_x, gps_y, gps_z);
-        return;
-    }
-
-    const double cov_x = cov(0, 0);
-    const double cov_y = cov(1, 1);
-    const double cov_z = cov(2, 2);
-
-    if (!std::isfinite(cov_x) ||
-        !std::isfinite(cov_y) ||
-        !std::isfinite(cov_z) ||
-        cov_x <= 0.0 ||
-        cov_y <= 0.0 ||
-        cov_z <= 0.0)
-    {
-        ROS_PRINT_WARN("GNSS factor skipped: invalid covariance [%g %g %g]",
-                       cov_x, cov_y, cov_z);
-        return;
-    }
-
-    gtsam::Vector sigma(3);
-    sigma << std::sqrt(cov_x),
-             std::sqrt(cov_y),
-             std::sqrt(cov_z);
-
-    gtSAMgraph.add(
-        gtsam::GPSFactor(
-            cloudKeyPoses3D->size(),
-            gtsam::Point3(gps_x, gps_y, gps_z),
-            gtsam::noiseModel::Diagonal::Sigmas(sigma)));
-
-    aLoopIsClosed = true;
-    ROS_PRINT_INFO("GNSS factor added: key=%zu pos=(%.3f, %.3f, %.3f)",
-                   cloudKeyPoses3D->size(),
-                   gps_x, gps_y, gps_z);
+    key_out = static_cast<int>(best_idx);
+    return best_dt <= gnss_keyframe_tol && stamp <= last_time + gnss_keyframe_tol;
 }
 
-void addGNSSYawFactor(double yaw)
+void addGNSSFactor()
 {
-    if (!useGnssYawFactor)
+    decltype(gnssPosFactorQueue) posQueue;
+
     {
-        ROS_PRINT_INFO("GNSS yaw factor disabled by config");
+        std::lock_guard<std::mutex> lock(mtxGnssFactor);
+        if (gnssPosFactorQueue.empty())
+            return;
+        posQueue.swap(gnssPosFactorQueue);
+    }
+
+    while (!posQueue.empty())
+    {
+        const auto &[key, pos, cov] = posQueue.front();
+
+        const double gnss_x = pos.x();
+        const double gnss_y = pos.y();
+        const double gnss_z = pos.z();
+
+        const double cov_x = cov(0, 0);
+        const double cov_y = cov(1, 1);
+        const double cov_z = cov(2, 2);
+
+        gtsam::Vector sigma(3);
+        sigma << std::sqrt(cov_x),
+                 std::sqrt(cov_y),
+                 std::sqrt(cov_z);
+
+        gtSAMgraph.add(
+            gtsam::GPSFactor(
+                key,
+                gtsam::Point3(gnss_x, gnss_y, gnss_z),
+                gtsam::noiseModel::Diagonal::Sigmas(sigma)));
+
+        posQueue.pop_front();
+    }
+
+    aLoopIsClosed = true;
+}
+
+void addGNSSYawFactor()
+{
+    decltype(gnssYawFactorQueue) yawQueue;
+
+    {
+        std::lock_guard<std::mutex> lock(mtxGnssFactor);
+        if (gnssYawFactorQueue.empty())
+            return;
+        yawQueue.swap(gnssYawFactorQueue);
+    }
+
+    bool added = false;
+
+    while (!yawQueue.empty())
+    {
+        const auto &[key, yaw] = yawQueue.front();
+
+        const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4);
+        const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
+
+        gtSAMgraph.add(
+            boost::shared_ptr<GnssYawFactor>(
+                new GnssYawFactor(key, yaw, yawNoise)));
+
+        yawQueue.pop_front();
+    }
+
+    aLoopIsClosed = true;
+}
+
+void processGnssPos(const std::vector<PointTypePose> &keyposes)
+{
+    if (!p_gnss)
+        return;
+
+    if (keyposes.size() < 5)
+        return;
+
+    const Eigen::Vector3d key_start(
+        keyposes.front().x,
+        keyposes.front().y,
+        keyposes.front().z);
+    const Eigen::Vector3d key_end(
+        keyposes.back().x,
+        keyposes.back().y,
+        keyposes.back().z);
+
+    if ((key_end - key_start).norm() < gpsFactorMinDis)
+    {
         return;
     }
 
-    if (cloudKeyPoses3D->points.empty())
+    static Eigen::Vector3d last_fpos = Eigen::Vector3d::Zero();
+    static bool has_fpos = false;
+
+    while (true)
     {
-        ROS_PRINT_WARN("GNSS yaw factor skipped: no key poses yet");
+        PosData pos;
+        if (!p_gnss->peekOldestPos(pos))
+            return;
+
+        int key = -1;
+        if (!findNearestKeyframeByTime(keyposes, pos.t, key))
+        {
+            if (!keyposes.empty() && pos.t <= keyposes.back().time)
+            {
+                PosData dropped;
+                p_gnss->popOldestPos(dropped);
+                continue;
+            }
+
+            return;
+        }
+        if (key < 0)
+            return;
+        if (pos_keys.count(key) != 0 || pos.t <= last_pos_t)
+        {
+            PosData dropped;
+            p_gnss->popOldestPos(dropped);
+            continue;
+        }
+
+        const PointTypePose &pose = keyposes[key];
+        const gtsam::Pose3 key_pose = pclPointTogtsamPose3(pose);
+        const Eigen::Matrix3d R_map_imu = key_pose.rotation().matrix();
+        Eigen::Vector3d gnss_pos = pos.p - R_map_imu * p_gnss->lever();
+        Eigen::Matrix3d gnss_cov = pos.cov;
+        if (!useGnssElevation)
+        {
+            gnss_pos.z() = pose.z;
+            gnss_cov(2, 2) = 0.01;
+        }
+
+        if (!gnss_pos.allFinite())
+        {
+            PosData dropped;
+            p_gnss->popOldestPos(dropped);
+            continue;
+        }
+
+        if (!gnss_cov.allFinite() ||
+            gnss_cov(0, 0) <= 0.0 ||
+            gnss_cov(1, 1) <= 0.0 ||
+            gnss_cov(2, 2) <= 0.0)
+        {
+            PosData dropped;
+            p_gnss->popOldestPos(dropped);
+            continue;
+        }
+
+        if (has_fpos &&
+            (gnss_pos - last_fpos).norm() < gpsFactorMinDis)
+        {
+            PosData dropped;
+            p_gnss->popOldestPos(dropped);
+            continue;
+        }
+
+        if (!p_gnss->popOldestPos(pos))
+            return;
+
+        pos_keys.insert(key);
+        last_pos_t = pos.t;
+        last_fpos = gnss_pos;
+        has_fpos = true;
+
+        {
+            std::lock_guard<std::mutex> lock(mtxGnssFactor);
+            gnssPosFactorQueue.emplace_back(
+                key,
+                gnss_pos,
+                gnss_cov);
+        }
+    }
+}
+
+void processGnssYaw(const std::vector<PointTypePose> &keyposes)
+{
+    if (!p_gnss)
         return;
+
+    while (true)
+    {
+        YawData yaw;
+        if (!p_gnss->peekOldestYaw(yaw))
+            return;
+
+        if (!useGnssYawFactor)
+        {
+            YawData dropped;
+            p_gnss->popOldestYaw(dropped);
+            continue;
+        }
+
+        int key = -1;
+        if (!findNearestKeyframeByTime(keyposes, yaw.t, key))
+        {
+            if (!keyposes.empty() && yaw.t <= keyposes.back().time)
+            {
+                YawData dropped;
+                p_gnss->popOldestYaw(dropped);
+                continue;
+            }
+
+            return;
+        }
+        if (key < 0)
+            return;
+        if (yaw_keys.count(key) != 0 || yaw.t <= last_yaw_t)
+        {
+            YawData dropped;
+            p_gnss->popOldestYaw(dropped);
+            continue;
+        }
+
+        if (std::abs(normalizeYaw(yaw.yaw - keyposes[key].yaw)) > 60.0 * M_PI / 180.0)
+        {
+            YawData dropped;
+            p_gnss->popOldestYaw(dropped);
+            continue;
+        }
+
+        if (!std::isfinite(yaw.yaw))
+        {
+            YawData dropped;
+            p_gnss->popOldestYaw(dropped);
+            continue;
+        }
+
+        if (!p_gnss->popOldestYaw(yaw))
+            return;
+
+        yaw_keys.insert(key);
+        last_yaw_t = yaw.t;
+
+        {
+            std::lock_guard<std::mutex> lock(mtxGnssFactor);
+            gnssYawFactorQueue.emplace_back(
+                key,
+                yaw.yaw);
+        }
+    }
+}
+
+void performGnssMatching()
+{
+    if (!gnssEnableFlag || !gnss_aligned.load() || !p_gnss)
+        return;
+
+    std::vector<PointTypePose> keyposes;
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        if (cloudKeyPoses6D == nullptr || cloudKeyPoses6D->points.empty())
+            return;
+        keyposes.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
     }
 
-    const int key = static_cast<int>(cloudKeyPoses3D->size());
-    const gtsam::Pose3 curOdomPose = trans2gtsamPose(transformTobeMapped);
-    const Eigen::Matrix3d R_odom_cur = curOdomPose.rotation().matrix();
-    const Eigen::Vector3d t_odom_cur(curOdomPose.translation().x(),
-                                     curOdomPose.translation().y(),
-                                     curOdomPose.translation().z());
-    Eigen::Matrix3d R_map_cur;
-    Eigen::Vector3d t_map_cur;
-    composeMapPose(R_odom_cur, t_odom_cur, R_map_cur, t_map_cur);
-    const double cur_yaw = std::atan2(R_map_cur(1, 0), R_map_cur(0, 0));
-    const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4); // rad, only constrain yaw
-
-    if (std::abs(normalizeYaw(yaw - cur_yaw)) > 60.0 * M_PI / 180.0)
-    {
-        ROS_PRINT_WARN("GNSS yaw factor skipped: residual too large, yaw=%.3f cur=%.3f",
-                       yaw, cur_yaw);
-        return;
-    }
-
-    const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
-
-    gtSAMgraph.add(
-        boost::shared_ptr<GnssYawFactor>(
-            new GnssYawFactor(key, yaw, yawNoise)));
-
-    ROS_PRINT_INFO("GNSS yaw factor added: key=%d yaw=%.3f", key, yaw);
+    processGnssPos(keyposes);
+    processGnssYaw(keyposes);
 }
 
 void updatePath(const PointTypePose& pose_in)
@@ -554,28 +781,16 @@ void updatePath(const PointTypePose& pose_in)
     globalPath.poses.push_back(pose_stamped);
 }
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
-                            const Eigen::Vector3d *gps_pos,
-                            const Eigen::Matrix3d *gps_cov,
-                            const double *gnss_yaw)
+void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort)
 {
     const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
 
     // odom factor
     addOdomFactor();
 
-    // gps factor
-    if (gps_pos != nullptr)
-    {
-        addGNSSFactor(*gps_pos, *gps_cov);
-    }
+    addGNSSFactor();
 
-    // yaw factor
-    if (gnss_yaw != nullptr)
-    {
-        addGNSSYawFactor(*gnss_yaw);
-    }
-
+    addGNSSYawFactor();
     // loop factor
     addLoopFactor();
 
@@ -861,6 +1076,45 @@ void loopClosureThread()
         rate.sleep();
         performLoopClosure();
         visualizeLoopClosure();
+    }
+}
+
+void gnssMatchingThread()
+{
+    if (!gnssEnableFlag)
+        return;
+
+    RateType rate(50);
+
+    while (ros_ok() && !flg_exit)
+    {
+        rate.sleep();
+        if (!gnss_aligned.load())
+            continue;
+        performGnssMatching();
+        if (gnssPathVis && p_gnss)
+        {
+            PosData pos;
+            YawData yaw;
+            if (p_gnss->latestPos(pos) && p_gnss->latestYaw(yaw))
+            {
+                TransformStampedMsg tf_msg;
+                tf_msg.header.stamp = get_ros_time(std::max(pos.t, yaw.t));
+                tf_msg.header.frame_id = map_frame;
+                tf_msg.child_frame_id = "gnss_link";
+                tf_msg.transform.translation.x = pos.p.x();
+                tf_msg.transform.translation.y = pos.p.y();
+                tf_msg.transform.translation.z = pos.p.z();
+                tf_msg.transform.rotation = quaternion_from_rpy(0.0, 0.0, yaw.yaw);
+
+            #ifdef USE_ROS1
+                static tf::TransformBroadcaster br;
+            #elif defined(USE_ROS2)
+                static tf2_ros::TransformBroadcaster br(get_ros_node());
+            #endif
+                br.sendTransform(tf_msg);
+            }
+        }
     }
 }
 

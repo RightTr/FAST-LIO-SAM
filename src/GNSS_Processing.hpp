@@ -79,8 +79,6 @@ class GnssProcess
     cur_valid_ = false;
     cur_stamp_ = 0.0;
 
-    fix_buf_.clear();
-    yaw_msg_buf_.clear();
     pos_buf_.clear();
     yaw_buf_.clear();
     has_pos_ = false;
@@ -90,7 +88,6 @@ class GnssProcess
 
     lever_.setZero();
     off_ = 0.0;
-    tol_ = 0.4;
   }
 
   void InitOriginPosition(double latitude, double longitude, double altitude)
@@ -118,16 +115,10 @@ class GnssProcess
     lever_ = lever;
   }
 
-  void setOff(double off)
+  void setOffset(double off)
   {
     std::lock_guard<std::mutex> lock(mtx_);
     off_ = off;
-  }
-
-  void setTol(double tol)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    tol_ = std::max(0.0, tol);
   }
 
   void pushFix(const GnssFixMsgConstPtr &msg)
@@ -161,10 +152,6 @@ class GnssProcess
 
     last_pos_ = data;
     has_pos_ = true;
-    fix_buf_.push_back(msg);
-    while (fix_buf_.size() > 2000) {
-      fix_buf_.pop_front();
-    }
   }
 
   void pushYaw(const GnssOdomMsgConstPtr &msg)
@@ -192,22 +179,44 @@ class GnssProcess
 
     last_yaw_ = data;
     has_yaw_ = true;
-    yaw_msg_buf_.push_back(msg);
-    while (yaw_msg_buf_.size() > 2000) {
-      yaw_msg_buf_.pop_front();
-    }
   }
 
-  bool pickPos(double t, PosData &out)
+  bool peekOldestPos(PosData &out) const
   {
     std::lock_guard<std::mutex> lock(mtx_);
-    return pickData(pos_buf_, t, tol_, out, "GNSS pos");
+    if (pos_buf_.empty())
+      return false;
+    out = pos_buf_.front();
+    return true;
   }
 
-  bool pickYaw(double t, YawData &out)
+  bool popOldestPos(PosData &out)
   {
     std::lock_guard<std::mutex> lock(mtx_);
-    return pickData(yaw_buf_, t, tol_, out, "GNSS yaw");
+    if (pos_buf_.empty())
+      return false;
+    out = pos_buf_.front();
+    pos_buf_.pop_front();
+    return true;
+  }
+
+  bool peekOldestYaw(YawData &out) const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (yaw_buf_.empty())
+      return false;
+    out = yaw_buf_.front();
+    return true;
+  }
+
+  bool popOldestYaw(YawData &out)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (yaw_buf_.empty())
+      return false;
+    out = yaw_buf_.front();
+    yaw_buf_.pop_front();
+    return true;
   }
 
   bool pickInitPair(PosData &pos_out, YawData &yaw_out)
@@ -218,7 +227,7 @@ class GnssProcess
       const double pos_t = pos_buf_.front().t;
       const double yaw_t = yaw_buf_.front().t;
 
-      if (std::abs(pos_t - yaw_t) <= tol_) {
+      if (std::abs(pos_t - yaw_t) <= 0.1) {
         pos_out = pos_buf_.front();
         yaw_out = yaw_buf_.front();
         pos_buf_.pop_front();
@@ -233,44 +242,6 @@ class GnssProcess
       }
     }
 
-    return false;
-  }
-
-  bool pickPair(double t, PosData &pos_out, YawData &yaw_out)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-
-    while (!pos_buf_.empty() && pos_buf_.front().t < t - tol_) {
-      pos_buf_.pop_front();
-    }
-    while (!yaw_buf_.empty() && yaw_buf_.front().t < t - tol_) {
-      yaw_buf_.pop_front();
-    }
-
-    if (pos_buf_.empty() || yaw_buf_.empty()) {
-      return false;
-    }
-
-    while (!pos_buf_.empty() && !yaw_buf_.empty()) {
-      const double pos_t = pos_buf_.front().t;
-      const double yaw_t = yaw_buf_.front().t;
-
-      if (std::abs(pos_t - t) <= tol_ &&
-          std::abs(yaw_t - t) <= tol_ &&
-          std::abs(pos_t - yaw_t) <= tol_) {
-        pos_out = pos_buf_.front();
-        yaw_out = yaw_buf_.front();
-        pos_buf_.pop_front();
-        yaw_buf_.pop_front();
-        return true;
-      }
-
-      if (pos_t < yaw_t) {
-        pos_buf_.pop_front();
-      } else {
-        yaw_buf_.pop_front();
-      }
-    }
     return false;
   }
 
@@ -343,7 +314,7 @@ class GnssProcess
   }
 
   GnssOdomMsg ToOdometry(const std::string &frame_id = "map",
-                         const std::string &child_frame_id = "gps") const
+                         const std::string &child_frame_id = "gnss") const
   {
     GnssOdomMsg msg;
     msg.header.stamp = get_ros_time(cur_stamp_);
@@ -400,41 +371,6 @@ class GnssProcess
   static constexpr double kWgs84E2 = kWgs84F * (2.0 - kWgs84F);
   static constexpr double kPi = 3.14159265358979323846;
 
-  template <typename T>
-  static bool pickData(std::deque<T> &buf, double t, double tol, T &out, const char *name)
-  {
-    while (!buf.empty() && buf.front().t < t - tol) {
-      buf.pop_front();
-    }
-    if (buf.empty()) {
-      ROS_PRINT_WARN("%s pick failed: empty buffer, t=%.9f tol=%.3f", name, t, tol);
-      return false;
-    }
-    if (buf.front().t > t + tol) {
-      ROS_PRINT_WARN("%s pick failed: too new, t=%.9f front=%.9f tol=%.3f", name, t, buf.front().t, tol);
-      return false;
-    }
-
-    size_t best_idx = 0;
-    double best_dt = std::abs(buf.front().t - t);
-    for (size_t i = 1; i < buf.size(); ++i) {
-      const double sample_t = buf[i].t;
-      if (sample_t > t + tol) {
-        break;
-      }
-
-      const double dt = std::abs(sample_t - t);
-      if (dt < best_dt) {
-        best_dt = dt;
-        best_idx = i;
-      }
-    }
-
-    out = buf[best_idx];
-    buf.erase(buf.begin() + static_cast<std::ptrdiff_t>(best_idx));
-    return true;
-  }
-
   static double WrapYaw(double yaw)
   {
     while (yaw > M_PI) {
@@ -446,17 +382,12 @@ class GnssProcess
     return yaw;
   }
 
-  static bool IsFinite(double value)
-  {
-    return std::isfinite(value);
-  }
-
   static bool IsFixUsable(const GnssFixMsg &fix)
   {
     const bool has_valid_status = fix.status.status >= 0;
-    const bool has_finite_lla = IsFinite(fix.latitude) &&
-                                IsFinite(fix.longitude) &&
-                                IsFinite(fix.altitude);
+    const bool has_finite_lla = std::isfinite(fix.latitude) &&
+                                std::isfinite(fix.longitude) &&
+                                std::isfinite(fix.altitude);
     return has_valid_status && has_finite_lla;
   }
 
@@ -558,8 +489,6 @@ class GnssProcess
 
   mutable std::mutex mtx_;
 
-  std::deque<GnssFixMsgConstPtr> fix_buf_;
-  std::deque<GnssOdomMsgConstPtr> yaw_msg_buf_;
   std::deque<PosData> pos_buf_;
   std::deque<YawData> yaw_buf_;
 
@@ -570,7 +499,6 @@ class GnssProcess
 
   Eigen::Vector3d lever_ = Eigen::Vector3d::Zero();
   double off_ = 0.0;
-  double tol_ = 0.4;
 
   bool origin_ready_ = false;
   double origin_lat_ = 0.0;
@@ -590,5 +518,7 @@ class GnssProcess
   bool cur_valid_ = false;
   double cur_stamp_ = 0.0;
 };
+
+extern std::shared_ptr<GnssProcess> p_gnss;
 
 #endif  // GNSS_PROCESSING_HPP

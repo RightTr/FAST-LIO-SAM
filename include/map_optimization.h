@@ -37,10 +37,8 @@ extern pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 
 void MapOptimizationInit();
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
-                            const Eigen::Vector3d *gps_pos = nullptr,
-                            const Eigen::Matrix3d *gps_cov = nullptr,
-                            const double *gnss_yaw = nullptr);
+void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
+
 bool isKeyFrame();
 
 void correctPoses();
@@ -48,6 +46,8 @@ void correctPoses();
 void publishSamMsg();
 
 void loopClosureThread();
+
+void gnssMatchingThread();
 
 void setLaserCurTime(double lidar_end_time);
 

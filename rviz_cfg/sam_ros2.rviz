@@ -16,6 +16,7 @@ Panels:
         - /OdometryLocal1/Odometry2
         - /OdometryLocal1/Odometry2/Topic1
         - /Odometry1/Shape1
+        - /Axes2
       Splitter Ratio: 0.5
     Tree Height: 1169
   - Class: rviz_common/Selection
@@ -298,7 +299,7 @@ Visualization Manager:
           Enabled: true
           Invert Rainbow: false
           Max Color: 255; 255; 255
-          Max Intensity: 21
+          Max Intensity: 28
           Min Color: 0; 0; 0
           Min Intensity: 0
           Name: KeyframeXYZ
@@ -354,8 +355,8 @@ Visualization Manager:
         - Alpha: 1
           Autocompute Intensity Bounds: true
           Autocompute Value Bounds:
-            Max Value: 20.430946350097656
-            Min Value: -1.4565300941467285
+            Max Value: 22.035295486450195
+            Min Value: -1.740132212638855
             Value: true
           Axis: Z
           Channel Name: intensity
@@ -548,6 +549,13 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /lio_sam/mapping/keyframe_yaw
       Value: true
+    - Class: rviz_default_plugins/Axes
+      Enabled: true
+      Length: 1
+      Name: Axes
+      Radius: 0.10000000149011612
+      Reference Frame: gnss_link
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -594,25 +602,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 62.899688720703125
+      Distance: 48.70951843261719
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -12.23361587524414
-        Y: 19.4704532623291
-        Z: -31.44524574279785
+        X: -11.725726127624512
+        Y: 12.11281681060791
+        Z: -25.704099655151367
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.069797396659851
+      Pitch: 0.9747974872589111
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.543619632720947
+      Yaw: 5.553619861602783
     Saved: ~
 Window Geometry:
   Displays:

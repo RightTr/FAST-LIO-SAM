@@ -39,9 +39,8 @@ std::string base_frame = "base_link";
 std::string high_freq_base_frame = "base_link_hf";
 std::string gnss_topic = "handsfree/rtk/gnss";
 std::string gnss_heading_topic = "handsfree/rtk/heading";
-bool gpsEnableFlag = false;
-bool gpsInitAlign = false;
-bool gpsPathVis = false;
+bool gnssEnableFlag = false;
+bool gnssPathVis = false;
 double gpsFactorMinDis = 5.0;
 std::vector<double> gnss_extrinsic_T_raw(3, 0.0);
 std::vector<double> gnss_extrinsic_R_raw{1.0, 0.0, 0.0,
@@ -52,11 +51,7 @@ Eigen::Matrix3d gnss_extrinsic_R = Eigen::Matrix3d::Identity();
 double heading_offset = 0.0;
 bool useGnssYawFactor = false;
 double gnss_yaw_factor_sigma = 0.10;
-bool useGpsElevation = false;
-double gnss_factor_max_age = 1.0;
-bool gnss_fuse_en = false;
-bool gnss_init_en = false;
-bool gnss_vis_en = false;
+bool useGnssElevation = false;
 std::atomic<bool> gnss_aligned(false);
 bool flip_en = false;
 const Eigen::Matrix3d IMU_FLIP_R = (Eigen::Matrix3d() <<
@@ -91,13 +86,6 @@ void set_mapping_mode()
             use_prior_map = false;
             return;
     }
-}
-
-void set_gnss_mode()
-{
-    gnss_fuse_en = gpsEnableFlag;
-    gnss_init_en = gpsEnableFlag || gpsInitAlign;
-    gnss_vis_en = gpsEnableFlag || gpsPathVis;
 }
 
 void read_liosam_params() {
@@ -135,9 +123,8 @@ void read_liosam_params() {
 void read_gnss_params() {
     rosparam_get("gnss/topic", gnss_topic, std::string("handsfree/rtk/gnss"));
     rosparam_get("gnss/heading_topic", gnss_heading_topic, std::string("handsfree/rtk/heading"));
-    rosparam_get("gnss/gpsPathVis", gpsPathVis, false);
-    rosparam_get("gnss/gpsInitAlign", gpsInitAlign, false);
-    rosparam_get("gnss/gpsEnableFlag", gpsEnableFlag, false);
+    rosparam_get("gnss/gnssPathVis", gnssPathVis, false);
+    rosparam_get("gnss/gnssEnableFlag", gnssEnableFlag, false);
     rosparam_get("gnss/gpsFactorMinDis", gpsFactorMinDis, 5.0);
     rosparam_get("gnss/extrinsic_T", gnss_extrinsic_T_raw,
                  std::vector<double>{0.0, 0.0, 0.0});
@@ -158,7 +145,6 @@ void read_gnss_params() {
     heading_offset = heading_offset_deg * M_PI / 180.0;
     rosparam_get("gnss/useYawFactor", useGnssYawFactor, false);
     rosparam_get("gnss/yawFactorSigma", gnss_yaw_factor_sigma, 0.10);
-    rosparam_get("gnss/useGpsElevation", useGpsElevation, false);
-    rosparam_get("gnss/factorMaxAge", gnss_factor_max_age, 1.0);
+    rosparam_get("gnss/useGnssElevation", useGnssElevation, false);
 
 }

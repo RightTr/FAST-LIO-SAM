@@ -15,10 +15,9 @@ common:
 gnss:
     topic: "handsfree/rtk/gnss"
     heading_topic: "handsfree/rtk/heading"
-    gpsPathVis: true
-    gpsInitAlign: true
-    gpsEnableFlag: true
-    gpsFactorMinDis: 2.0
+    gnssPathVis: true
+    gnssEnableFlag: true
+    gpsFactorMinDis: 5.0
     extrinsic_T: [0.0, 0.165, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0,
                   0.0, 1.0, 0.0,
@@ -26,7 +25,7 @@ gnss:
     heading_offset_deg: 90.0
     useYawFactor: true
     yawFactorSigma: 0.1 # rad, softened to avoid over-constraining pose graph
-    useGpsElevation: true
+    useGnssElevation: true
 
 preprocess:
     lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
