@@ -72,7 +72,7 @@ bool sam_enable = false;
 bool grav_align = false;
 int lidar_type;
 bool use_zupt = false;
-std::string prior_tree_map_path;
+std::string prior_tree_path;
 double zupt_acc_var_threshold;
 double zupt_gyro_var_threshold;
 double prior_lidar_cov = 0.001;
@@ -242,58 +242,6 @@ double adapt_lidar_weight()
     return std::min(LASER_POINT_COV * lidar_static_scale * lidar_residual_scale, 0.1);
 }
 
-bool fill_plane_observation(KD_TREE_PUBLIC<PointType> &tree,
-                            const PointType &point_world,
-                            PointVector *points_near_out,
-                            vector<float> *point_search_sq_dis_out,
-                            VF(4) &pabcd_out,
-                            double &pd2_out)
-{
-    vector<float> pointSearchSqDis(NUM_MATCH_POINTS);
-    PointVector points_near;
-    tree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
-
-    if (points_near_out != nullptr)
-        *points_near_out = points_near;
-    if (point_search_sq_dis_out != nullptr)
-        *point_search_sq_dis_out = pointSearchSqDis;
-
-    if (points_near.size() < NUM_MATCH_POINTS)
-        return false;
-    if (pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5)
-        return false;
-
-    if (!esti_plane(pabcd_out, points_near, 0.1f))
-        return false;
-
-    pd2_out = pabcd_out(0) * point_world.x + pabcd_out(1) * point_world.y +
-              pabcd_out(2) * point_world.z + pabcd_out(3);
-    return true;
-}
-
-bool fill_match_observation(const VF(4) &pabcd,
-                            double pd2,
-                            const PointType &point_body,
-                            double row_scale,
-                            MatchObservation &obs_out)
-{
-    const double body_range = std::sqrt(point_body.x * point_body.x +
-                                        point_body.y * point_body.y +
-                                        point_body.z * point_body.z);
-    const double surf_quality = 1.0 - 0.9 * std::fabs(pd2) / std::sqrt(std::max(1e-6, body_range));
-    if (surf_quality <= 0.9)
-        return false;
-
-    obs_out.body = point_body;
-    obs_out.normal.x = pabcd(0);
-    obs_out.normal.y = pabcd(1);
-    obs_out.normal.z = pabcd(2);
-    obs_out.normal.intensity = pd2;
-    obs_out.residual = std::fabs(pd2);
-    obs_out.row_scale = row_scale;
-    return true;
-}
-
 bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
                              const PointVector *points_near,
                              const PointType &point_body,
@@ -310,8 +258,23 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
     {
         if (tree == nullptr)
             return false;
-        if (!fill_plane_observation(*tree, point_world, points_near_out, nullptr, pabcd, pd2))
+
+        vector<float> point_search_sq_dis(NUM_MATCH_POINTS);
+        PointVector points_near;
+        tree->Nearest_Search(point_world, NUM_MATCH_POINTS, points_near,
+                             point_search_sq_dis);
+
+        if (points_near_out != nullptr)
+            *points_near_out = points_near;
+
+        if (points_near.size() < NUM_MATCH_POINTS ||
+            point_search_sq_dis[NUM_MATCH_POINTS - 1] > 5)
             return false;
+        if (!esti_plane(pabcd, points_near, 0.1f))
+            return false;
+
+        pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
+              pabcd(2) * point_world.z + pabcd(3);
     }
     else
     {
@@ -323,19 +286,34 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
               pabcd(2) * point_world.z + pabcd(3);
     }
 
-    return fill_match_observation(pabcd, pd2, point_body, row_scale, obs_out);
+    const double body_range = std::sqrt(point_body.x * point_body.x +
+                                        point_body.y * point_body.y +
+                                        point_body.z * point_body.z);
+    const double surf_quality = 1.0 - 0.9 * std::fabs(pd2) /
+                                std::sqrt(std::max(1e-6, body_range));
+    if (surf_quality <= 0.9)
+        return false;
+
+    obs_out.body = point_body;
+    obs_out.normal.x = pabcd(0);
+    obs_out.normal.y = pabcd(1);
+    obs_out.normal.z = pabcd(2);
+    obs_out.normal.intensity = pd2;
+    obs_out.residual = std::fabs(pd2);
+    obs_out.row_scale = row_scale;
+    return true;
 }
 
 bool loadPriorTreeMap()
 {
 
-    if (prior_tree_map_path.empty())
+    if (prior_tree_path.empty())
     {
-        ROS_PRINT_WARN("prior mode enabled, but no prior_tree_map_path provided");
+        ROS_PRINT_WARN("prior mode enabled, but no prior_tree_path provided");
         return false;
     }
 
-    if (prior_ikdtree.LoadStaticSnapshot(prior_tree_map_path))
+    if (prior_ikdtree.LoadIkdtree(prior_tree_path))
     {
         const bool prior_map_ready = prior_ikdtree.Root_Node != nullptr;
         PointVector().swap(prior_ikdtree.PCL_Storage);
@@ -343,15 +321,17 @@ bool loadPriorTreeMap()
         featsFromPriorMap->clear();
         featsFromPriorMap->points = prior_ikdtree.PCL_Storage;
         ROS_PRINT_INFO("loaded prior ikdtree snapshot: %s, nodes=%d",
-                       prior_tree_map_path.c_str(), prior_ikdtree.validnum());
+                       prior_tree_path.c_str(), prior_ikdtree.validnum());
         return prior_map_ready;
     }
 
-    ROS_PRINT_ERROR("failed to load prior ikdtree snapshot: %s", prior_tree_map_path.c_str());
+    ROS_PRINT_ERROR("failed to load prior ikdtree snapshot: %s", prior_tree_path.c_str());
     return false;
 }
 
-bool coarsePriorIcpAlign(double &fitness_score)
+bool coarsePriorIcpAlign(Eigen::Matrix3d &R_map_lidar,
+                         Eigen::Vector3d &t_map_lidar,
+                         double &fitness_score)
 {
     fitness_score = std::numeric_limits<double>::infinity();
 
@@ -388,9 +368,16 @@ bool coarsePriorIcpAlign(double &fitness_score)
     icp.setInputSource(feats_down_body);
     icp.setInputTarget(prior_map_ds);
 
-    const Eigen::Matrix3d R_map_imu_guess = state_point.rot.toRotationMatrix();
-    const Eigen::Matrix3d R_map_lidar_guess = R_map_imu_guess * state_point.offset_R_L_I.toRotationMatrix();
-    const Eigen::Vector3d t_map_lidar_guess = state_point.pos + R_map_imu_guess * state_point.offset_T_L_I;
+    Eigen::Matrix3d R_map_base_guess;
+    Eigen::Vector3d t_map_base_guess;
+    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos,
+                   R_map_base_guess, t_map_base_guess);
+
+    const Eigen::Matrix3d R_base_lidar = state_point.offset_R_L_I.toRotationMatrix();
+    const Eigen::Vector3d t_base_lidar = state_point.offset_T_L_I;
+    const Eigen::Matrix3d R_map_lidar_guess = R_map_base_guess * R_base_lidar;
+    const Eigen::Vector3d t_map_lidar_guess = t_map_base_guess +
+                                              R_map_base_guess * t_base_lidar;
 
     Eigen::Affine3f guess = Eigen::Affine3f::Identity();
     guess.linear() = R_map_lidar_guess.cast<float>();
@@ -411,10 +398,8 @@ bool coarsePriorIcpAlign(double &fitness_score)
     }
 
     const Eigen::Matrix4f final_tf = icp.getFinalTransformation();
-    const Eigen::Matrix3d R_map_lidar = final_tf.block<3, 3>(0, 0).cast<double>();
-    const Eigen::Vector3d t_map_lidar = final_tf.block<3, 1>(0, 3).cast<double>();
-    const Eigen::Matrix3d R_imu_lidar = state_point.offset_R_L_I.toRotationMatrix();
-    const Eigen::Matrix3d R_map_imu = R_map_lidar * R_imu_lidar.transpose();
+    R_map_lidar = final_tf.block<3, 3>(0, 0).cast<double>();
+    t_map_lidar = final_tf.block<3, 1>(0, 3).cast<double>();
 
     return true;
 }
@@ -1088,72 +1073,97 @@ void publishMapToOdomTf(const TimeType& stamp)
     br.sendTransform(map_to_odom_msg);
 }
 
-bool priorInitAlign(double lidar_cov, double &solve_H_time)
+bool refinePriorPointToPlane(Eigen::Matrix3d &R_map_odom_,
+                             Eigen::Vector3d &t_map_odom_)
 {
-    if (!use_prior_map || !prior_init_en || prior_init_done || prior_ikdtree.Root_Node == nullptr)
+    if (feats_down_body == nullptr || feats_down_body->size() < 20 ||
+        prior_ikdtree.Root_Node == nullptr)
         return false;
 
-    if (feats_down_body == nullptr || feats_down_body->size() < 20)
-        return false;
-
-    PointCloudXYZI::Ptr prior_map_ds(new PointCloudXYZI());
-    if (featsFromPriorMap->size() > 2000)
+    for (int iter = 0; iter < 5; ++iter)
     {
-        pcl::VoxelGrid<PointType> downsample;
-        downsample.setLeafSize(0.8f, 0.8f, 0.8f);
-        downsample.setInputCloud(featsFromPriorMap);
-        downsample.filter(*prior_map_ds);
+        Eigen::Matrix<double, 6, 6> H = Eigen::Matrix<double, 6, 6>::Zero();
+        Eigen::Matrix<double, 6, 1> b = Eigen::Matrix<double, 6, 1>::Zero();
+        int valid_num = 0;
+
+        for (const PointType &point_body : feats_down_body->points)
+        {
+            const Eigen::Vector3d p_lidar(point_body.x, point_body.y, point_body.z);
+            const Eigen::Vector3d p_base = state_point.offset_R_L_I * p_lidar +
+                                           state_point.offset_T_L_I;
+            const Eigen::Vector3d p_odom = state_point.rot * p_base + state_point.pos;
+            const Eigen::Vector3d Rp = R_map_odom_ * p_odom;
+            const Eigen::Vector3d p_map = Rp + t_map_odom_;
+
+            PointType point_map;
+            point_map.x = p_map.x();
+            point_map.y = p_map.y();
+            point_map.z = p_map.z();
+            point_map.intensity = point_body.intensity;
+
+            MatchObservation obs;
+            if (!build_point_observation(&prior_ikdtree, nullptr, point_body, point_map,
+                                         1.0, true, nullptr, obs))
+                continue;
+
+            const Eigen::Vector3d normal(obs.normal.x, obs.normal.y, obs.normal.z);
+            const double residual = obs.normal.intensity;
+            Eigen::Matrix<double, 1, 6> J;
+            J.block<1, 3>(0, 0) = normal.transpose();
+            J.block<1, 3>(0, 3) = Rp.cross(normal).transpose();
+
+            H += J.transpose() * J;
+            b += J.transpose() * residual;
+            ++valid_num;
+        }
+
+        if (valid_num < 20)
+            return false;
+
+        const Eigen::Matrix<double, 6, 1> dx = -H.ldlt().solve(b);
+        if (!dx.allFinite())
+            return false;
+
+        t_map_odom_ += dx.head<3>();
+        R_map_odom_ = Exp(dx(3), dx(4), dx(5)) * R_map_odom_;
+
+        if (dx.head<3>().norm() < 1e-3 && dx.tail<3>().norm() < 1e-4)
+            break;
     }
-    else
-    {
-        *prior_map_ds = *featsFromPriorMap;
-    }
 
-    if (prior_map_ds->size() < 50)
+    return true;
+}
+
+bool priorInitAlign()
+{
+    if (!use_prior_map || !prior_init_en || prior_init_done ||
+        prior_ikdtree.Root_Node == nullptr)
         return false;
 
-    pcl::IterativeClosestPoint<PointType, PointType> icp;
-    icp.setMaxCorrespondenceDistance(8.0);
-    icp.setMaximumIterations(50);
-    icp.setTransformationEpsilon(1e-6);
-    icp.setEuclideanFitnessEpsilon(1e-6);
-    icp.setRANSACIterations(0);
-    icp.setInputSource(feats_down_body);
-    icp.setInputTarget(prior_map_ds);
-
-    const Eigen::Matrix3d R_odom_base_before = state_point.rot.toRotationMatrix();
-    const Eigen::Vector3d t_odom_base_before = state_point.pos;
-    Eigen::Matrix3d R_map_base_before;
-    Eigen::Vector3d t_map_base_before;
-    composeMapPose(R_odom_base_before, t_odom_base_before, R_map_base_before, t_map_base_before);
-
-    Eigen::Affine3f guess = Eigen::Affine3f::Identity();
-    guess.linear() = R_map_base_before.cast<float>();
-    guess.translation() = t_map_base_before.cast<float>();
-
-    PointCloudXYZI aligned;
-    icp.align(aligned, guess.matrix());
-    if (!icp.hasConverged())
+    Eigen::Matrix3d R_map_lidar;
+    Eigen::Vector3d t_map_lidar;
+    double fitness_score = 0.0;
+    if (!coarsePriorIcpAlign(R_map_lidar, t_map_lidar, fitness_score))
         return false;
 
-    const double icp_fitness_score = icp.getFitnessScore();
-    if (!std::isfinite(icp_fitness_score) || icp_fitness_score > 5.0)
+    const Eigen::Matrix3d R_base_lidar = state_point.offset_R_L_I.toRotationMatrix();
+    const Eigen::Vector3d t_base_lidar = state_point.offset_T_L_I;
+    const Eigen::Matrix3d R_map_base = R_map_lidar * R_base_lidar.transpose();
+    const Eigen::Vector3d t_map_base = t_map_lidar - R_map_base * t_base_lidar;
+
+    const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
+    const Eigen::Vector3d t_odom_base = state_point.pos;
+    Eigen::Matrix3d R_map_odom_refined = R_map_base * R_odom_base.transpose();
+    Eigen::Vector3d t_map_odom_refined = t_map_base - R_map_odom_refined * t_odom_base;
+
+    if (!refinePriorPointToPlane(R_map_odom_refined, t_map_odom_refined))
         return false;
 
-    const Eigen::Matrix4f final_tf = icp.getFinalTransformation();
-    const Eigen::Matrix3d R_map_lidar = final_tf.block<3, 3>(0, 0).cast<double>();
-    const Eigen::Vector3d t_map_lidar = final_tf.block<3, 1>(0, 3).cast<double>();
-    const Eigen::Matrix3d R_imu_lidar = state_point.offset_R_L_I.toRotationMatrix();
-    const Eigen::Matrix3d R_map_base = R_map_lidar * R_imu_lidar.transpose();
-    const Eigen::Vector3d t_map_base = t_map_lidar - R_map_base * state_point.offset_T_L_I;
-
-    updateMapOdom(R_map_base, t_map_base, R_odom_base_before, t_odom_base_before);
-
+    setMapOdom(R_map_odom_refined, t_map_odom_refined);
     publishMapToOdomTf(get_ros_time(lidar_end_time));
     prior_init_done = true;
 
-    ROS_PRINT_INFO("prior init map->odom: fitness=%.6f, t=(%.3f %.3f %.3f)",
-                   icp_fitness_score, t_map_odom.x(), t_map_odom.y(), t_map_odom.z());
+    ROS_PRINT_INFO("prior init done: ICP fitness=%.6f", fitness_score);
     return true;
 }
 
@@ -1393,10 +1403,10 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         return;
     }
 
-    const bool use_prior_this_update = use_prior_map;
-    const double prior_row_scale_base =
+    const bool use_prior = use_prior_map;
+    const double prior_scale =
         std::sqrt(LASER_POINT_COV / std::max(prior_lidar_cov, 1e-9));
-    if (use_prior_this_update)
+    if (use_prior)
     {
         Prior_Nearest_Points.resize(feats_down_size);
         prior_point_selected.resize(feats_down_size, 0);
@@ -1454,12 +1464,12 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             }
         }
 
-        if (use_prior_this_update)
+        if (use_prior)
         {
             if (ekfom_data.converge)
             {
                 if (build_point_observation(&prior_ikdtree, nullptr, point_body, point_world,
-                                            prior_row_scale_base, true, &Prior_Nearest_Points[i], prior_candidates[i]))
+                                            prior_scale, true, &Prior_Nearest_Points[i], prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
                     prior_point_selected[i] = 1;
@@ -1473,7 +1483,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             {
                 if (build_point_observation(nullptr, &Prior_Nearest_Points[i],
                                             point_body, point_world,
-                                            prior_row_scale_base, false, nullptr, prior_candidates[i]))
+                                            prior_scale, false, nullptr, prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
                 }
@@ -1606,7 +1616,7 @@ int main(int argc, char** argv)
     rosparam_get("mapping/imu_dt", imu_dt, 0.005);
     rosparam_get("mapping/imu_repair", imu_repair, true);
     set_mapping_mode();
-    rosparam_get("prior_map/prior_tree_map_path", prior_tree_map_path, std::string(""));
+    rosparam_get("prior_map/prior_tree_path", prior_tree_path, std::string(""));
     rosparam_get("prior_map/prior_init", prior_init_en, false);
     rosparam_get("prior_map/prior_lidar_cov", prior_lidar_cov, 0.001);
     rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
@@ -1887,7 +1897,7 @@ int main(int argc, char** argv)
             double solve_H_time = 0;
             if (use_prior_map && prior_init_en && !prior_init_done)
             {
-                if (!priorInitAlign(prior_lidar_cov, solve_H_time))
+                if (!priorInitAlign())
                 {
                     ROS_PRINT_WARN("prior init alignment failed, retry on next scan");
                     continue;
@@ -2000,7 +2010,7 @@ int main(int argc, char** argv)
     {
         save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");
         const string ikdtree_snapshot_path = ikdtree_output_dir + "prior_tree.bin";
-        if (ikdtree.SaveStaticSnapshot(ikdtree_snapshot_path))
+        if (ikdtree.SaveIkdtree(ikdtree_snapshot_path))
             ROS_PRINT_INFO("saved final ikdtree snapshot to %s", ikdtree_snapshot_path.c_str());
         else
             ROS_PRINT_WARN("failed to save final ikdtree snapshot to %s", ikdtree_snapshot_path.c_str());

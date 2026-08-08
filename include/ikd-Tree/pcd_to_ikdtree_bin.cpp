@@ -111,7 +111,7 @@ int main(int argc, char **argv)
     {
         std::filesystem::create_directories(output_path.parent_path());
     }
-    if (!tree->SaveStaticSnapshot(output_path.string()))
+    if (!tree->SaveIkdtree(output_path.string()))
     {
         std::cerr << "failed to save ikdtree snapshot: " << output_path << "\n";
         return 1;

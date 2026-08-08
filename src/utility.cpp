@@ -20,6 +20,7 @@ float historyKeyframeSearchTimeDiff;
 float historyKeyframeSearchAngleThreshold;
 int   historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
+float loopWeight;
 
 // global map visualization radius
 float globalMapVisualizationSearchRadius;
@@ -108,6 +109,7 @@ void read_liosam_params() {
     rosparam_get("lio_sam/historyKeyframeSearchAngleThreshold", historyKeyframeSearchAngleThreshold, 0.5f);
     rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
+    rosparam_get("lio_sam/loopWeight", loopWeight, 0.2f);
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);

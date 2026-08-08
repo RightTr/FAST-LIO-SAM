@@ -71,6 +71,8 @@ lio_sam:
     historyKeyframeSearchAngleThreshold: 0.5      # radians, loop candidate orientation gap threshold
     historyKeyframeSearchNum: 25                  # number of hostory key frames will be fused into a submap for loop closure
     historyKeyframeFitnessScore: 0.3              # icp threshold, the smaller the better alignment
+    loopWeight: 0.2                               # loop factor variance scale, smaller is stronger
+    mappingICPSize: 0.2                            # meters, loop-closure ICP voxel size
 
     # Visualization
     globalMapVisualizationSearchRadius: 1000.0    # meters, global map visualization radius

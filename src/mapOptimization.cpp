@@ -291,14 +291,22 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
     if (ikdtreeHistoryKeyPoses->Root_Node == nullptr)
         return false;
 
-    // find the closest history key frame
-    KD_TREE_PUBLIC<PointTypeIndex>::PointVector pointSearchPoses3D;
-    std::vector<float> pointSearchSqDisLoop;
-    
-    ikdtreeHistoryKeyPoses->Nearest_Search(copy_cloudKeyPoses3D->back(), ikdtreeSearchNeighborNum, pointSearchPoses3D, pointSearchSqDisLoop, historyKeyframeSearchRadius);
-    for (int i = 0; i < (int)pointSearchPoses3D.size(); ++i)
+    // Find the closest history key frame in XY only.
+    const auto &current_pose = copy_cloudKeyPoses3D->back();
+    const double max_dist_sq = historyKeyframeSearchRadius * historyKeyframeSearchRadius;
+    double best_dist_sq = std::numeric_limits<double>::infinity();
+    for (int id = 0; id < static_cast<int>(copy_cloudKeyPoses3D->size()); ++id)
     {
-        int id = pointSearchPoses3D[i].intensity; // index stored in intensity field
+        if (id == loopKeyCur)
+            continue;
+
+        const auto &candidate_pose = copy_cloudKeyPoses3D->points[id];
+        const double dx = candidate_pose.x - current_pose.x;
+        const double dy = candidate_pose.y - current_pose.y;
+        const double dist_sq = dx * dx + dy * dy;
+        if (dist_sq > max_dist_sq || dist_sq >= best_dist_sq)
+            continue;
+
         if (abs(copy_cloudKeyPoses6D->points[id].time - timeLaserInfoCur) > historyKeyframeSearchTimeDiff)
         {
             const gtsam::Pose3 poseCur = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyCur]);
@@ -307,7 +315,7 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
                 continue;
 
             loopKeyPre = id;
-            break;
+            best_dist_sq = dist_sq;
         }
     }
 
@@ -386,7 +394,8 @@ void performLoopClosure()
     gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
     gtsam::Pose3 poseTo = pclPointTogtsamPose3(copy_cloudKeyPoses6D->points[loopKeyPre]);
     gtsam::Vector Vector6(6);
-    float noiseScore = icp.getFitnessScore();
+    const double noiseScore = std::max(
+        static_cast<double>(icp.getFitnessScore()) * loopWeight, 1e-4);
     Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
     noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
 

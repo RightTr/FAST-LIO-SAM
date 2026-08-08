@@ -21,7 +21,7 @@ class KD_TREE_PUBLIC : public KD_TREE<PointType>
             return this->Add_Points(points, false);
         }
 
-        bool SaveStaticSnapshot(const std::string &path)
+        bool SaveIkdtree(const std::string &path)
         {
             if (path.empty() || this->Root_Node == nullptr)
                 return false;
@@ -30,15 +30,15 @@ class KD_TREE_PUBLIC : public KD_TREE<PointType>
             if (!out.is_open())
                 return false;
 
-            SnapshotHeader header = {{'I', 'K', 'D', 'P', 'R', 'I', 'O', 'R'}, 1,
-                                     static_cast<uint32_t>(sizeof(PointType)),
-                                     CountNodes(this->Root_Node)};
+            IkdtreeHeader header = {{'I', 'K', 'D', 'P', 'R', 'I', 'O', 'R'}, 1,
+                                    static_cast<uint32_t>(sizeof(PointType)),
+                                    CountNodes(this->Root_Node)};
             out.write(reinterpret_cast<const char *>(&header), sizeof(header));
             WriteNode(out, this->Root_Node);
             return out.good();
         }
 
-        bool LoadStaticSnapshot(const std::string &path)
+        bool LoadIkdtree(const std::string &path)
         {
             if (path.empty())
                 return false;
@@ -47,7 +47,7 @@ class KD_TREE_PUBLIC : public KD_TREE<PointType>
             if (!in.is_open())
                 return false;
 
-            SnapshotHeader header;
+            IkdtreeHeader header;
             in.read(reinterpret_cast<char *>(&header), sizeof(header));
             const char expected_magic[8] = {'I', 'K', 'D', 'P', 'R', 'I', 'O', 'R'};
             if (!in.good() || std::memcmp(header.magic, expected_magic, sizeof(expected_magic)) != 0 ||
@@ -70,7 +70,7 @@ class KD_TREE_PUBLIC : public KD_TREE<PointType>
         }
 
     private:
-        struct SnapshotHeader
+        struct IkdtreeHeader
         {
             char magic[8];
             uint32_t version;

@@ -31,6 +31,7 @@ extern float historyKeyframeSearchTimeDiff;
 extern float historyKeyframeSearchAngleThreshold;
 extern int   historyKeyframeSearchNum;
 extern float historyKeyframeFitnessScore;
+extern float loopWeight;
 
 // global map visualization radius
 extern float globalMapVisualizationSearchRadius;
