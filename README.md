@@ -3,8 +3,8 @@
 A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency frontend with a **LIO-SAM-style** factor graph backend for global optimization, supporting **RoboSense LiDARs**, **Unilidar LiDARs**, and compatible with both **ROS1** and **ROS2**.
 
 <p align="center">
-  <img src="assets/outdoor1.png" alt="Outdoor 1" width="48%">
-  <img src="assets/outdoor2.png" alt="Outdoor 2" width="48%">
+  <img src="assets/outdoor3.png" alt="Outdoor 3" width="30%">
+  <img src="assets/outdoor4.png" alt="Outdoor 4" width="30%">
 </p>
 
 ## 🧩 Contributions
