@@ -47,7 +47,10 @@ mapping:
                 0.00230,   0.00130,   0.999996]
 
     extrinsic_T: [-0.009673, -0.037003, 0.047590]
-    
+
+ground:
+    groundEnableFlag: true
+
 lio_sam:
 
     # CPU Params

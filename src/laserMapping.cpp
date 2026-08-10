@@ -1770,10 +1770,12 @@ int main(int argc, char** argv)
     std::thread loopthread;
     std::thread globalthread;
     std::thread gnssthread;
+    std::thread groundthread;
     if (sam_enable)
     {
         loopthread = std::thread(&loopClosureThread);
         globalthread = std::thread(&visualizeGlobalMapThread);
+        groundthread = std::thread(&groundMatchingThread);
         if (gnssEnableFlag)
         {
             gnssthread = std::thread(&gnssMatchingThread);
@@ -2004,6 +2006,9 @@ int main(int argc, char** argv)
     }
     if (gnssthread.joinable()) {
         gnssthread.join();
+    }
+    if (groundthread.joinable()) {
+        groundthread.join();
     }
 
     if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)

@@ -49,6 +49,8 @@ void loopClosureThread();
 
 void gnssMatchingThread();
 
+void groundMatchingThread();
+
 void setLaserCurTime(double lidar_end_time);
 
 void visualizeGlobalMapThread();

@@ -4,6 +4,7 @@
 #include "common_utils.h"
 #include "GNSS_Processing.hpp"
 #include "gnssYaw_factor.h"
+#include "ground_manager.h"
 #include "map_optimization.h"
 #include "ros_utils.h"
 
@@ -14,11 +15,14 @@
 #include <tuple>
 #include <utility>
 #include <unordered_set>
+#include <atomic>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
+#include <gtsam/geometry/OrientedPlane3.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
+#include <gtsam/slam/OrientedPlane3Factor.h>
 #include <gtsam/navigation/GPSFactor.h>
 #include <gtsam/navigation/ImuFactor.h>
 #include <gtsam/navigation/CombinedImuFactor.h>
@@ -65,6 +69,7 @@ PathPublisher pubPath;
 
 Pcl2Publisher pubLaserCloudGlobal;
 Pcl2Publisher pubLaserCloudLocal;
+Pcl2Publisher pubPlanes;
 
 Pcl2Publisher pubHistoryKeyFrames;
 Pcl2Publisher pubIcpKeyFrames;
@@ -90,6 +95,21 @@ Eigen::Matrix3d rotationLidarToIMU;
 bool isDegenerate = false;
 
 PathMsg globalPath;
+GroundManager groundManager;
+const gtsam::Key groundPlaneKey = gtsam::Symbol('g', 0);
+bool groundPlaneInitialized = false;
+bool groundInitPending = false;
+
+struct GroundFactorBatch
+{
+    bool valid = false;
+    Eigen::Vector4d plane = Eigen::Vector4d::Zero();
+    std::vector<std::pair<int, Eigen::Vector4d>> obs;
+};
+
+GroundFactorBatch groundBatch;
+gtsam::noiseModel::Diagonal::shared_ptr groundPlaneNoise;
+std::mutex mtxGround;
 
 std::mutex mtx;
 std::mutex mtxLoopInfo;
@@ -109,6 +129,8 @@ std::unordered_set<int> pos_keys;
 std::unordered_set<int> yaw_keys;
 
 void correctPoses();
+static void performGroundMatching();
+static void addGroundFactor();
 
 pcl::VoxelGrid<PointTypeIndex> downSizeFilterICP;
 
@@ -220,11 +242,16 @@ void MapOptimizationInit()
     parameters.relinearizeSkip = 1;
     isam = new ISAM2(parameters);
 
+    gtsam::Vector3 ground_sigmas;
+    ground_sigmas << (M_PI / 180.0) * 3.0, (M_PI / 180.0) * 3.0, 0.08;
+    groundPlaneNoise = gtsam::noiseModel::Diagonal::Sigmas(ground_sigmas);
+
     init_ros_node();
     
     pubKeyPoses = create_publisher<PointCloud2Msg>("lio_sam/trajectory", 1);
     pubPath = create_publisher<PathMsg>("lio_sam/mapping/path", 1);
     pubLaserCloudGlobal = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_global", 1);
+    pubPlanes = create_publisher<PointCloud2Msg>("lio_sam/mapping/planes", 1);
     pubRecentKeyFrame = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_recent_keyframe", 1);
     pubLoopConstraintEdge = create_publisher<MarkerArrayMsg>("lio_sam/loop_closure_constraints", 1);
     pubKeyFrameYawMarkers = create_publisher<MarkerArrayMsg>("lio_sam/mapping/keyframe_yaw", 1);
@@ -793,6 +820,7 @@ void updatePath(const PointTypePose& pose_in)
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort)
 {
     const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
+    const gtsam::Key latestPoseKey = static_cast<gtsam::Key>(cloudKeyPoses3D->size());
 
     // odom factor
     addOdomFactor();
@@ -802,6 +830,8 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     addGNSSYawFactor();
     // loop factor
     addLoopFactor();
+    
+    addGroundFactor();
 
     // cout << "****************************************************" << endl;
     // gtSAMgraph.print("GTSAM Graph:\n");
@@ -809,6 +839,12 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     // update iSAM
     isam->update(gtSAMgraph, initialEstimate);
     isam->update();
+
+    if (groundInitPending)
+    {
+        groundPlaneInitialized = true;
+        groundInitPending = false;
+    }
 
     if (aLoopIsClosed == true)
     {
@@ -828,7 +864,7 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     Pose3 latestEstimate;
 
     isamCurrentEstimate = isam->calculateEstimate();
-    latestEstimate = isamCurrentEstimate.at<Pose3>(isamCurrentEstimate.size()-1);
+    latestEstimate = isamCurrentEstimate.at<Pose3>(latestPoseKey);
     // cout << "****************************************************" << endl;
     // isamCurrentEstimate.print("Current estimate: ");
 
@@ -853,7 +889,7 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     // cout << "****************************************************" << endl;
     // cout << "Pose covariance:" << endl;
     // cout << isam->marginalCovariance(isamCurrentEstimate.size()-1) << endl << endl;
-    poseCovariance = isam->marginalCovariance(isamCurrentEstimate.size()-1);
+    poseCovariance = isam->marginalCovariance(latestPoseKey);
 
     pcl::PointCloud<PointTypeIndex>::Ptr featCloudKeyFrame(new pcl::PointCloud<PointTypeIndex>());
     PointTypeIndex point;
@@ -887,6 +923,160 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     } else {
         ikdtreeHistoryKeyPoses->Add_Point(thisPose3D);
     }
+
+}
+
+void addGroundFactor()
+{
+    GroundFactorBatch batch;
+    std::vector<std::pair<int, Eigen::Vector4d>> obs;
+    bool has_non_anchor = false;
+
+    {
+        std::lock_guard<std::mutex> lock(mtxGround);
+        if (!groundBatch.valid)
+            return;
+
+        if (!groundEnableFlag)
+        {
+            groundBatch = GroundFactorBatch();
+            return;
+        }
+
+        batch = std::move(groundBatch);
+        groundBatch = GroundFactorBatch();
+    }
+
+    if (!groundPlaneNoise)
+        return;
+
+    if (!batch.plane.allFinite())
+        return;
+
+    if (batch.plane.head<3>().norm() < 1e-6)
+        return;
+
+    for (const auto &v : batch.obs)
+    {
+        const int key = v.first;
+        if (key < 0 || key >= static_cast<int>(cloudKeyPoses6D->size()))
+            continue;
+        if (!isamCurrentEstimate.exists(static_cast<gtsam::Key>(key)))
+            continue;
+        if (!v.second.allFinite())
+            continue;
+        obs.push_back(v);
+        if (key > 0)
+            has_non_anchor = true;
+    }
+
+    if (obs.empty())
+        return;
+
+    if (!groundPlaneInitialized && !has_non_anchor)
+        return;
+
+    if (!groundPlaneInitialized)
+    {
+        initialEstimate.insert(groundPlaneKey, gtsam::OrientedPlane3(batch.plane));
+        groundInitPending = true;
+        ROS_PRINT_INFO("Ground init: obs=%zu plane=[%.3f %.3f %.3f %.3f]",
+                       obs.size(),
+                       batch.plane[0], batch.plane[1], batch.plane[2], batch.plane[3]);
+    }
+
+    for (const auto &v : obs)
+    {
+        const int keyframe_id = v.first;
+        const gtsam::Vector4 measurement = v.second;
+        ROS_PRINT_INFO("Ground factor: pose=%d -> g0", keyframe_id);
+        gtSAMgraph.add(gtsam::OrientedPlane3Factor(measurement, groundPlaneNoise,
+                                                   static_cast<gtsam::Key>(keyframe_id),
+                                                   groundPlaneKey));
+    }
+}
+
+void performGroundMatching()
+{
+    std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
+    std::vector<PointTypePose> poses;
+    int window_start = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+
+        const int n = static_cast<int>(
+            std::min(featCloudKeyFrames.size(), cloudKeyPoses6D->points.size()));
+        if (n == 0)
+            return;
+
+        const int cnt = std::min(20, n);
+        window_start = n - cnt;
+        clouds.reserve(cnt);
+        poses.reserve(cnt);
+
+        for (int i = window_start; i < n; ++i)
+        {
+            clouds.push_back(
+                std::make_shared<pcl::PointCloud<PointTypeIndex>>(
+                    *featCloudKeyFrames[i]));
+            poses.push_back(cloudKeyPoses6D->points[i]);
+        }
+    }
+
+    GroundObs gnd;
+    auto planes = std::make_shared<pcl::PointCloud<PointTypeIndex>>();
+
+    const bool ground_valid =
+        groundManager.extract(clouds,
+                              poses,
+                              window_start,
+                              gnd,
+                              planes);
+
+    if (planes)
+        publishCloud(pubPlanes, planes, timeLaserInfoStamp, map_frame);
+
+    if (!groundEnableFlag || !ground_valid || gnd.body.empty())
+        return;
+
+    GroundFactorBatch batch;
+    batch.plane = gnd.map;
+    batch.obs.reserve(gnd.body.size());
+    for (const auto &kv : gnd.body)
+    {
+        batch.obs.emplace_back(kv.first, kv.second);
+    }
+
+    if (batch.obs.empty())
+        return;
+
+    batch.valid = true;
+
+    std::lock_guard<std::mutex> lock(mtxGround);
+    if (!groundBatch.valid)
+        groundBatch = std::move(batch);
+}
+
+void groundMatchingThread()
+{
+    ROS_PRINT_INFO("...... Ground Matching Thread Start......");
+
+    RateType rate(20);
+    int last = 0;
+    while (ros_ok() && !flg_exit)
+    {
+        rate.sleep();
+        int n = 0;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            n = static_cast<int>(featCloudKeyFrames.size());
+        }
+        if (n < 5 || n - last < 5)
+            continue;
+        last = n;
+        performGroundMatching();
+    }
 }
 
 void ReconstructIkdTree()
@@ -918,9 +1108,12 @@ void correctPoses()
         // clear path
         globalPath.poses.clear();
         // update key poses
-        int numPoses = isamCurrentEstimate.size();
+        const int numPoses = static_cast<int>(cloudKeyPoses6D->points.size());
         for (int i = 0; i < numPoses; ++i)
         {
+            if (!isamCurrentEstimate.exists(i))
+                continue;
+
             cloudKeyPoses3D->points[i].x = isamCurrentEstimate.at<Pose3>(i).translation().x();
             cloudKeyPoses3D->points[i].y = isamCurrentEstimate.at<Pose3>(i).translation().y();
             cloudKeyPoses3D->points[i].z = isamCurrentEstimate.at<Pose3>(i).translation().z();
@@ -957,6 +1150,7 @@ void correctPoses()
         setMapOdom(R_map_odom, t_map_odom);
         publishMapToOdomTf(get_ros_time(timeLaserInfoCur));
     }
+
 }
 
 void publishSamMsg()
