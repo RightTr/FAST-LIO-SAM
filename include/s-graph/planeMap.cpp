@@ -1,13 +1,14 @@
-#include "ground_manager.h"
+#include "s-graph/planeMap.h"
 
+#include "common_utils.h"
 #include "ros_utils.h"
-
-#include <vector>
-#include <unordered_map>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 using namespace std;
 
@@ -38,24 +39,7 @@ struct PlanePatch
     std::unordered_map<int, PlaneLocalStats> obs;
 };
 
-constexpr double kAng = 10.0;
 constexpr int kMinPts = 100;
-constexpr int kGroundRecentKeyframes = 5;
-
-inline double rad(double deg)
-{
-    return deg * M_PI / 180.0;
-}
-
-inline Eigen::Vector3d poseTranslation(const PointTypePose &pose)
-{
-    return Eigen::Vector3d(pose.x, pose.y, pose.z);
-}
-
-inline Eigen::Matrix3d poseRotation(const PointTypePose &pose)
-{
-    return pcl::getTransformation(0.0, 0.0, 0.0, pose.roll, pose.pitch, pose.yaw).rotation().cast<double>();
-}
 
 inline bool fit(const PlaneLocalStats &s,
                 Eigen::Vector3d &n,
@@ -106,30 +90,6 @@ inline bool tf(const PlaneLocalStats &in,
           + t * in.s.transpose() * R.transpose()
           + static_cast<double>(in.n) * t * t.transpose();
     return true;
-}
-
-inline bool isGround(const PlanePatch &p,
-                     const PointTypePose &cur)
-{
-    if (p.n < kMinPts)
-        return false;
-
-    Eigen::Vector3d n = p.n_map;
-    double d = p.d;
-    if (n.norm() <= std::numeric_limits<double>::epsilon())
-        return false;
-
-    n.normalize();
-    if (n.z() < 0.0)
-    {
-        n = -n;
-        d = -d;
-    }
-
-    if (n.z() < std::cos(rad(kAng)))
-        return false;
-
-    return n.dot(poseTranslation(cur)) + d > 0.0;
 }
 
 inline bool makePatch(const OCTO_TREE_NODE *node,
@@ -198,19 +158,57 @@ inline void collect(const OCTO_TREE_NODE *node,
     if (makePatch(node, window_start, window_count, p))
         patches.push_back(std::move(p));
 }
+
+inline bool fillObs(const PlanePatch &patch,
+                    const std::vector<PointTypePose> &poses,
+                    int window_start,
+                    PlaneObs &obs)
+{
+    obs = PlaneObs();
+    obs.plane << patch.n_map.x(), patch.n_map.y(), patch.n_map.z(), patch.d;
+    obs.center = patch.c_map;
+    obs.n = patch.n;
+
+    for (const auto &kv : patch.obs)
+    {
+        const int global_key = kv.first;
+        const int local_id = global_key - window_start;
+        if (local_id < 0 || local_id >= static_cast<int>(poses.size()))
+            continue;
+
+        Eigen::Vector3d n;
+        Eigen::Vector3d c;
+        double d = 0.0;
+        if (!fit(kv.second, n, c, d))
+            continue;
+
+        const Eigen::Vector3d exp = poseRotation(poses[local_id]).transpose() * patch.n_map;
+        if (exp.norm() > std::numeric_limits<double>::epsilon() && n.dot(exp) < 0.0)
+        {
+            n = -n;
+            d = -d;
+        }
+
+        Eigen::Vector4d plane;
+        plane << n.x(), n.y(), n.z(), d;
+        obs.obs[global_key] = plane;
+    }
+
+    return !obs.obs.empty();
+}
 } // namespace
 
-bool GroundManager::extract(const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &keyframes,
-                            const std::vector<PointTypePose> &poses,
-                            int window_start,
-                            GroundObs &gnd,
-                            pcl::PointCloud<PointTypeIndex>::Ptr planes) const
+bool PlaneMap::extract(const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds,
+                       const std::vector<PointTypePose> &poses,
+                       int window_start,
+                       std::vector<PlaneObs> &planes,
+                       pcl::PointCloud<PointTypeIndex>::Ptr cloud) const
 {
-    gnd = GroundObs();
-    if (planes)
-        planes->clear();
+    planes.clear();
+    if (cloud)
+        cloud->clear();
 
-    const size_t total_size = std::min(keyframes.size(), poses.size());
+    const size_t total_size = std::min(clouds.size(), poses.size());
     if (total_size == 0)
         return false;
 
@@ -226,10 +224,10 @@ bool GroundManager::extract(const std::vector<pcl::PointCloud<PointTypeIndex>::P
         x_key.p = poseTranslation(pose);
 
         pcl::PointCloud<PointType> local_balm_cloud;
-        if (keyframes[local_id])
+        if (clouds[local_id])
         {
-            local_balm_cloud.reserve(keyframes[local_id]->size());
-            for (const auto &src : keyframes[local_id]->points)
+            local_balm_cloud.reserve(clouds[local_id]->size());
+            for (const auto &src : clouds[local_id]->points)
             {
                 PointType dst;
                 dst.x = src.x;
@@ -255,9 +253,9 @@ bool GroundManager::extract(const std::vector<pcl::PointCloud<PointTypeIndex>::P
     for (const auto &entry : surf_map)
         entry.second->tras_display(balm_plane_cloud, count);
 
-    if (planes)
+    if (cloud)
     {
-        planes->reserve(balm_plane_cloud.size());
+        cloud->reserve(balm_plane_cloud.size());
         for (const auto &src : balm_plane_cloud.points)
         {
             PointTypeIndex dst;
@@ -265,53 +263,22 @@ bool GroundManager::extract(const std::vector<pcl::PointCloud<PointTypeIndex>::P
             dst.y = src.y;
             dst.z = src.z;
             dst.intensity = src.intensity;
-            planes->push_back(dst);
+            cloud->push_back(dst);
         }
     }
 
-    const PointTypePose &cur = poses.back();
-    const PlanePatch *best = nullptr;
-    for (const auto &p : patches)
+    planes.reserve(patches.size());
+    for (const auto &patch : patches)
     {
-        if (!isGround(p, cur))
+        PlaneObs obs;
+        if (!fillObs(patch, poses, window_start, obs))
             continue;
-        if (!best || p.n > best->n)
-            best = &p;
-    }
-
-    if (best)
-    {
-        gnd.valid = true;
-        gnd.map << best->n_map.x(), best->n_map.y(), best->n_map.z(), best->d;
-
-        const int first_local = std::max(0, count - kGroundRecentKeyframes);
-        for (int local_id = first_local; local_id < count; ++local_id)
-        {
-            const int global_key = window_start + local_id;
-            const auto it = best->obs.find(global_key);
-            if (it == best->obs.end())
-                continue;
-
-            Eigen::Vector3d n;
-            Eigen::Vector3d c;
-            double d = 0.0;
-            if (!fit(it->second, n, c, d))
-                continue;
-
-            const Eigen::Vector3d exp = poseRotation(poses[local_id]).transpose() * best->n_map;
-            if (exp.norm() > std::numeric_limits<double>::epsilon() && n.dot(exp) < 0.0)
-                n = -n;
-
-            Eigen::Vector4d plane;
-            plane << n.x(), n.y(), n.z(), d;
-            gnd.body[global_key] = plane;
-        }
-
+        planes.push_back(std::move(obs));
     }
 
     for (auto &entry : surf_map)
         delete entry.second;
     surf_map.clear();
 
-    return gnd.valid;
+    return !planes.empty();
 }

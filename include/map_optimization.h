@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <Eigen/Core>
+#include <pcl/common/transforms.h>
 
 /*
     * A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
@@ -28,6 +29,16 @@ typedef PointXYZIRPYT  PointTypePose;
 
 typedef pcl::PointXYZI PointTypeIndex;
 
+inline Eigen::Vector3d poseTranslation(const PointTypePose &pose)
+{
+    return Eigen::Vector3d(pose.x, pose.y, pose.z);
+}
+
+inline Eigen::Matrix3d poseRotation(const PointTypePose &pose)
+{
+    return pcl::getTransformation(0.0, 0.0, 0.0, pose.roll, pose.pitch, pose.yaw).rotation().cast<double>();
+}
+
 extern float transformTobeMapped[6];
 extern Eigen::Vector3d translationLidarToIMU;
 extern Eigen::Matrix3d rotationLidarToIMU;
@@ -49,7 +60,7 @@ void loopClosureThread();
 
 void gnssMatchingThread();
 
-void groundMatchingThread();
+void structureMatchingThread();
 
 void setLaserCurTime(double lidar_end_time);
 

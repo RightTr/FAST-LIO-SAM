@@ -54,9 +54,12 @@ string reloc_topic;
 
 double res_mean_last = 0.05, total_residual = 0.0;
 double last_timestamp_lidar = -1.0, last_timestamp_imu = -1.0;
+double last_raw_timestamp_lidar = -1.0, last_raw_timestamp_imu = -1.0;
+double lidar_timestamp_offset_sec = 0.0;
 double imu_timestamp_offset_sec = 0.0;
 double imu_dt = 0.005;
-bool   imu_repair = true;
+double lidar_dt = 0.01;
+bool   timeRepair = true;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
@@ -91,55 +94,6 @@ double lidar_residual_ref      = 0.05;
 
 std::shared_ptr<GnssProcess> p_gnss = std::make_shared<GnssProcess>();
 PathPublisher pubGnssPath;
-
-static bool repairTimestamp(const double raw_ts,
-                            double &off,
-                            double &last_ts,
-                            double &cur_ts)
-{
-    if (!imu_repair)
-    {
-        cur_ts = raw_ts;
-        last_ts = cur_ts;
-        return true;
-    }
-
-    static double last_raw_ts = -1.0;
-    cur_ts = raw_ts + off;
-
-    if (last_ts < 0.0)
-    {
-        last_ts = cur_ts;
-        last_raw_ts = raw_ts;
-        return true;
-    }
-
-    if (raw_ts < last_raw_ts)
-    {
-        const double old_off = off;
-        off += std::round(last_ts + imu_dt - cur_ts);
-        cur_ts = raw_ts + off;
-        ROS_PRINT_WARN("timestamp rollback: raw=%.9f offset=%+.0f->%+.0f corrected=%.9f",
-                       raw_ts, old_off, off, cur_ts);
-    }
-    else if (off != 0.0 && raw_ts >= last_ts)
-    {
-        off = 0.0;
-        cur_ts = raw_ts;
-        ROS_PRINT_WARN("timestamp recovered: raw=%.9f offset reset", raw_ts);
-    }
-
-    if (cur_ts <= last_ts)
-    {
-        ROS_PRINT_WARN("drop non-monotonic message: raw=%.9f corrected=%.9f last=%.9f",
-                       raw_ts, cur_ts, last_ts);
-        return false;
-    }
-
-    last_ts = cur_ts;
-    last_raw_ts = raw_ts;
-    return true;
-}
 
 static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
                           const Eigen::Vector3d &t_map_body,
@@ -641,13 +595,29 @@ void lasermap_fov_segment()
 void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
 {
     mtx_buffer.lock();
-    const double stamp_sec = get_ros_time_sec(msg->header.stamp);
+    const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
+    double corrected_timestamp = raw_timestamp;
+
+    if (timeRepair)
+    {
+        if (!repairTimestamp(raw_timestamp, lidar_dt,
+            lidar_timestamp_offset_sec, last_raw_timestamp_lidar,
+            last_timestamp_lidar, corrected_timestamp))
+        {
+            mtx_buffer.unlock();
+            return;
+        }
+    }
+    else
+    {
+        last_raw_timestamp_lidar = raw_timestamp;
+        last_timestamp_lidar = raw_timestamp;
+    }
 
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
-    time_buffer.push_back(stamp_sec);
-    last_timestamp_lidar = stamp_sec;
+    time_buffer.push_back(corrected_timestamp);
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
@@ -657,8 +627,24 @@ bool   timediff_set_flg = false;
 void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg) 
 {
     mtx_buffer.lock();
-    const double stamp_sec = get_ros_time_sec(msg->header.stamp);
-    last_timestamp_lidar = stamp_sec;
+    const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
+    double corrected_timestamp = raw_timestamp;
+
+    if (timeRepair)
+    {
+        if (!repairTimestamp(raw_timestamp, lidar_dt,
+            lidar_timestamp_offset_sec, last_raw_timestamp_lidar,
+            last_timestamp_lidar, corrected_timestamp))
+        {
+            mtx_buffer.unlock();
+            return;
+        }
+    }
+    else
+    {
+        last_raw_timestamp_lidar = raw_timestamp;
+        last_timestamp_lidar = raw_timestamp;
+    }
     
     if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
     {
@@ -676,7 +662,7 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
-    time_buffer.push_back(stamp_sec);
+    time_buffer.push_back(corrected_timestamp);
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
@@ -712,14 +698,21 @@ void imu_cbk(const ImuMsgConstPtr &msg_in)
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
 
     mtx_buffer.lock();
-    double corrected_timestamp = 0.0;
-    if (!repairTimestamp(raw_timestamp,
-                         imu_timestamp_offset_sec,
-                         last_timestamp_imu,
-                         corrected_timestamp))
+    double corrected_timestamp = raw_timestamp;
+    if (timeRepair)
     {
-        mtx_buffer.unlock();
-        return;
+        if (!repairTimestamp(raw_timestamp, imu_dt,
+            imu_timestamp_offset_sec, last_raw_timestamp_imu,
+            last_timestamp_imu, corrected_timestamp))
+        {
+            mtx_buffer.unlock();
+            return;
+        }
+    }
+    else
+    {
+        last_raw_timestamp_imu = raw_timestamp;
+        last_timestamp_imu = raw_timestamp;
     }
 
     msg->header.stamp = get_ros_time(corrected_timestamp);
@@ -854,7 +847,10 @@ bool sync_packages(MeasureGroup &meas)
     }
 
     /*** push imu data, and pop from imu buffer ***/
-    double imu_time = get_ros_time_sec(imu_buffer.front()->header.stamp);
+    const double imu_front_stamp = imu_buffer.empty()
+        ? -1.0
+        : get_ros_time_sec(imu_buffer.front()->header.stamp);
+    double imu_time = imu_front_stamp;
     meas.imu.clear();
     while ((!imu_buffer.empty()) && (imu_time < lidar_end_time))
     {
@@ -862,6 +858,21 @@ bool sync_packages(MeasureGroup &meas)
         if(imu_time > lidar_end_time) break;
         meas.imu.push_back(imu_buffer.front());
         imu_buffer.pop_front();
+    }
+
+    if (meas.imu.empty())
+    {
+        ROS_PRINT_WARN(
+            "No IMU for lidar scan: lidar=[%.9f, %.9f], imu_front=%.9f, imu_last=%.9f",
+            meas.lidar_beg_time,
+            lidar_end_time,
+            imu_front_stamp,
+            last_timestamp_imu);
+
+        lidar_buffer.pop_front();
+        time_buffer.pop_front();
+        lidar_pushed = false;
+        return false;
     }
 
     lidar_buffer.pop_front();
@@ -1614,7 +1625,8 @@ int main(int argc, char** argv)
     rosparam_get("common/grav_align", grav_align, false);
     rosparam_get("common/mode", mapping_mode, 1);
     rosparam_get("mapping/imu_dt", imu_dt, 0.005);
-    rosparam_get("mapping/imu_repair", imu_repair, true);
+    rosparam_get("mapping/lidar_dt", lidar_dt, 0.01);
+    rosparam_get("mapping/timeRepair", timeRepair, true);
     set_mapping_mode();
     rosparam_get("prior_map/prior_tree_path", prior_tree_path, std::string(""));
     rosparam_get("prior_map/prior_init", prior_init_en, false);
@@ -1770,12 +1782,12 @@ int main(int argc, char** argv)
     std::thread loopthread;
     std::thread globalthread;
     std::thread gnssthread;
-    std::thread groundthread;
+    std::thread structurethread;
     if (sam_enable)
     {
         loopthread = std::thread(&loopClosureThread);
         globalthread = std::thread(&visualizeGlobalMapThread);
-        groundthread = std::thread(&groundMatchingThread);
+        structurethread = std::thread(&structureMatchingThread);
         if (gnssEnableFlag)
         {
             gnssthread = std::thread(&gnssMatchingThread);
@@ -2007,8 +2019,8 @@ int main(int argc, char** argv)
     if (gnssthread.joinable()) {
         gnssthread.join();
     }
-    if (groundthread.joinable()) {
-        groundthread.join();
+    if (structurethread.joinable()) {
+        structurethread.join();
     }
 
     if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)

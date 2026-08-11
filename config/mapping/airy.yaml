@@ -24,6 +24,15 @@ gnss:
     useYawFactor: false
     yawFactorSigma: 0.10 # rad, yaw factor noise for GNSS heading
     useGnssElevation: false
+
+s-graph:
+    groundEnableFlag: true
+    groundMinPoints: 100
+    groundMaxSlopeDeg: 20.0
+    groundAssociationAngleDeg: 20.0
+    groundAssociationDistance: 1.0
+    batchStride: 5
+    windowSize: 20
     
 preprocess:
     lidar_type: 4                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 4 for RoboSense LiDAR

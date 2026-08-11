@@ -1,11 +1,15 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <string>
+
+#include "map_optimization.h"
+#include <pcl/common/transforms.h>
 
 #include "utility.h"
 
@@ -42,6 +46,50 @@ inline bool time_in_window(double source_stamp_sec,
 {
     return source_stamp_sec >= target_stamp_sec - window_sec / 2 &&
            source_stamp_sec <= target_stamp_sec + window_sec / 2;
+}
+
+inline double rad(double deg)
+{
+    return deg * M_PI / 180.0;
+}
+
+inline double clampDot(double v)
+{
+    return std::max(-1.0, std::min(1.0, v));
+}
+
+inline bool repairTimestamp(const double raw_ts, const double expected_dt,
+    double &off, double &last_raw_ts,
+    double &last_ts, double &cur_ts)
+{
+    cur_ts = raw_ts + off;
+
+    if (last_ts < 0.0)
+    {
+        last_ts = cur_ts;
+        last_raw_ts = raw_ts;
+        return true;
+    }
+
+    if (raw_ts < last_raw_ts)
+    {
+        off += std::round(last_ts + expected_dt - cur_ts);
+        cur_ts = raw_ts + off;
+    }
+    else if (off != 0.0 && raw_ts >= last_ts)
+    {
+        off = 0.0;
+        cur_ts = raw_ts;
+    }
+
+    if (cur_ts <= last_ts)
+    {
+        return false;
+    }
+
+    last_ts = cur_ts;
+    last_raw_ts = raw_ts;
+    return true;
 }
 
 inline Eigen::Vector3d transformPoint(const Eigen::Vector3d &p_old,
