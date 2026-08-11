@@ -83,10 +83,12 @@ inline void appendUniqueKey(std::vector<int> &keys, int key)
 }
 
 inline int chooseRepresentativeKey(const GroundCandidate &candidate,
-                                   int window_start,
-                                   int count)
+                                   const std::deque<int> &keys)
 {
-    const int latest = window_start + count - 1;
+    if (keys.empty())
+        return -1;
+
+    const int latest = keys.back();
     if (candidate.body.find(latest) != candidate.body.end())
         return latest;
 
@@ -97,8 +99,8 @@ inline int chooseRepresentativeKey(const GroundCandidate &candidate,
 }
 
 inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
-                            const std::vector<PointTypePose> &poses,
-                            int window_start,
+                            const std::deque<int> &keys,
+                            const std::deque<PointTypePose> &poses,
                             const Eigen::Vector3d &seed_n,
                             GroundCandidate &out)
 {
@@ -136,7 +138,7 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
         for (const auto &kv : plane->obs)
         {
             const int key = kv.first;
-            const int local_id = key - window_start;
+            const int local_id = key - keys.front();
             if (local_id < 0 || local_id >= static_cast<int>(poses.size()))
                 continue;
 
@@ -204,8 +206,8 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
 }
 
 inline bool buildStableGround(const std::vector<PlaneObs> &planes,
-                              const std::vector<PointTypePose> &poses,
-                              int window_start,
+                              const std::deque<int> &keys,
+                              const std::deque<PointTypePose> &poses,
                               GroundCandidate &candidate)
 {
     candidate = GroundCandidate();
@@ -275,7 +277,7 @@ inline bool buildStableGround(const std::vector<PlaneObs> &planes,
         members.push_back(cand);
     }
 
-    return fitMergedGround(members, poses, window_start, seed_n, candidate);
+    return fitMergedGround(members, keys, poses, seed_n, candidate);
 }
 
 inline bool matchGeometry(const Ground &ground,
@@ -304,16 +306,16 @@ inline bool matchGeometry(const Ground &ground,
 } // namespace
 
 bool GroundMap::update(const std::vector<PlaneObs> &planes,
-                       const std::vector<PointTypePose> &poses,
-                       int window_start,
+                       const std::deque<int> &keys,
+                       const std::deque<PointTypePose> &poses,
                        PlaneBatch &batch)
 {
     batch = PlaneBatch();
-    if (planes.empty() || poses.empty())
+    if (planes.empty() || poses.empty() || keys.empty())
         return false;
 
     GroundCandidate candidate;
-    if (!buildStableGround(planes, poses, window_start, candidate))
+    if (!buildStableGround(planes, keys, poses, candidate))
         return false;
 
     if (!candidate.n.allFinite() ||
@@ -326,6 +328,7 @@ bool GroundMap::update(const std::vector<PlaneObs> &planes,
     }
 
     const int count = static_cast<int>(poses.size());
+    const int first_key = keys.front();
 
     int target_id = -1;
     int best_votes = -1;
@@ -421,7 +424,7 @@ bool GroundMap::update(const std::vector<PlaneObs> &planes,
         if (key_plane_.find(key) != key_plane_.end())
             continue;
 
-        const int local_id = key - window_start;
+        const int local_id = key - first_key;
         if (local_id < 0 || local_id >= count)
             continue;
 
@@ -453,7 +456,7 @@ bool GroundMap::update(const std::vector<PlaneObs> &planes,
         batch.init.push_back(ground);
         target = &grounds_.back();
 
-        const int rep_key = chooseRepresentativeKey(candidate, window_start, count);
+        const int rep_key = chooseRepresentativeKey(candidate, keys);
         ROS_PRINT_INFO(
             "Ground init: p%d from KF=%d normal=(%.3f %.3f %.3f %.3f)",
             target->id,
@@ -482,7 +485,7 @@ bool GroundMap::update(const std::vector<PlaneObs> &planes,
         appendUniqueKey(target->keys, factor.key);
         batch.factors.push_back(factor);
 
-        const int local_id = factor.key - window_start;
+        const int local_id = factor.key - first_key;
         if (local_id >= 0 && local_id < count)
         {
             const Eigen::Vector3d pose_pos = poseTranslation(poses[static_cast<size_t>(local_id)]);

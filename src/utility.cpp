@@ -32,7 +32,6 @@ int groundMinPoints;
 float groundMaxSlopeDeg;
 float groundAssociationAngleDeg;
 float groundAssociationDistance;
-int batchStride;
 int windowSize;
 
 int ikdtreeSearchNeighborNum;
@@ -128,7 +127,6 @@ void read_liosam_params() {
     rosparam_get("s-graph/groundMaxSlopeDeg", groundMaxSlopeDeg, 20.0f);
     rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
     rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
-    rosparam_get("s-graph/batchStride", batchStride, 5);
     rosparam_get("s-graph/windowSize", windowSize, 20);
     rosparam_get("lio_sam/ikdtreeSearchNeighborNum", ikdtreeSearchNeighborNum, 8);
     rosparam_get("lio_sam/keyframe_export_en", keyframe_export_en, false);

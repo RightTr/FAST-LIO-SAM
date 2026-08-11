@@ -4,9 +4,12 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
+#include "balm/bavoxel.hpp"
 #include "map_optimization.h"
 
 #include <Eigen/Core>
+#include <deque>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -24,12 +27,28 @@ class PlaneMap
 {
 public:
     PlaneMap() = default;
+    ~PlaneMap();
 
-    bool extract(const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds,
-                 const std::vector<PointTypePose> &poses,
-                 int start,
-                 std::vector<PlaneObs> &planes,
-                 pcl::PointCloud<PointTypeIndex>::Ptr cloud) const;
+    void reset();
+
+    bool update(int key,
+                const pcl::PointCloud<PointTypeIndex>::Ptr &cloud,
+                const PointTypePose &pose,
+                std::vector<PlaneObs> &planes,
+                pcl::PointCloud<PointTypeIndex>::Ptr display_cloud = nullptr);
+
+    const std::deque<int> &keys() const;
+    const std::deque<PointTypePose> &poses() const;
+
+private:
+    struct Impl
+    {
+        int window_size = 20;
+        std::deque<int> keys;
+        std::deque<PointTypePose> poses;
+        std::unordered_map<VOXEL_LOC, OCTO_TREE_ROOT *> surf_map;
+    };
+    std::unique_ptr<Impl> impl_;
 };
 
 #endif

@@ -1625,7 +1625,7 @@ int main(int argc, char** argv)
     rosparam_get("common/grav_align", grav_align, false);
     rosparam_get("common/mode", mapping_mode, 1);
     rosparam_get("mapping/imu_dt", imu_dt, 0.005);
-    rosparam_get("mapping/lidar_dt", lidar_dt, 0.01);
+    rosparam_get("mapping/lidar_dt", lidar_dt, 0.1);
     rosparam_get("mapping/timeRepair", timeRepair, true);
     set_mapping_mode();
     rosparam_get("prior_map/prior_tree_path", prior_tree_path, std::string(""));

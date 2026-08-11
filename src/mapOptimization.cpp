@@ -106,6 +106,7 @@ std::mutex mtxPlane;
 std::mutex mtx;
 std::mutex mtxLoopInfo;
 std::mutex mtxGnssFactor;
+std::atomic<bool> poseDirty{false};
 
 bool graphUpdate = false;
 bool loopIsClosed = false;
@@ -844,8 +845,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
         isam->update();
     }
 
-    loopIsClosed = false;
-
     gtSAMgraph.resize(0);
     initialEstimate.clear();
 
@@ -911,9 +910,8 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
         if (ikdtreeHistoryKeyPoses->Root_Node == nullptr) {
             initPoses3D.push_back(thisPose3D);
-            if (cloudKeyPoses3D->points.size() < 10)
-                return;
-            ikdtreeHistoryKeyPoses->Build(initPoses3D);
+            if (cloudKeyPoses3D->points.size() >= 10)
+                ikdtreeHistoryKeyPoses->Build(initPoses3D);
         } else {
             ikdtreeHistoryKeyPoses->Add_Point(thisPose3D);
         }
@@ -958,63 +956,84 @@ void performStructureMatching()
 {
     if (!groundEnableFlag)
         return;
-    static int last_processed_n = 0;
+
+    static int lastProcessedKey = -1;
+
+    int numKeyFrame = 0;
     std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
     std::vector<PointTypePose> poses;
-    int window_start = 0;
 
     {
         std::lock_guard<std::mutex> lock(mtx);
 
-        const int numKeyFrame = static_cast<int>(
-            std::min(featCloudKeyFrames.size(), cloudKeyPoses6D->points.size()));
-        if (numKeyFrame % batchStride != 0 || numKeyFrame == last_processed_n)
+        if (!cloudKeyPoses6D)
             return;
 
-        last_processed_n = numKeyFrame;
+        numKeyFrame = static_cast<int>(
+            std::min(featCloudKeyFrames.size(), cloudKeyPoses6D->points.size()));
 
-        const int cnt = std::min(windowSize, numKeyFrame);
-        window_start = numKeyFrame - cnt;
-        clouds.reserve(cnt);
-        poses.reserve(cnt);
+        clouds.assign(featCloudKeyFrames.begin(),
+                      featCloudKeyFrames.begin() + numKeyFrame);
+        poses.assign(cloudKeyPoses6D->points.begin(),
+                     cloudKeyPoses6D->points.begin() + numKeyFrame);
+    }
 
-        for (int i = window_start; i < numKeyFrame; ++i)
+    if (poseDirty.exchange(false) && lastProcessedKey >= 0)
+    {
+        planeMap.reset();
+
+        const int begin = std::max(0, lastProcessedKey - windowSize + 1);
+
+        for (int key = begin; key <= lastProcessedKey; ++key)
         {
-            clouds.push_back(
-                std::make_shared<pcl::PointCloud<PointTypeIndex>>(
-                    *featCloudKeyFrames[i]));
-            poses.push_back(cloudKeyPoses6D->points[i]);
+            if (!clouds[key])
+                continue;
+
+            std::vector<PlaneObs> unused;
+            planeMap.update(key, clouds[key], poses[key], unused, nullptr);
         }
     }
 
-    std::vector<PlaneObs> plane_obs;
-    auto plane_cloud = std::make_shared<pcl::PointCloud<PointTypeIndex>>();
-    const bool plane_valid =
-        planeMap.extract(clouds, poses, window_start, 
-            plane_obs, plane_cloud);
-
-    publishCloud(pubPlanes, plane_cloud, timeLaserInfoStamp, map_frame);
-
-
-    PlaneBatch batch;
-    if (!groundMap.update(plane_obs, poses, window_start, batch))
-        return;
-        
-    std::lock_guard<std::mutex> lock(mtxPlane);
-    if (!planeBatch.valid)
+    for (int key = lastProcessedKey + 1; key < numKeyFrame; ++key)
     {
-        planeBatch = std::move(batch);
-    }
-    else
-    {
+        if (!clouds[key])
+        {
+            lastProcessedKey = key;
+            continue;
+        }
+
+        std::vector<PlaneObs> plane_obs;
+        pcl::PointCloud<PointTypeIndex>::Ptr plane_cloud;
+
+        plane_cloud = std::make_shared<pcl::PointCloud<PointTypeIndex>>();
+
+        planeMap.update(key, clouds[key], poses[key], plane_obs, plane_cloud);
+        lastProcessedKey = key;
+
+        publishCloud(pubPlanes, plane_cloud, timeLaserInfoStamp, map_frame);
+
+        PlaneBatch batch;
+        if (!groundMap.update(plane_obs, planeMap.keys(), planeMap.poses(), batch))
+            continue;
+
+        std::lock_guard<std::mutex> lock(mtxPlane);
+
+        if (!planeBatch.valid)
+        {
+            planeBatch = std::move(batch);
+            continue;
+        }
+
         planeBatch.init.insert(
             planeBatch.init.end(),
             std::make_move_iterator(batch.init.begin()),
             std::make_move_iterator(batch.init.end()));
+
         planeBatch.factors.insert(
             planeBatch.factors.end(),
             std::make_move_iterator(batch.factors.begin()),
             std::make_move_iterator(batch.factors.end()));
+
         planeBatch.valid = !planeBatch.init.empty() || !planeBatch.factors.empty();
     }
 }
@@ -1068,6 +1087,8 @@ void correctPoses()
             if (!isamCurrentEstimate.exists(i))
                 continue;
 
+            const Pose3 new_pose = isamCurrentEstimate.at<Pose3>(i);
+
             cloudKeyPoses3D->points[i].x = isamCurrentEstimate.at<Pose3>(i).translation().x();
             cloudKeyPoses3D->points[i].y = isamCurrentEstimate.at<Pose3>(i).translation().y();
             cloudKeyPoses3D->points[i].z = isamCurrentEstimate.at<Pose3>(i).translation().z();
@@ -1075,14 +1096,18 @@ void correctPoses()
             cloudKeyPoses6D->points[i].x = cloudKeyPoses3D->points[i].x;
             cloudKeyPoses6D->points[i].y = cloudKeyPoses3D->points[i].y;
             cloudKeyPoses6D->points[i].z = cloudKeyPoses3D->points[i].z;
-            cloudKeyPoses6D->points[i].roll  = isamCurrentEstimate.at<Pose3>(i).rotation().roll();
-            cloudKeyPoses6D->points[i].pitch = isamCurrentEstimate.at<Pose3>(i).rotation().pitch();
-            cloudKeyPoses6D->points[i].yaw   = isamCurrentEstimate.at<Pose3>(i).rotation().yaw();
+            cloudKeyPoses6D->points[i].roll  = new_pose.rotation().roll();
+            cloudKeyPoses6D->points[i].pitch = new_pose.rotation().pitch();
+            cloudKeyPoses6D->points[i].yaw   = new_pose.rotation().yaw();
 
             updatePath(cloudKeyPoses6D->points[i]);
         }
 
-        ReconstructIkdTree();
+        if (loopIsClosed)
+        {
+            ReconstructIkdTree();
+            poseDirty.store(true, std::memory_order_release);
+        }
     }
 
     if (!cloudKeyOdomPoses6D->points.empty() &&
@@ -1105,7 +1130,7 @@ void correctPoses()
     }
 
     graphUpdate = false;
-
+    loopIsClosed = false;
 }
 
 void publishSamMsg()

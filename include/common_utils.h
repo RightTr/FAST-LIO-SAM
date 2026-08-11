@@ -73,7 +73,12 @@ inline bool repairTimestamp(const double raw_ts, const double expected_dt,
 
     if (raw_ts < last_raw_ts)
     {
-        off += std::round(last_ts + expected_dt - cur_ts);
+        double rollback = last_raw_ts - raw_ts;
+
+        double correction =
+            (last_ts + expected_dt) - cur_ts;
+
+        off += correction;
         cur_ts = raw_ts + off;
     }
     else if (off != 0.0 && raw_ts >= last_ts)

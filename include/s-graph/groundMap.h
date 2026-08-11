@@ -5,6 +5,7 @@
 #include "utility.h"
 
 #include <Eigen/Core>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 
@@ -38,8 +39,8 @@ public:
     GroundMap() = default;
 
     bool update(const std::vector<PlaneObs> &planes,
-                const std::vector<PointTypePose> &poses,
-                int window_start,
+                const std::deque<int> &keys,
+                const std::deque<PointTypePose> &poses,
                 PlaneBatch &batch);
 
     const std::vector<Ground> &grounds() const { return grounds_; }

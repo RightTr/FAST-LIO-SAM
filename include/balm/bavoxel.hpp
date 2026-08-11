@@ -5,18 +5,20 @@
 #include <Eigen/Eigenvalues>
 #include <thread>
 
-int layer_limit = 2;
-int layer_size[] = {30, 30, 30, 30};
+using namespace std;
+
+inline int layer_limit = 2;
+inline int layer_size[] = {30, 30, 30, 30};
 // float eigen_value_array[] = {1.0/4.0, 1.0/4.0, 1.0/4.0};
-float eigen_value_array[4] = {1.0/16, 1.0/16, 1.0/16, 1.0/16};
-int min_ps = 15;
-double one_three = (1.0 / 3.0);
+inline float eigen_value_array[4] = {1.0/16, 1.0/16, 1.0/16, 1.0/16};
+inline int min_ps = 15;
+inline double one_three = (1.0 / 3.0);
 
-double voxel_size = 1;
-int life_span = 1000;
-int win_size = 20;
+inline double voxel_size = 1;
+inline int life_span = 1000;
+inline int win_size = 20;
 
-int merge_enable = 1;
+inline int merge_enable = 1;
 
 class VOX_HESS
 {
@@ -734,6 +736,61 @@ public:
     PLV(3)().swap(pvec_orig); PLV(3)().swap(pvec_tran);
   }
 
+  void slide_window(int shift, int win_count)
+  {
+    if (shift <= 0 || win_count <= 0)
+      return;
+
+    if (win_count > win_size)
+      win_count = win_size;
+    if (shift > win_count)
+      shift = win_count;
+
+    if (octo_state != 1)
+    {
+      for (int i = shift; i < win_count; ++i)
+      {
+        sig_orig[i - shift] = sig_orig[i];
+        sig_tran[i - shift] = sig_tran[i];
+        vec_orig[i - shift].swap(vec_orig[i]);
+        vec_tran[i - shift].swap(vec_tran[i]);
+      }
+
+      for (int i = win_count - shift; i < win_count; ++i)
+      {
+        sig_orig[i].clear();
+        sig_tran[i].clear();
+        vec_orig[i].clear();
+        vec_tran[i].clear();
+      }
+      return;
+    }
+
+    for (int i = 0; i < 8; ++i)
+      if (leaves[i] != nullptr)
+        leaves[i]->slide_window(shift, win_count);
+  }
+
+  bool has_active_points(int win_count) const
+  {
+    if (win_count > win_size)
+      win_count = win_size;
+
+    if (octo_state != 1)
+    {
+      for (int i = 0; i < win_count; ++i)
+        if (sig_orig[i].N > 0.0)
+          return true;
+      return false;
+    }
+
+    for (int i = 0; i < 8; ++i)
+      if (leaves[i] != nullptr && leaves[i]->has_active_points(win_count))
+        return true;
+
+    return false;
+  }
+
   void recut(int win_count)
   {
     if(octo_state != 1)
@@ -962,9 +1019,27 @@ public:
       each_num[i] = 0;
   }
 
+  void slide_window(int shift, int win_count)
+  {
+    if (shift <= 0 || win_count <= 0)
+      return;
+
+    if (win_count > win_size)
+      win_count = win_size;
+    if (shift > win_count)
+      shift = win_count;
+
+    for (int i = shift; i < win_count; ++i)
+      each_num[i - shift] = each_num[i];
+    for (int i = win_count - shift; i < win_count; ++i)
+      each_num[i] = 0;
+
+    OCTO_TREE_NODE::slide_window(shift, win_count);
+  }
+
 };
 
-bool iter_stop(Eigen::VectorXd &dx, double thre = 1e-7, int win_size = 0)
+inline bool iter_stop(Eigen::VectorXd &dx, double thre = 1e-7, int win_size = 0)
 {
   // int win_size = dx.rows() / 6;
   if(win_size == 0)
@@ -1167,10 +1242,17 @@ public:
 
 };
 
-void cut_voxel(unordered_map<VOXEL_LOC, OCTO_TREE_ROOT*> &feat_map, pcl::PointCloud<PointType> &pl_feat, const IMUST &x_key, int fnum)
+template <typename PointT>
+void cut_voxel(std::unordered_map<VOXEL_LOC, OCTO_TREE_ROOT*> &feat_map,
+               const pcl::PointCloud<PointT> &pl_feat,
+               const IMUST &x_key,
+               int fnum)
 {
+  if (fnum < 0 || fnum >= win_size)
+    return;
+
   float loc_xyz[3];
-  for(PointType &p_c : pl_feat.points)
+  for (const PointT &p_c : pl_feat.points)
   {
     Eigen::Vector3d pvec_orig(p_c.x, p_c.y, p_c.z);
     Eigen::Vector3d pvec_tran = x_key.R*pvec_orig + x_key.p;

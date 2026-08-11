@@ -43,7 +43,6 @@ extern int groundMinPoints;
 extern float groundMaxSlopeDeg;
 extern float groundAssociationAngleDeg;
 extern float groundAssociationDistance;
-extern int batchStride;
 extern int windowSize;
 
 extern int ikdtreeSearchNeighborNum;
