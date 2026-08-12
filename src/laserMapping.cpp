@@ -58,7 +58,7 @@ double last_raw_timestamp_lidar = -1.0, last_raw_timestamp_imu = -1.0;
 double lidar_timestamp_offset_sec = 0.0;
 double imu_timestamp_offset_sec = 0.0;
 double imu_dt = 0.005;
-double lidar_dt = 0.01;
+double lidar_dt = 0.1;
 bool   timeRepair = true;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
@@ -596,23 +596,16 @@ void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
 {
     mtx_buffer.lock();
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
-    double corrected_timestamp = raw_timestamp;
+    const double corrected_timestamp = raw_timestamp + imu_timestamp_offset_sec;
 
-    if (timeRepair)
+    if (last_timestamp_lidar >= 0.0 && corrected_timestamp <= last_timestamp_lidar)
     {
-        if (!repairTimestamp(raw_timestamp, lidar_dt,
-            lidar_timestamp_offset_sec, last_raw_timestamp_lidar,
-            last_timestamp_lidar, corrected_timestamp))
-        {
-            mtx_buffer.unlock();
-            return;
-        }
+        mtx_buffer.unlock();
+        return;
     }
-    else
-    {
-        last_raw_timestamp_lidar = raw_timestamp;
-        last_timestamp_lidar = raw_timestamp;
-    }
+
+    last_raw_timestamp_lidar = raw_timestamp;
+    last_timestamp_lidar = corrected_timestamp;
 
     PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
@@ -628,23 +621,16 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
 {
     mtx_buffer.lock();
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
-    double corrected_timestamp = raw_timestamp;
+    const double corrected_timestamp = raw_timestamp + imu_timestamp_offset_sec;
 
-    if (timeRepair)
+    if (last_timestamp_lidar >= 0.0 && corrected_timestamp <= last_timestamp_lidar)
     {
-        if (!repairTimestamp(raw_timestamp, lidar_dt,
-            lidar_timestamp_offset_sec, last_raw_timestamp_lidar,
-            last_timestamp_lidar, corrected_timestamp))
-        {
-            mtx_buffer.unlock();
-            return;
-        }
+        mtx_buffer.unlock();
+        return;
     }
-    else
-    {
-        last_raw_timestamp_lidar = raw_timestamp;
-        last_timestamp_lidar = raw_timestamp;
-    }
+
+    last_raw_timestamp_lidar = raw_timestamp;
+    last_timestamp_lidar = corrected_timestamp;
     
     if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
     {
@@ -803,8 +789,6 @@ void gnss_heading_cbk(const OdometryMsgConstPtr &msg_in)
     p_gnss->pushYaw(msg_in);
 }
 
-double lidar_mean_scantime = 0.0;
-int    scan_num = 0;
 bool sync_packages(MeasureGroup &meas)
 {
     if (lidar_buffer.empty() || imu_buffer.empty()) {
@@ -816,23 +800,7 @@ bool sync_packages(MeasureGroup &meas)
     {
         meas.lidar = lidar_buffer.front();
         meas.lidar_beg_time = time_buffer.front();
-
-
-        if (meas.lidar->points.size() <= 1) // time too little
-        {
-            lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
-            ROS_PRINT_WARN("Too few input point cloud!");
-        }
-        else if (meas.lidar->points.back().curvature / double(1000) < 0.5 * lidar_mean_scantime)
-        {
-            lidar_end_time = meas.lidar_beg_time + lidar_mean_scantime;
-        }
-        else
-        {
-            scan_num ++;
-            lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double(1000);
-            lidar_mean_scantime += (meas.lidar->points.back().curvature / double(1000) - lidar_mean_scantime) / scan_num;
-        }
+        lidar_end_time = meas.lidar_beg_time + lidar_dt;
         if(lidar_type == MARSIM)
             lidar_end_time = meas.lidar_beg_time;
 
