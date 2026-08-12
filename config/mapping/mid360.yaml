@@ -49,7 +49,7 @@ mapping:
     extrinsic_T: [-0.009673, -0.037003, 0.047590]
 
 s-graph:
-    groundEnableFlag: false
+    groundEnableFlag: true
     groundMinPoints: 100
     groundMaxSlopeDeg: 20.0
     groundAssociationAngleDeg: 20.0
