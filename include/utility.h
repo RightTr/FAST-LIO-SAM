@@ -39,11 +39,8 @@ extern float globalMapVisualizationPoseDensity;
 extern float globalMapVisualizationLeafSize;
 
 extern float mappingICPSize;
-extern int groundMinPoints;
-extern float groundMaxSlopeDeg;
 extern float groundAssociationAngleDeg;
 extern float groundAssociationDistance;
-extern int windowSize;
 
 extern int ikdtreeSearchNeighborNum;
 
@@ -54,6 +51,7 @@ extern bool scan_frame_save_en;
 extern bool imu_state_save_en;
 extern bool ikdtree_output_save_en;
 extern bool groundEnableFlag;
+extern bool structureEnableFlag;
 
 extern std::string map_frame;
 extern std::string odom_frame;
@@ -82,6 +80,7 @@ extern bool use_prior_map;
 extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();
+void read_sgraph_params();
 void read_gnss_params();
 void set_mapping_mode();
 

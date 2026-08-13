@@ -41,11 +41,8 @@ gnss:
 
 s-graph:
     groundEnableFlag: true
-    groundMinPoints: 100
-    groundMaxSlopeDeg: 20.0
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0
-    windowSize: 20
 
 lio_sam:
     

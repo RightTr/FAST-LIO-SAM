@@ -1,4 +1,4 @@
-#include "s-graph/groundMap.h"
+#include "s-graph/ground.h"
 
 #include "common_utils.h"
 
@@ -52,51 +52,13 @@ inline double planeDistanceToPoint(const Eigen::Vector3d &n,
     return std::abs(n.dot(p) + d);
 }
 
-inline bool isGroundCandidate(const PlaneObs &plane)
-{
-    if (plane.n < groundMinPoints)
-        return false;
-
-    Eigen::Vector4d normalized = plane.plane;
-    if (!normalizePlane(normalized))
-        return false;
-
-    if (std::acos(clampDot(normalized[2])) > rad(groundMaxSlopeDeg))
-        return false;
-
-    return true;
-}
-
 struct GroundCandidate
 {
     Eigen::Vector3d n = Eigen::Vector3d::Zero();
     double d = 0.0;
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
-    int n_pts = 0;
     std::unordered_map<int, Eigen::Vector4d> body;
 };
-
-inline void appendUniqueKey(std::vector<int> &keys, int key)
-{
-    if (std::find(keys.begin(), keys.end(), key) == keys.end())
-        keys.push_back(key);
-}
-
-inline int chooseRepresentativeKey(const GroundCandidate &candidate,
-                                   const std::deque<int> &keys)
-{
-    if (keys.empty())
-        return -1;
-
-    const int latest = keys.back();
-    if (candidate.body.find(latest) != candidate.body.end())
-        return latest;
-
-    if (!candidate.body.empty())
-        return candidate.body.begin()->first;
-
-    return latest;
-}
 
 inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
                             const std::deque<int> &keys,
@@ -110,8 +72,6 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
     Eigen::Vector3d sum_n = Eigen::Vector3d::Zero();
     Eigen::Vector3d sum_center = Eigen::Vector3d::Zero();
     double weight_sum = 0.0;
-    int total_pts = 0;
-
     std::unordered_map<int, Eigen::Vector4d> body_sum;
     std::unordered_map<int, double> body_weight;
 
@@ -133,8 +93,6 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
         sum_n += w * n;
         sum_center += w * plane->center;
         weight_sum += w;
-        total_pts += plane->n;
-
         for (const auto &kv : plane->obs)
         {
             const int key = kv.first;
@@ -183,8 +141,6 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
     if (!validPlane(plane))
         return false;
 
-    out.n_pts = total_pts;
-
     for (const auto &kv : body_sum)
     {
         const int key = kv.first;
@@ -221,7 +177,7 @@ inline bool buildStableGround(const std::vector<PlaneObs> &planes,
 
     for (const auto &plane : planes)
     {
-        if (!isGroundCandidate(plane))
+        if (plane.type != PlaneType::GROUND)
             continue;
 
         Eigen::Vector4d map_plane = plane.plane;
@@ -280,13 +236,12 @@ inline bool buildStableGround(const std::vector<PlaneObs> &planes,
     return fitMergedGround(members, keys, poses, seed_n, candidate);
 }
 
-inline bool matchGeometry(const Ground &ground,
-                          const Eigen::Vector3d &n,
-                          double d,
-                          const Eigen::Vector3d &center,
-                          double &score)
+inline bool matchGround(const PlaneLandmark &ground,
+                        const GroundCandidate &candidate)
 {
-    if (!n.allFinite() || !std::isfinite(d) || !center.allFinite())
+    if (!candidate.n.allFinite() ||
+        !std::isfinite(candidate.d) ||
+        !candidate.center.allFinite())
         return false;
 
     Eigen::Vector4d ground_plane = ground.plane;
@@ -296,19 +251,19 @@ inline bool matchGeometry(const Ground &ground,
     const Eigen::Vector3d g_n = ground_plane.head<3>();
     const double g_d = ground_plane[3];
 
-    const double angle = planeAngle(g_n, n);
+    const double angle = planeAngle(g_n, candidate.n);
     if (!std::isfinite(angle) || angle > rad(groundAssociationAngleDeg))
         return false;
 
-    score = planeDistanceToPoint(g_n, g_d, center);
+    const double score = planeDistanceToPoint(g_n, g_d, candidate.center);
     return std::isfinite(score) && score <= groundAssociationDistance;
 }
 } // namespace
 
-bool GroundMap::update(const std::vector<PlaneObs> &planes,
-                       const std::deque<int> &keys,
-                       const std::deque<PointTypePose> &poses,
-                       PlaneBatch &batch)
+bool Ground::update(const std::vector<PlaneObs> &planes,
+                    const std::deque<int> &keys,
+                    const std::deque<PointTypePose> &poses,
+                    PlaneBatch &batch)
 {
     batch = PlaneBatch();
     if (planes.empty() || poses.empty() || keys.empty())
@@ -318,188 +273,57 @@ bool GroundMap::update(const std::vector<PlaneObs> &planes,
     if (!buildStableGround(planes, keys, poses, candidate))
         return false;
 
-    if (!candidate.n.allFinite() ||
-        !std::isfinite(candidate.d) ||
-        !candidate.center.allFinite() ||
-        candidate.n.norm() <= kEps ||
-        candidate.body.empty())
-    {
+    if (candidate.body.empty())
         return false;
-    }
 
-    const int count = static_cast<int>(poses.size());
-    const int first_key = keys.front();
-
-    int target_id = -1;
-    int best_votes = -1;
-    double best_score = std::numeric_limits<double>::infinity();
-
-    if (current_id_ >= 0 &&
-        current_id_ < static_cast<int>(grounds_.size()))
+    if (ground_.id < 0)
     {
-        double score = std::numeric_limits<double>::infinity();
-        if (matchGeometry(grounds_[static_cast<size_t>(current_id_)],
-                          candidate.n,
-                          candidate.d,
-                          candidate.center,
-                          score))
-        {
-            target_id = current_id_;
-            best_score = score;
-            best_votes = std::numeric_limits<int>::max();
-        }
-    }
+        ground_.id = 0;
+        ground_.plane << candidate.n.x(), candidate.n.y(), candidate.n.z(), candidate.d;
+        ground_.center = candidate.center;
+        batch.init.push_back(ground_);
 
-    if (target_id < 0)
+        const int rep_key = keys.empty() ? -1 : keys.back();
+        ROS_PRINT_INFO("Ground init: p0 from KF=%d plane=(%.3f %.3f %.3f %.3f)",
+                       rep_key,
+                       ground_.plane[0],
+                       ground_.plane[1],
+                       ground_.plane[2],
+                       ground_.plane[3]);
+    }
+    else
     {
-        std::unordered_map<int, int> votes;
-        for (const auto &kv : candidate.body)
+        if (!matchGround(ground_, candidate))
         {
-            const auto it = key_plane_.find(kv.first);
-            if (it != key_plane_.end())
-                ++votes[it->second];
-        }
-
-        for (const auto &vote : votes)
-        {
-            const int id = vote.first;
-            const int vote_count = vote.second;
-            if (id < 0 || id >= static_cast<int>(grounds_.size()))
-                continue;
-
-            double score = std::numeric_limits<double>::infinity();
-            if (!matchGeometry(grounds_[static_cast<size_t>(id)],
-                               candidate.n,
-                               candidate.d,
-                               candidate.center,
-                               score))
-            {
-                continue;
-            }
-
-            if (vote_count > best_votes ||
-                (vote_count == best_votes && score < best_score))
-            {
-                target_id = id;
-                best_votes = vote_count;
-                best_score = score;
-            }
+            return false;
         }
     }
 
-    if (target_id < 0)
-    {
-        for (size_t i = 0; i < grounds_.size(); ++i)
-        {
-            double score = std::numeric_limits<double>::infinity();
-            if (!matchGeometry(grounds_[i],
-                               candidate.n,
-                               candidate.d,
-                               candidate.center,
-                               score))
-            {
-                continue;
-            }
-
-            if (score < best_score)
-            {
-                target_id = static_cast<int>(i);
-                best_score = score;
-            }
-        }
-    }
-
-    const bool create_new = (target_id < 0);
-    const int new_id = create_new ? next_id_ : -1;
-
+    ground_.plane << candidate.n.x(), candidate.n.y(), candidate.n.z(), candidate.d;
+    ground_.center = candidate.center;
     std::vector<PlaneFactor> factors;
     factors.reserve(candidate.body.size());
-    std::vector<int> factor_keys;
-    factor_keys.reserve(candidate.body.size());
 
     for (const auto &kv : candidate.body)
     {
         const int key = kv.first;
-
-        if (key_plane_.find(key) != key_plane_.end())
-            continue;
-
-        const int local_id = key - first_key;
-        if (local_id < 0 || local_id >= count)
-            continue;
-
-        Eigen::Vector4d obs = kv.second;
-        if (!normalizePlane(obs) || !obs.allFinite())
-            continue;
-        if (obs.head<3>().norm() <= kEps)
+        if (keys_.find(key) != keys_.end())
             continue;
 
         PlaneFactor factor;
         factor.key = key;
-        factor.id = create_new ? new_id : target_id;
-        factor.obs = obs;
+        factor.id = ground_.id;
+        factor.obs = kv.second;
         factors.push_back(factor);
-        factor_keys.push_back(key);
     }
 
     if (factors.empty())
         return false;
 
-    Ground ground;
-    Ground *target = nullptr;
-    if (create_new)
-    {
-        ground.id = next_id_++;
-        ground.plane << candidate.n.x(), candidate.n.y(), candidate.n.z(), candidate.d;
-        ground.center = candidate.center;
-        grounds_.push_back(ground);
-        batch.init.push_back(ground);
-        target = &grounds_.back();
-
-        const int rep_key = chooseRepresentativeKey(candidate, keys);
-        ROS_PRINT_INFO(
-            "Ground init: p%d from KF=%d normal=(%.3f %.3f %.3f %.3f)",
-            target->id,
-            rep_key,
-            target->plane[0],
-            target->plane[1],
-            target->plane[2],
-            target->plane[3]);
-        current_id_ = target->id;
-    }
-    else
-    {
-        target = &grounds_[static_cast<size_t>(target_id)];
-    }
-
-    if (!target)
-        return false;
-
-    target->plane << candidate.n.x(), candidate.n.y(), candidate.n.z(), candidate.d;
-    target->center = candidate.center;
-    current_id_ = target->id;
-
     for (const auto &factor : factors)
     {
-        key_plane_[factor.key] = target->id;
-        appendUniqueKey(target->keys, factor.key);
+        keys_.insert(factor.key);
         batch.factors.push_back(factor);
-
-        const int local_id = factor.key - first_key;
-        if (local_id >= 0 && local_id < count)
-        {
-            const Eigen::Vector3d pose_pos = poseTranslation(poses[static_cast<size_t>(local_id)]);
-            const double plane_h = candidate.n.dot(pose_pos) + candidate.d;
-            ROS_PRINT_INFO(
-                "Ground KF=%d plane_h=%.3f normal=(%.3f %.3f %.3f)",
-                factor.key,
-                plane_h,
-                candidate.n.x(),
-                candidate.n.y(),
-                candidate.n.z());
-        }
-
-        ROS_PRINT_INFO("Plane factor: pose=%d -> p%d", factor.key, target->id);
     }
 
     batch.valid = !batch.init.empty() || !batch.factors.empty();

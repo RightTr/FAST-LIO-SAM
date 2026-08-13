@@ -4,8 +4,7 @@
 #include "common_utils.h"
 #include "GNSS_Processing.hpp"
 #include "gnssYaw_factor.h"
-#include "s-graph/groundMap.h"
-#include "s-graph/planeMap.h"
+#include "s-graph/floorMap.h"
 #include "map_optimization.h"
 #include "ros_utils.h"
 
@@ -96,8 +95,8 @@ Eigen::Matrix3d rotationLidarToIMU;
 bool isDegenerate = false;
 
 PathMsg globalPath;
-PlaneMap planeMap;
-GroundMap groundMap;
+Plane plane;
+FloorMap floorMap;
 
 PlaneBatch planeBatch;
 gtsam::noiseModel::Diagonal::shared_ptr planeNoise;
@@ -119,6 +118,11 @@ std::deque<std::tuple<int, Eigen::Vector3d, Eigen::Matrix3d>> gnssPosFactorQueue
 std::deque<std::pair<int, double>> gnssYawFactorQueue;
 double last_pos_t = -1.0;
 double last_yaw_t = -1.0;
+
+namespace
+{
+constexpr int kStructurePlaneWindowSize = 20;
+}
 std::unordered_set<int> pos_keys;
 std::unordered_set<int> yaw_keys;
 
@@ -251,6 +255,7 @@ void MapOptimizationInit()
     pubKeyFrameYawMarkers = create_publisher<MarkerArrayMsg>("lio_sam/mapping/keyframe_yaw", 1);
 
     downSizeFilterICP.setLeafSize(mappingICPSize, mappingICPSize, mappingICPSize);
+    floorMap.setEnabled(structureEnableFlag);
 
     allocateMemory();
 }
@@ -280,11 +285,14 @@ void loopFindNearKeyframes(pcl::PointCloud<PointTypeIndex>::Ptr& nearKeyframes, 
 {
     // extract near keyframes
     nearKeyframes->clear();
+
     int cloudSize = copy_cloudKeyPoses6D->size();
     for (int i = -searchNum; i <= searchNum; ++i)
     {
         int keyNear = key + i;
         if (keyNear < 0 || keyNear >= cloudSize )
+            continue;
+        if (!floorMap.allowLoop(key, keyNear))
             continue;
         *nearKeyframes += *transformPointCloud(featCloudKeyFrames[keyNear], &copy_cloudKeyPoses6D->points[keyNear]);
     }
@@ -319,6 +327,8 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
     for (int id = 0; id < static_cast<int>(copy_cloudKeyPoses3D->size()); ++id)
     {
         if (id == loopKeyCur)
+            continue;
+        if (!floorMap.allowLoop(loopKeyCur, id))
             continue;
 
         const auto &candidate_pose = copy_cloudKeyPoses3D->points[id];
@@ -471,18 +481,21 @@ void addLoopFactor()
 
     for (int i = 0; i < (int)loopIndexQueue.size(); ++i)
     {
-        int indexFrom = loopIndexQueue[i].first;
-        int indexTo = loopIndexQueue[i].second;
-        gtsam::Pose3 poseBetween = loopPoseQueue[i];
-        gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = loopNoiseQueue[i];
+        const int indexFrom = loopIndexQueue[i].first;
+        const int indexTo = loopIndexQueue[i].second;
+        if (!floorMap.allowLoop(indexFrom, indexTo))
+            continue;
+
+        const gtsam::Pose3 poseBetween = loopPoseQueue[i];
+        const gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = loopNoiseQueue[i];
         gtSAMgraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
+        graphUpdate = true;
+        loopIsClosed = true;
     }
 
     loopIndexQueue.clear();
     loopPoseQueue.clear();
     loopNoiseQueue.clear();
-    graphUpdate = true;
-    loopIsClosed = true;
 }
 
 bool findNearestKeyframeByTime(const std::vector<PointTypePose> &keyposes,
@@ -980,17 +993,16 @@ void performStructureMatching()
 
     if (poseDirty.exchange(false) && lastProcessedKey >= 0)
     {
-        planeMap.reset();
+        plane.reset();
 
-        const int begin = std::max(0, lastProcessedKey - windowSize + 1);
+        const int begin = std::max(0, lastProcessedKey - kStructurePlaneWindowSize + 1);
 
         for (int key = begin; key <= lastProcessedKey; ++key)
         {
             if (!clouds[key])
                 continue;
 
-            std::vector<PlaneObs> unused;
-            planeMap.update(key, clouds[key], poses[key], unused, nullptr);
+            plane.update(key, clouds[key], poses[key], nullptr);
         }
     }
 
@@ -1002,18 +1014,25 @@ void performStructureMatching()
             continue;
         }
 
-        std::vector<PlaneObs> plane_obs;
         pcl::PointCloud<PointTypeIndex>::Ptr plane_cloud;
 
         plane_cloud = std::make_shared<pcl::PointCloud<PointTypeIndex>>();
 
-        planeMap.update(key, clouds[key], poses[key], plane_obs, plane_cloud);
+        plane.update(key, clouds[key], poses[key], plane_cloud);
         lastProcessedKey = key;
 
         publishCloud(pubPlanes, plane_cloud, timeLaserInfoStamp, map_frame);
 
         PlaneBatch batch;
-        if (!groundMap.update(plane_obs, planeMap.keys(), planeMap.poses(), batch))
+        floorMap.update(plane.keys(), plane.poses());
+
+        std::unordered_set<int> allowed_ground_keys;
+        floorMap.groundKeys(plane.keys(), allowed_ground_keys);
+
+        std::vector<PlaneObs> ground_plane_obs;
+        plane.extract(allowed_ground_keys, ground_plane_obs);
+
+        if (!floorMap.updateGround(ground_plane_obs, plane.keys(), plane.poses(), batch))
             continue;
 
         std::lock_guard<std::mutex> lock(mtxPlane);

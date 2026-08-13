@@ -15,8 +15,8 @@ common:
 gnss:
     topic: "handsfree/rtk/gnss"
     heading_topic: "handsfree/rtk/heading"
-    gnssPathVis: true
-    gnssEnableFlag: true
+    gnssPathVis: false
+    gnssEnableFlag: false
     gpsFactorMinDis: 5.0
     extrinsic_T: [0.0, 0.165, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0,
@@ -49,12 +49,10 @@ mapping:
     extrinsic_T: [-0.009673, -0.037003, 0.047590]
 
 s-graph:
-    groundEnableFlag: true
-    groundMinPoints: 100
-    groundMaxSlopeDeg: 20.0
+    groundEnableFlag: false
+    structureEnableFlag: false
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0
-    windowSize: 20
 
 lio_sam:
 

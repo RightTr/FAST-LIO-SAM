@@ -28,17 +28,15 @@ float globalMapVisualizationPoseDensity;
 float globalMapVisualizationLeafSize;
 
 float mappingICPSize;
-int groundMinPoints;
-float groundMaxSlopeDeg;
 float groundAssociationAngleDeg;
 float groundAssociationDistance;
-int windowSize;
 
 int ikdtreeSearchNeighborNum;
 
 bool keyframe_export_en = false;
 bool keyframe_global_pcd_en = false;
 bool groundEnableFlag = true;
+bool structureEnableFlag = false;
 
 std::string map_frame = "map";
 std::string odom_frame = "odom";
@@ -123,15 +121,17 @@ void read_liosam_params() {
     rosparam_get("lio_sam/globalMapVisualizationLeafSize", globalMapVisualizationLeafSize, 1.0f);
 
     rosparam_get("lio_sam/mappingICPSize", mappingICPSize, 0.2f);
-    rosparam_get("s-graph/groundMinPoints", groundMinPoints, 100);
-    rosparam_get("s-graph/groundMaxSlopeDeg", groundMaxSlopeDeg, 20.0f);
-    rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
-    rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
-    rosparam_get("s-graph/windowSize", windowSize, 20);
     rosparam_get("lio_sam/ikdtreeSearchNeighborNum", ikdtreeSearchNeighborNum, 8);
     rosparam_get("lio_sam/keyframe_export_en", keyframe_export_en, false);
     rosparam_get("lio_sam/keyframe_global_pcd_en", keyframe_global_pcd_en, false);
+}
+
+void read_sgraph_params()
+{
     rosparam_get("s-graph/groundEnableFlag", groundEnableFlag, true);
+    rosparam_get("s-graph/structureEnableFlag", structureEnableFlag, true);
+    rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
+    rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
 }
 
 void read_gnss_params() {
@@ -160,5 +160,4 @@ void read_gnss_params() {
     rosparam_get("gnss/useYawFactor", useGnssYawFactor, false);
     rosparam_get("gnss/yawFactorSigma", gnss_yaw_factor_sigma, 0.10);
     rosparam_get("gnss/useGnssElevation", useGnssElevation, false);
-
 }

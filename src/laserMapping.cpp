@@ -1657,6 +1657,7 @@ int main(int argc, char** argv)
 
     if (sam_enable) {
         read_liosam_params();
+        read_sgraph_params();
     }
     read_gnss_params();
     if (p_gnss)

@@ -1,4 +1,4 @@
-#include "s-graph/planeMap.h"
+#include "s-graph/plane.h"
 
 #include "common_utils.h"
 #include "ros_utils.h"
@@ -9,14 +9,15 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <Eigen/Eigenvalues>
 
 namespace
 {
 constexpr int kMinPts = 100;
+constexpr double kGroundNzThreshold = 0.9396926207859084;
 constexpr double kEps = 1e-12;
 
 inline bool fitPlane(const PointCluster &s,
@@ -51,15 +52,31 @@ inline void deleteSurfMap(std::unordered_map<VOXEL_LOC, OCTO_TREE_ROOT *> &surf_
     surf_map.clear();
 }
 
+inline PlaneType classifyPlane(const Eigen::Vector4d &plane)
+{
+    Eigen::Vector4d normalized = plane;
+    if (!normalized.allFinite() || normalized.head<3>().norm() <= kEps)
+        return PlaneType::UNKNOWN;
+
+    normalized /= normalized.head<3>().norm();
+    const double nz = std::abs(normalized[2]);
+    if (nz >= kGroundNzThreshold)
+        return PlaneType::GROUND;
+    if (nz <= 0.25)
+        return PlaneType::WALL;
+    return PlaneType::UNKNOWN;
+}
+
 inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
                           const std::deque<int> &keys,
                           const std::deque<PointTypePose> &poses,
+                          const std::unordered_set<int> &allowed_keys,
                           PlaneObs &obs)
 {
     if (node == nullptr || node->push_state != 1)
         return false;
 
-    const int active_count = static_cast<int>(std::min(keys.size(), poses.size()));
+    const int active_count = static_cast<int>(keys.size());
     if (active_count <= 0)
         return false;
 
@@ -68,6 +85,12 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 
     for (int slot = 0; slot < active_count; ++slot)
     {
+        const int key = keys[static_cast<size_t>(slot)];
+        if (allowed_keys.find(key) == allowed_keys.end())
+        {
+            continue;
+        }
+
         const PointCluster &sig_tran = node->sig_tran[slot];
         const PointCluster &sig_orig = node->sig_orig[slot];
         if (sig_tran.N <= 0.0 || sig_orig.N <= 0.0)
@@ -94,9 +117,16 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 
     obs.plane << map_n.x(), map_n.y(), map_n.z(), map_d;
     obs.center = map_c;
+    obs.type = classifyPlane(obs.plane);
 
     for (int slot = 0; slot < active_count; ++slot)
     {
+        const int key = keys[static_cast<size_t>(slot)];
+        if (allowed_keys.find(key) == allowed_keys.end())
+        {
+            continue;
+        }
+
         const PointCluster &sig_orig = node->sig_orig[slot];
         if (sig_orig.N <= 0.0)
             continue;
@@ -117,7 +147,7 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 
         Eigen::Vector4d plane;
         plane << n.x(), n.y(), n.z(), d;
-        obs.obs[keys[static_cast<size_t>(slot)]] = plane;
+        obs.obs[key] = plane;
     }
 
     return !obs.obs.empty();
@@ -126,6 +156,7 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 inline void collectPlanes(const OCTO_TREE_NODE *node,
                           const std::deque<int> &keys,
                           const std::deque<PointTypePose> &poses,
+                          const std::unordered_set<int> &allowed_keys,
                           std::vector<PlaneObs> &planes)
 {
     if (node == nullptr)
@@ -134,77 +165,69 @@ inline void collectPlanes(const OCTO_TREE_NODE *node,
     if (node->octo_state == 1)
     {
         for (const auto *child : node->leaves)
-            collectPlanes(child, keys, poses, planes);
+            collectPlanes(child, keys, poses, allowed_keys, planes);
         return;
     }
 
     PlaneObs obs;
-    if (buildPlaneObs(node, keys, poses, obs))
+    if (buildPlaneObs(node, keys, poses, allowed_keys, obs))
         planes.push_back(std::move(obs));
 }
 
 } // namespace
 
-PlaneMap::~PlaneMap()
+Plane::~Plane()
 {
     reset();
 }
 
-void PlaneMap::reset()
+void Plane::reset()
 {
-    if (!impl_)
-        return;
-
-    deleteSurfMap(impl_->surf_map);
-    impl_->keys.clear();
-    impl_->poses.clear();
+    deleteSurfMap(surf_map_);
+    keys_.clear();
+    poses_.clear();
 }
 
-bool PlaneMap::update(int key,
-                      const pcl::PointCloud<PointTypeIndex>::Ptr &cloud,
-                      const PointTypePose &pose,
-                      std::vector<PlaneObs> &planes,
-                      pcl::PointCloud<PointTypeIndex>::Ptr display_cloud)
+void Plane::update(int key,
+                   const pcl::PointCloud<PointTypeIndex>::Ptr &cloud,
+                   const PointTypePose &pose,
+                   pcl::PointCloud<PointTypeIndex>::Ptr display_cloud)
 {
-    if (!impl_)
-        impl_ = std::make_unique<Impl>();
-
-    planes.clear();
     if (display_cloud)
         display_cloud->clear();
 
-    if (static_cast<int>(impl_->keys.size()) == impl_->window_size)
+    if (static_cast<int>(keys_.size()) == kWindowSize)
     {
-        for (auto &entry : impl_->surf_map)
-            entry.second->slide_window(1, impl_->window_size);
+        for (auto &entry : surf_map_)
+            entry.second->slide_window(1, kWindowSize);
 
-        impl_->keys.pop_front();
-        impl_->poses.pop_front();
+        keys_.pop_front();
+        poses_.pop_front();
     }
 
-    impl_->keys.push_back(key);
-    impl_->poses.push_back(pose);
+    keys_.push_back(key);
+    poses_.push_back(pose);
 
-    const int slot = static_cast<int>(impl_->keys.size()) - 1;
+    const int slot = static_cast<int>(keys_.size()) - 1;
     if (cloud && !cloud->empty())
     {
         IMUST x_key;
         x_key.R = poseRotation(pose);
         x_key.p = poseTranslation(pose);
-        cut_voxel(impl_->surf_map, *cloud, x_key, slot);
+        cut_voxel(surf_map_, *cloud, x_key, slot);
     }
 
-    const int active_count = static_cast<int>(std::min(impl_->keys.size(), impl_->poses.size()));
-    for (auto &entry : impl_->surf_map)
+    const int active_count = static_cast<int>(keys_.size());
+    for (auto &entry : surf_map_)
         entry.second->recut(active_count);
 
-    for (auto it = impl_->surf_map.begin(); it != impl_->surf_map.end(); )
+    for (auto it = surf_map_.begin(); it != surf_map_.end(); )
     {
         OCTO_TREE_ROOT *root = it->second;
         if (root == nullptr || !root->has_active_points(active_count))
         {
             delete root;
-            it = impl_->surf_map.erase(it);
+            it = surf_map_.erase(it);
         }
         else
         {
@@ -215,7 +238,7 @@ bool PlaneMap::update(int key,
     if (display_cloud)
     {
         pcl::PointCloud<PointType> balm_plane_cloud;
-        for (const auto &entry : impl_->surf_map)
+        for (const auto &entry : surf_map_)
             entry.second->tras_display(balm_plane_cloud, active_count);
 
         display_cloud->reserve(balm_plane_cloud.size());
@@ -230,24 +253,26 @@ bool PlaneMap::update(int key,
         }
     }
 
-    for (const auto &entry : impl_->surf_map)
-        collectPlanes(entry.second, impl_->keys, impl_->poses, planes);
-
-    return true;
+    return;
 }
 
-const std::deque<int> &PlaneMap::keys() const
+void Plane::extract(const std::unordered_set<int> &allowed_keys,
+                    std::vector<PlaneObs> &planes) const
 {
-    static const std::deque<int> kEmpty;
-    if (!impl_)
-        return kEmpty;
-    return impl_->keys;
+    planes.clear();
+    if (keys_.empty() || poses_.empty())
+        return;
+
+    for (const auto &entry : surf_map_)
+        collectPlanes(entry.second, keys_, poses_, allowed_keys, planes);
 }
 
-const std::deque<PointTypePose> &PlaneMap::poses() const
+const std::deque<int> &Plane::keys() const
 {
-    static const std::deque<PointTypePose> kEmpty;
-    if (!impl_)
-        return kEmpty;
-    return impl_->poses;
+    return keys_;
+}
+
+const std::deque<PointTypePose> &Plane::poses() const
+{
+    return poses_;
 }
