@@ -45,13 +45,6 @@ inline bool fitPlane(const PointCluster &s,
     return true;
 }
 
-inline void deleteSurfMap(std::unordered_map<VOXEL_LOC, OCTO_TREE_ROOT *> &surf_map)
-{
-    for (auto &entry : surf_map)
-        delete entry.second;
-    surf_map.clear();
-}
-
 inline PlaneType classifyPlane(const Eigen::Vector4d &plane)
 {
     Eigen::Vector4d normalized = plane;
@@ -77,9 +70,6 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
         return false;
 
     const int active_count = static_cast<int>(keys.size());
-    if (active_count <= 0)
-        return false;
-
     PointCluster map_sum;
     obs = PlaneObs();
 
@@ -139,7 +129,7 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 
         const Eigen::Vector3d expected_body_n =
             poseRotation(poses[static_cast<size_t>(slot)]).transpose() * map_n;
-        if (expected_body_n.norm() > kEps && n.dot(expected_body_n) < 0.0)
+        if (n.dot(expected_body_n) < 0.0)
         {
             n = -n;
             d = -d;
@@ -183,7 +173,9 @@ Plane::~Plane()
 
 void Plane::reset()
 {
-    deleteSurfMap(surf_map_);
+    for (auto &entry : surf_map_)
+        delete entry.second;
+    surf_map_.clear();
     keys_.clear();
     poses_.clear();
 }

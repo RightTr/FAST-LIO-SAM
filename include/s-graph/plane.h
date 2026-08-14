@@ -1,60 +1,16 @@
-#ifndef S_GRAPH_PLANE_H
-#define S_GRAPH_PLANE_H
+#ifndef PLANE_H
+#define PLANE_H
 
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
 #include "balm/bavoxel.hpp"
+#include "s-graph/scene.h"
 #include "map_optimization.h"
 
-#include <Eigen/Core>
 #include <deque>
 #include <unordered_map>
 #include <unordered_set>
-#include <vector>
-
-enum class PlaneType
-{
-    UNKNOWN,
-    GROUND,
-    WALL
-};
-
-struct PlaneObs
-{
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-    Eigen::Vector4d plane = Eigen::Vector4d::Zero();
-    Eigen::Vector3d center = Eigen::Vector3d::Zero();
-    int n = 0;
-    PlaneType type = PlaneType::UNKNOWN;
-    std::unordered_map<int, Eigen::Vector4d> obs;
-};
-
-struct PlaneLandmark
-{
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-    int id = -1;
-    Eigen::Vector4d plane = Eigen::Vector4d::Zero();
-    Eigen::Vector3d center = Eigen::Vector3d::Zero();
-};
-
-struct PlaneFactor
-{
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-    int key = -1;
-    int id = -1;
-    Eigen::Vector4d obs = Eigen::Vector4d::Zero();
-};
-
-struct PlaneBatch
-{
-    bool valid = false;
-    std::vector<PlaneLandmark> init;
-    std::vector<PlaneFactor> factors;
-};
 
 class Plane
 {

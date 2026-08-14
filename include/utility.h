@@ -28,7 +28,6 @@ extern float loopClosureFrequency;
 extern int   surroundingKeyframeSize;
 extern float historyKeyframeSearchRadius;
 extern float historyKeyframeSearchTimeDiff;
-extern float historyKeyframeSearchAngleThreshold;
 extern int   historyKeyframeSearchNum;
 extern float historyKeyframeFitnessScore;
 extern float loopWeight;
@@ -51,7 +50,7 @@ extern bool scan_frame_save_en;
 extern bool imu_state_save_en;
 extern bool ikdtree_output_save_en;
 extern bool groundEnableFlag;
-extern bool structureEnableFlag;
+extern bool sceneEnableFlag;
 
 extern std::string map_frame;
 extern std::string odom_frame;

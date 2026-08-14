@@ -17,7 +17,6 @@ float loopClosureFrequency;
 int   surroundingKeyframeSize;
 float historyKeyframeSearchRadius;
 float historyKeyframeSearchTimeDiff;
-float historyKeyframeSearchAngleThreshold;
 int   historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
 float loopWeight;
@@ -36,7 +35,7 @@ int ikdtreeSearchNeighborNum;
 bool keyframe_export_en = false;
 bool keyframe_global_pcd_en = false;
 bool groundEnableFlag = true;
-bool structureEnableFlag = false;
+bool sceneEnableFlag = false;
 
 std::string map_frame = "map";
 std::string odom_frame = "odom";
@@ -110,7 +109,6 @@ void read_liosam_params() {
     rosparam_get("lio_sam/surroundingKeyframeSize", surroundingKeyframeSize, 50);
     rosparam_get("lio_sam/historyKeyframeSearchRadius", historyKeyframeSearchRadius, 10.0f);
     rosparam_get("lio_sam/historyKeyframeSearchTimeDiff", historyKeyframeSearchTimeDiff, 30.0f);
-    rosparam_get("lio_sam/historyKeyframeSearchAngleThreshold", historyKeyframeSearchAngleThreshold, 0.5f);
     rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
     rosparam_get("lio_sam/loopWeight", loopWeight, 0.2f);
@@ -129,7 +127,7 @@ void read_liosam_params() {
 void read_sgraph_params()
 {
     rosparam_get("s-graph/groundEnableFlag", groundEnableFlag, true);
-    rosparam_get("s-graph/structureEnableFlag", structureEnableFlag, true);
+    rosparam_get("s-graph/sceneEnableFlag", sceneEnableFlag, true);
     rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
     rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
 }

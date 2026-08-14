@@ -1772,7 +1772,10 @@ int main(int argc, char** argv)
     {
         loopthread = std::thread(&loopClosureThread);
         globalthread = std::thread(&visualizeGlobalMapThread);
-        structurethread = std::thread(&structureMatchingThread);
+        if (sceneEnableFlag && groundEnableFlag)
+        {
+            structurethread = std::thread(&structureMatchingThread);
+        }
         if (gnssEnableFlag)
         {
             gnssthread = std::thread(&gnssMatchingThread);
@@ -2007,7 +2010,6 @@ int main(int argc, char** argv)
     if (structurethread.joinable()) {
         structurethread.join();
     }
-
     if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)
     {
         save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");

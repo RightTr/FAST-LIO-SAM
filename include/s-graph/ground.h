@@ -1,7 +1,8 @@
-#ifndef S_GRAPH_GROUND_H
-#define S_GRAPH_GROUND_H
+#ifndef GROUND_H
+#define GROUND_H
 
-#include "s-graph/plane.h"
+#include "s-graph/scene.h"
+#include "map_optimization.h"
 #include "utility.h"
 
 #include <Eigen/Core>
@@ -9,19 +10,16 @@
 #include <unordered_set>
 #include <vector>
 
-class Ground
+struct Ground
 {
-public:
-    Ground() = default;
-
-    bool update(const std::vector<PlaneObs> &planes,
-                const std::deque<int> &keys,
-                const std::deque<PointTypePose> &poses,
-                PlaneBatch &batch);
-
-private:
-    PlaneLandmark ground_;
-    std::unordered_set<int> keys_;
+    int id = -1;
+    Eigen::Vector4d plane = Eigen::Vector4d::Zero();
+    Eigen::Vector3d center = Eigen::Vector3d::Zero();
 };
+
+bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
+                          const std::deque<int> &keys,
+                          const std::deque<PointTypePose> &poses,
+                          PlaneObs &candidate);
 
 #endif

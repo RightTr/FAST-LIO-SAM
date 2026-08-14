@@ -137,7 +137,8 @@ if(USE_ROS2)
     src/mapOptimization.cpp
     include/s-graph/plane.cpp
     include/s-graph/ground.cpp
-    include/s-graph/floorMap.cpp)
+    include/s-graph/floorMap.cpp
+    )
   ament_target_dependencies(fastlio_mapping
     rclcpp
     sensor_msgs

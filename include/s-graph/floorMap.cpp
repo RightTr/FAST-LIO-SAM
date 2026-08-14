@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <tuple>
 #include <utility>
 
 namespace
@@ -13,12 +15,7 @@ constexpr double kStairStartSlope = 0.20;
 constexpr double kStairEndSlope = 0.10;
 constexpr double kStairMaxSlope = 1.00;
 constexpr double kMinHorizontalDistance = 0.50;
-}
-
-void FloorMap::setEnabled(bool enabled)
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    enabled_ = enabled;
+constexpr double kGroundLandmarkRadius = 8.0;
 }
 
 void FloorMap::update(const std::deque<int> &keys,
@@ -28,61 +25,29 @@ void FloorMap::update(const std::deque<int> &keys,
     if (keys.empty() || poses.empty())
         return;
 
-    const int cur_key = keys.back();
-    if (!enabled_)
+    auto ensureKeyFloorSize = [this](int key)
     {
-        if (floors_.empty())
-        {
-            Floor floor;
-            floor.height = poses.back().z;
-            floors_.push_back(std::move(floor));
-        }
+        if (key < 0)
+            return;
+        const size_t next = static_cast<size_t>(key) + 1;
+        if (key_floor_.size() < next)
+            key_floor_.resize(next, -1);
+    };
 
-        current_floor_id_ = 0;
-        for (int key : keys)
-            key_floor_[key] = 0;
-        last_state_key_ = cur_key;
-        transition_ = 0;
-        return;
-    }
+    const int cur_key = keys.back();
+    ensureKeyFloorSize(cur_key);
 
     if (floors_.empty())
     {
-        Floor floor;
-        floor.height = poses.back().z;
-        floors_.push_back(std::move(floor));
+        floors_.push_back(Floor());
         current_floor_id_ = 0;
-        ROS_PRINT_INFO("Floor init: floor=0 height=%.3f", poses.back().z);
     }
-
-    if (cur_key == last_state_key_)
-        return;
+    if (current_floor_id_ < 0)
+        current_floor_id_ = 0;
 
     const double slope = trajectorySlope(poses);
     const double height = poses.back().z;
     const int old_floor = current_floor_id_;
-
-    auto createLinkedFloor = [&](int direction) -> int
-    {
-        Floor floor;
-        floor.height = height;
-        floors_.push_back(std::move(floor));
-
-        const int new_floor = static_cast<int>(floors_.size()) - 1;
-        if (direction > 0)
-        {
-            floors_[static_cast<size_t>(old_floor)].up = new_floor;
-            floors_[static_cast<size_t>(new_floor)].down = old_floor;
-        }
-        else
-        {
-            floors_[static_cast<size_t>(old_floor)].down = new_floor;
-            floors_[static_cast<size_t>(new_floor)].up = old_floor;
-        }
-
-        ROS_PRINT_INFO("Floor init: floor=%d height=%.3f", new_floor, height);
-        return new_floor;
-    };
 
     if (transition_ == 0)
     {
@@ -90,40 +55,19 @@ void FloorMap::update(const std::deque<int> &keys,
             slope < kStairMaxSlope)
         {
             transition_ = 1;
-
-            const size_t count = std::min<size_t>(kFloorSlopeWindow, keys.size());
-            const size_t begin = keys.size() - count;
-            for (size_t i = begin; i < keys.size(); ++i)
-                key_floor_[keys[i]] = -1;
-
-            ROS_PRINT_INFO("Floor transition start: floor=%d direction=UP key=%d slope=%.3f",
-                           current_floor_id_,
-                           cur_key,
-                           slope);
-            key_floor_[cur_key] = -1;
-            last_state_key_ = cur_key;
+            key_floor_[static_cast<size_t>(cur_key)] = -1;
             return;
         }
+
         if (slope < -kStairStartSlope &&
             slope > -kStairMaxSlope)
         {
             transition_ = -1;
-
-            const size_t count = std::min<size_t>(kFloorSlopeWindow, keys.size());
-            const size_t begin = keys.size() - count;
-            for (size_t i = begin; i < keys.size(); ++i)
-                key_floor_[keys[i]] = -1;
-
-            ROS_PRINT_INFO("Floor transition start: floor=%d direction=DOWN key=%d slope=%.3f",
-                           current_floor_id_,
-                           cur_key,
-                           slope);
-            key_floor_[cur_key] = -1;
-            last_state_key_ = cur_key;
+            key_floor_[static_cast<size_t>(cur_key)] = -1;
             return;
         }
-        key_floor_[cur_key] = current_floor_id_;
-        last_state_key_ = cur_key;
+
+        key_floor_[static_cast<size_t>(cur_key)] = current_floor_id_;
         return;
     }
 
@@ -132,24 +76,21 @@ void FloorMap::update(const std::deque<int> &keys,
         if (slope < kStairEndSlope)
         {
             transition_ = 0;
-            int floor_id = floors_[static_cast<size_t>(old_floor)].up;
-            if (floor_id < 0)
-                floor_id = createLinkedFloor(+1);
+            int floor_idx = floors_[static_cast<size_t>(old_floor)].up;
+            if (floor_idx < 0)
+            {
+                floors_.push_back(Floor());
+                floor_idx = static_cast<int>(floors_.size()) - 1;
+                floors_[static_cast<size_t>(old_floor)].up = floor_idx;
+                floors_[static_cast<size_t>(floor_idx)].down = old_floor;
+            }
 
-            ROS_PRINT_INFO("Floor transition end: UP floor=%d -> floor=%d key=%d height=%.3f",
-                           old_floor,
-                           floor_id,
-                           cur_key,
-                           height);
-
-            current_floor_id_ = floor_id;
-            key_floor_[cur_key] = floor_id;
-            last_state_key_ = cur_key;
+            current_floor_id_ = floor_idx;
+            key_floor_[static_cast<size_t>(cur_key)] = floor_idx;
             return;
         }
 
-        key_floor_[cur_key] = -1;
-        last_state_key_ = cur_key;
+        key_floor_[static_cast<size_t>(cur_key)] = -1;
         return;
     }
 
@@ -158,29 +99,25 @@ void FloorMap::update(const std::deque<int> &keys,
         if (slope > -kStairEndSlope)
         {
             transition_ = 0;
-            int floor_id = floors_[static_cast<size_t>(old_floor)].down;
-            if (floor_id < 0)
-                floor_id = createLinkedFloor(-1);
+            int floor_idx = floors_[static_cast<size_t>(old_floor)].down;
+            if (floor_idx < 0)
+            {
+                floors_.push_back(Floor());
+                floor_idx = static_cast<int>(floors_.size()) - 1;
+                floors_[static_cast<size_t>(old_floor)].down = floor_idx;
+                floors_[static_cast<size_t>(floor_idx)].up = old_floor;
+            }
 
-            ROS_PRINT_INFO("Floor transition end: DOWN floor=%d -> floor=%d key=%d height=%.3f",
-                           old_floor,
-                           floor_id,
-                           cur_key,
-                           height);
-
-            current_floor_id_ = floor_id;
-            key_floor_[cur_key] = floor_id;
-            last_state_key_ = cur_key;
+            current_floor_id_ = floor_idx;
+            key_floor_[static_cast<size_t>(cur_key)] = floor_idx;
             return;
         }
 
-        key_floor_[cur_key] = -1;
-        last_state_key_ = cur_key;
+        key_floor_[static_cast<size_t>(cur_key)] = -1;
         return;
     }
 
-    key_floor_[cur_key] = current_floor_id_;
-    last_state_key_ = cur_key;
+    key_floor_[static_cast<size_t>(cur_key)] = current_floor_id_;
 }
 
 double FloorMap::trajectorySlope(const std::deque<PointTypePose> &poses) const
@@ -189,8 +126,8 @@ double FloorMap::trajectorySlope(const std::deque<PointTypePose> &poses) const
         return 0.0;
 
     const size_t count = kFloorSlopeWindow;
-
     const size_t begin = poses.size() - count;
+
     std::vector<double> dist(count, 0.0);
     for (size_t i = 1; i < count; ++i)
     {
@@ -237,74 +174,148 @@ void FloorMap::groundKeys(const std::deque<int> &keys,
     std::lock_guard<std::mutex> lock(mutex_);
     allowed_keys.clear();
 
-    if (keys.empty())
+    if (keys.empty() || transition_ != 0 || current_floor_id_ < 0)
         return;
 
-    if (!enabled_)
-    {
-        for (int key : keys)
-            allowed_keys.insert(key);
-        return;
-    }
-
-    if (transition_ != 0 || current_floor_id_ < 0)
-        return;
-
-    const int min_key = last_state_key_ - (kFloorSlopeWindow - 1);
+    const int confirmed_key = keys.back() - (kFloorSlopeWindow - 1);
     for (int key : keys)
     {
-        const auto it = key_floor_.find(key);
-        if (it == key_floor_.end())
+        if (key < 0 || static_cast<size_t>(key) >= key_floor_.size())
             continue;
-        if (it->second != current_floor_id_)
+        if (key_floor_[static_cast<size_t>(key)] != current_floor_id_)
             continue;
-        if (key > min_key)
+        if (key > confirmed_key)
             continue;
         allowed_keys.insert(key);
     }
 }
 
+int FloorMap::floor(int key) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (key < 0 || static_cast<size_t>(key) >= key_floor_.size())
+        return -1;
+
+    return key_floor_[static_cast<size_t>(key)];
+}
+
 bool FloorMap::allowLoop(int key1, int key2) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!enabled_)
-        return true;
-
-    const auto a = key_floor_.find(key1);
-    const auto b = key_floor_.find(key2);
-    return a != key_floor_.end() &&
-           b != key_floor_.end() &&
-           a->second >= 0 &&
-           a->second == b->second;
+    if (key1 < 0 || key2 < 0)
+        return false;
+    if (static_cast<size_t>(key1) >= key_floor_.size() ||
+        static_cast<size_t>(key2) >= key_floor_.size())
+        return false;
+    return key_floor_[static_cast<size_t>(key1)] >= 0 &&
+           key_floor_[static_cast<size_t>(key1)] == key_floor_[static_cast<size_t>(key2)];
 }
 
 bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
                             const std::deque<int> &keys,
                             const std::deque<PointTypePose> &poses,
-                            PlaneBatch &batch)
+                            bool use_floor,
+                            SceneBatch &batch)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    batch = PlaneBatch();
+    batch = SceneBatch();
     if (keys.empty() || poses.empty() || planes.empty())
         return false;
 
-    if (current_floor_id_ < 0 ||
-        current_floor_id_ >= static_cast<int>(floors_.size()))
+    if (floors_.empty())
+    {
+        floors_.push_back(Floor());
+        current_floor_id_ = 0;
+    }
+    if (current_floor_id_ < 0)
+        current_floor_id_ = 0;
+    if (current_floor_id_ >= static_cast<int>(floors_.size()))
         return false;
 
     Floor &floor = floors_[static_cast<size_t>(current_floor_id_)];
-    if (!floor.ground.update(planes, keys, poses, batch))
+    PlaneObs candidate;
+    if (!buildGroundCandidate(planes, keys, poses, candidate))
         return false;
 
-    if (floor.ground_id < 0)
-        floor.ground_id = next_plane_id_++;
+    Ground *best_ground = nullptr;
+    double best_xy = std::numeric_limits<double>::infinity();
+    for (auto &ground : floor.grounds)
+    {
+        const Eigen::Vector3d ground_n = ground.plane.head<3>();
+        const Eigen::Vector3d candidate_n = candidate.plane.head<3>();
+        const double ground_norm = ground_n.norm();
+        const double candidate_norm = candidate_n.norm();
+        if (ground_norm <= 1e-12 || candidate_norm <= 1e-12)
+            continue;
 
-    for (auto &plane : batch.init)
-        plane.id = floor.ground_id;
-    for (auto &factor : batch.factors)
-        factor.id = floor.ground_id;
+        const Eigen::Vector3d gn = ground_n / ground_norm;
+        const Eigen::Vector3d cn = candidate_n / candidate_norm;
+        const double dot = std::max(-1.0, std::min(1.0, gn.dot(cn)));
+        const double angle = std::acos(dot);
+        if (angle > rad(groundAssociationAngleDeg))
+            continue;
 
-    batch.valid = !batch.init.empty() || !batch.factors.empty();
+        if (!use_floor)
+        {
+            const double plane_dist =
+                std::abs(gn.dot(candidate.center) + ground.plane[3] / ground_norm);
+            if (plane_dist > groundAssociationDistance)
+                continue;
+        }
 
-    return batch.valid;
+        const double xy = (candidate.center - ground.center).head<2>().norm();
+        if (xy > kGroundLandmarkRadius || xy >= best_xy)
+            continue;
+
+        best_xy = xy;
+        best_ground = &ground;
+    }
+
+    Ground new_ground;
+    Ground *active_ground = best_ground;
+    const bool is_new_ground = (active_ground == nullptr);
+    const int ground_id = is_new_ground ? next_plane_id_ : active_ground->id;
+
+    if (is_new_ground)
+    {
+        new_ground.id = ground_id;
+        new_ground.plane = candidate.plane;
+        new_ground.center = candidate.center;
+    }
+
+    int factor_key = -1;
+    Eigen::Vector4d factor_obs = Eigen::Vector4d::Zero();
+    for (const auto &kv : candidate.obs)
+    {
+        const int key = kv.first;
+        if (key > factor_key)
+        {
+            factor_key = key;
+            factor_obs = kv.second;
+        }
+    }
+
+    if (factor_key < 0 || factor_key <= last_ground_key_)
+        return false;
+
+    batch.plane_factors.emplace_back(factor_key, ground_id, factor_obs);
+    if (use_floor)
+        batch.floor_factors.emplace_back(current_floor_id_, factor_key, factor_obs);
+    last_ground_key_ = factor_key;
+
+    if (is_new_ground)
+    {
+        if (use_floor && floor.grounds.empty())
+            batch.floor_init.emplace_back(current_floor_id_, candidate.center.z());
+
+        batch.plane_init.emplace_back(ground_id, candidate.plane, candidate.center);
+        floor.grounds.push_back(std::move(new_ground));
+        next_plane_id_++;
+    }
+
+    return !batch.plane_init.empty() ||
+           !batch.plane_factors.empty() ||
+           !batch.floor_init.empty() ||
+           !batch.floor_factors.empty();
 }

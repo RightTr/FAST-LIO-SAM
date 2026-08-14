@@ -66,6 +66,6 @@ void setLaserCurTime(double lidar_end_time);
 
 void visualizeGlobalMapThread();
 
-pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, PointTypePose* transformIn);
+pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, const PointTypePose *transformIn);
 
 #endif
