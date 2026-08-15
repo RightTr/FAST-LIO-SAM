@@ -285,7 +285,6 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
     double current_time = 0.0;
     int loopKeyCur = -1;
     KD_TREE_PUBLIC<PointTypeIndex>::PointVector nearPoses;
-    std::vector<float> nearSqDis;
     {
         std::lock_guard<std::mutex> lock(mtx);
         if (cloudKeyPoses3D->empty() ||
@@ -298,19 +297,23 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
         loopKeyCur = static_cast<int>(cloudKeyPoses3D->size()) - 1;
         if (loopKeyCur < 0)
             return false;
-        if (loopUsedKeys.count(loopKeyCur) != 0)
-            return false;
+
+        {
+            std::lock_guard<std::mutex> loopLock(mtxLoopInfo);
+            if (loopUsedKeys.count(loopKeyCur) != 0)
+                return false;
+        }
 
         current_pose = cloudKeyPoses3D->back();
         current_time = cloudKeyPoses6D->back().time;
-        ikdtreeHistoryKeyPoses->Nearest_Search(
+        nearPoses.clear();
+        ikdtreeHistoryKeyPoses->Radius_Search(
             current_pose,
-            ikdtreeSearchNeighborNum,
-            nearPoses,
-            nearSqDis,
-            historyKeyframeSearchRadius);
+            historyKeyframeSearchRadius,
+            nearPoses);
 
         int loopKeyPre = -1;
+        float nearestSqDis = std::numeric_limits<float>::max();
         for (const auto &near_pose : nearPoses)
         {
             const int id = static_cast<int>(near_pose.intensity);
@@ -318,8 +321,11 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
                 continue;
             if (id >= static_cast<int>(cloudKeyPoses6D->points.size()))
                 continue;
-            if (loopUsedKeys.count(id) != 0)
-                continue;
+            {
+                std::lock_guard<std::mutex> loopLock(mtxLoopInfo);
+                if (loopUsedKeys.count(id) != 0)
+                    continue;
+            }
             if (sceneEnableFlag && !floorMap.allowLoop(loopKeyCur, id))
                 continue;
 
@@ -327,8 +333,15 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
             if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
                 continue;
 
-            loopKeyPre = id;
-            break;
+            const float dx = near_pose.x - current_pose.x;
+            const float dy = near_pose.y - current_pose.y;
+            const float dz = near_pose.z - current_pose.z;
+            const float sqDis = dx * dx + dy * dy + dz * dz;
+            if (sqDis < nearestSqDis)
+            {
+                nearestSqDis = sqDis;
+                loopKeyPre = id;
+            }
         }
 
         if (loopKeyPre == -1 || loopKeyCur == loopKeyPre)
@@ -455,7 +468,7 @@ void performLoopClosure()
         std::lock_guard<std::mutex> lock(mtxLoopInfo);
         loopUsedKeys.insert(loopKeyCur);
         loopUsedKeys.insert(loopKeyPre);
-        loopIndexQueue.push_back(make_pair(loopKeyCur, loopKeyPre));
+        loopIndexQueue.emplace_back(loopKeyCur, loopKeyPre);
         loopPoseQueue.push_back(poseFrom.between(poseTo));
         loopNoiseQueue.push_back(constraintNoise);
         loopEdges.emplace_back(loopKeyCur, loopKeyPre);
@@ -1131,21 +1144,18 @@ static void performSceneMatching()
         SceneBatch batch;
         std::unordered_set<int> allowed_ground_keys;
         floorMap.update(plane.keys(), plane.poses());
-        if (key % 5 == 0)
+        floorMap.groundKeys(plane.keys(), allowed_ground_keys);
+
+        std::vector<PlaneObs> ground_plane_obs;
+        plane.extract(allowed_ground_keys, ground_plane_obs);
+
+        if (floorMap.updateGround(ground_plane_obs,
+                                  plane.keys(),
+                                  plane.poses(),
+                                  sceneEnableFlag,
+                                  batch))
         {
-            floorMap.groundKeys(plane.keys(), allowed_ground_keys);
-
-            std::vector<PlaneObs> ground_plane_obs;
-            plane.extract(allowed_ground_keys, ground_plane_obs);
-
-            if (floorMap.updateGround(ground_plane_obs,
-                                      plane.keys(),
-                                      plane.poses(),
-                                      sceneEnableFlag,
-                                      batch))
-            {
-                appendSceneBatch(std::move(batch));
-            }
+            appendSceneBatch(std::move(batch));
         }
 
         lastProcessedKey = key;
