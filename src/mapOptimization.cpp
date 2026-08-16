@@ -101,7 +101,7 @@ FloorMap floorMap;
 
 std::mutex mtxSceneBatch;
 
-SceneBatch sceneBatch;
+std::deque<SceneBatch> sceneBatchQueue;
 gtsam::noiseModel::Diagonal::shared_ptr planeNoise;
 gtsam::SharedNoiseModel floorGroundNoise;
 
@@ -110,6 +110,7 @@ std::mutex mtxLoopInfo;
 std::mutex mtxGnssFactor;
 std::atomic<bool> poseDirty{false};
 std::atomic<bool> historyKeyPosesDirty{false};
+std::atomic<int> sceneKey{-1};
 
 bool graphUpdate = false;
 bool loopIsClosed = false;
@@ -974,91 +975,61 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
 void AddSceneFactor()
 {
-    SceneBatch batch;
-    {
-        std::lock_guard<std::mutex> lock(mtxSceneBatch);
-        if (sceneBatch.plane_init.empty() &&
-            sceneBatch.plane_factors.empty() &&
-            sceneBatch.floor_init.empty() &&
-            sceneBatch.floor_factors.empty())
-            return;
-
-        std::swap(batch, sceneBatch);
-    }
-
     if (!planeNoise || !floorGroundNoise)
         return;
 
-    for (const auto &[floor_id, height] : batch.floor_init)
+    std::deque<SceneBatch> batchQueue;
     {
-        const gtsam::Key fkey = gtsam::Symbol('f', floor_id);
-        if (initialEstimate.exists(fkey) || isamCurrentEstimate.exists(fkey))
-            continue;
+        std::lock_guard<std::mutex> lock(mtxSceneBatch);
+        if (sceneBatchQueue.empty())
+            return;
 
-        gtsam::Vector1 floor_value;
-        floor_value << height;
-        initialEstimate.insert(fkey, floor_value);
+        std::swap(batchQueue, sceneBatchQueue);
     }
 
-    for (const auto &plane : batch.plane_init)
+    for (auto &batch : batchQueue)
     {
-        const gtsam::Key pkey = gtsam::Symbol('p', plane.id);
-        if (initialEstimate.exists(pkey) || isamCurrentEstimate.exists(pkey))
-            continue;
-        initialEstimate.insert(pkey, gtsam::OrientedPlane3(plane.plane));
-    }
+        for (const auto &[floor_id, height] : batch.floor_init)
+        {
+            const gtsam::Key fkey = gtsam::Symbol('f', floor_id);
+            if (initialEstimate.exists(fkey) || isamCurrentEstimate.exists(fkey))
+                continue;
 
-    for (const auto &[floor_id, key, body_plane] : batch.floor_factors)
-    {
-        gtSAMgraph.add(
-            boost::shared_ptr<FloorFactor>(
-                new FloorFactor(
-                gtsam::Symbol('f', floor_id),
-                static_cast<gtsam::Key>(key),
-                body_plane,
-                floorGroundNoise)));
-    }
+            gtsam::Vector1 floor_value;
+            floor_value << height;
+            initialEstimate.insert(fkey, floor_value);
+        }
 
-    for (const auto &factor : batch.plane_factors)
-    {
-        const gtsam::Key pose_key = static_cast<gtsam::Key>(factor.key);
-        const gtsam::Key pkey = gtsam::Symbol('p', factor.id);
-        gtSAMgraph.add(gtsam::OrientedPlane3Factor(
-            factor.obs, planeNoise,
-            pose_key, pkey));
+        for (const auto &plane : batch.plane_init)
+        {
+            const gtsam::Key pkey = gtsam::Symbol('p', plane.id);
+            if (initialEstimate.exists(pkey) || isamCurrentEstimate.exists(pkey))
+                continue;
+            initialEstimate.insert(pkey, gtsam::OrientedPlane3(plane.plane));
+        }
+
+        for (const auto &[floor_id, key, body_plane] : batch.floor_factors)
+        {
+            gtSAMgraph.add(
+                boost::shared_ptr<FloorFactor>(
+                    new FloorFactor(
+                    gtsam::Symbol('f', floor_id),
+                    static_cast<gtsam::Key>(key),
+                    body_plane,
+                    floorGroundNoise)));
+        }
+
+        for (const auto &factor : batch.plane_factors)
+        {
+            const gtsam::Key pose_key = static_cast<gtsam::Key>(factor.key);
+            const gtsam::Key pkey = gtsam::Symbol('p', factor.id);
+            gtSAMgraph.add(gtsam::OrientedPlane3Factor(
+                factor.obs, planeNoise,
+                pose_key, pkey));
+        }
     }
 
     graphUpdate = true;
-}
-
-static void appendSceneBatch(SceneBatch &&batch)
-{
-    if (batch.plane_init.empty() &&
-        batch.plane_factors.empty() &&
-        batch.floor_init.empty() &&
-        batch.floor_factors.empty())
-        return;
-
-    std::lock_guard<std::mutex> lock(mtxSceneBatch);
-    sceneBatch.plane_init.insert(
-        sceneBatch.plane_init.end(),
-        std::make_move_iterator(batch.plane_init.begin()),
-        std::make_move_iterator(batch.plane_init.end()));
-
-    sceneBatch.plane_factors.insert(
-        sceneBatch.plane_factors.end(),
-        std::make_move_iterator(batch.plane_factors.begin()),
-        std::make_move_iterator(batch.plane_factors.end()));
-
-    sceneBatch.floor_init.insert(
-        sceneBatch.floor_init.end(),
-        std::make_move_iterator(batch.floor_init.begin()),
-        std::make_move_iterator(batch.floor_init.end()));
-
-    sceneBatch.floor_factors.insert(
-        sceneBatch.floor_factors.end(),
-        std::make_move_iterator(batch.floor_factors.begin()),
-        std::make_move_iterator(batch.floor_factors.end()));
 }
 
 static void rebuildPlaneFromCorrectedPoses(int lastProcessedKey)
@@ -1148,13 +1119,14 @@ static void performSceneMatching()
         if (floorMap.updateGround(ground_plane_obs,
                                   plane.keys(),
                                   plane.poses(),
-                                  sceneEnableFlag,
                                   batch))
         {
-            appendSceneBatch(std::move(batch));
+            std::lock_guard<std::mutex> lock(mtxSceneBatch);
+            sceneBatchQueue.push_back(std::move(batch));
         }
 
         lastProcessedKey = key;
+        sceneKey.store(key, std::memory_order_release);
     }
 }
 
@@ -1394,7 +1366,15 @@ void loopClosureThread()
             latestKey = static_cast<int>(cloudKeyPoses3D->size()) - 1;
         }
 
-        while (lastLoopKey < latestKey)
+        int readyKey = latestKey;
+        if (sceneEnableFlag && groundEnableFlag)
+        {
+            readyKey = std::min(
+                latestKey,
+                sceneKey.load(std::memory_order_acquire));
+        }
+
+        while (lastLoopKey < readyKey)
         {
             ++lastLoopKey;
             performLoopClosure(lastLoopKey);

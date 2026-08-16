@@ -11,7 +11,6 @@
 
 struct Floor
 {
-    int level = 0;
     double height = 0.0;
     std::vector<Ground> grounds;
 };
@@ -27,18 +26,15 @@ public:
     void groundKeys(const std::deque<int> &keys,
                     std::unordered_set<int> &allowed_keys) const;
 
-    int floor(int key) const;
-
     bool updateGround(const std::vector<PlaneObs> &planes,
                       const std::deque<int> &keys,
                       const std::deque<PointTypePose> &poses,
-                      bool use_floor,
                       SceneBatch &batch);
 
     bool allowLoop(int key1, int key2) const;
 
 private:
-    double trajectorySlope(const std::deque<PointTypePose> &poses) const;
+    double trajectoryAngle(const std::deque<PointTypePose> &poses) const;
 
 private:
     mutable std::mutex mutex_;
@@ -46,7 +42,6 @@ private:
     int current_floor_id_ = -1;
     int next_plane_id_ = 0;
     int transition_ = 0;
-    double transition_start_z_ = 0.0;
     double landing_distance_ = 0.0;
     int last_ground_key_ = -1;
     std::vector<int> key_floor_;
