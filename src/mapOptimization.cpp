@@ -118,6 +118,7 @@ std::vector<std::pair<int, int>> loopEdges;
 vector<pair<int, int>> loopIndexQueue;
 vector<gtsam::Pose3> loopPoseQueue;
 vector<gtsam::noiseModel::Diagonal::shared_ptr> loopNoiseQueue;
+int lastLoopKey = -1;
 
 std::deque<std::tuple<int, Eigen::Vector3d, Eigen::Matrix3d>> gnssPosFactorQueue;
 std::deque<std::pair<int, double>> gnssYawFactorQueue;
@@ -279,11 +280,10 @@ bool isKeyFrame()
     return true;
 }  
 
-bool detectLoopClosureDistance(int *latestID, int *closestID)
+bool detectLoopClosureDistance(int loopKeyCur, int *closestID)
 {
     PointTypeIndex current_pose;
     double current_time = 0.0;
-    int loopKeyCur = -1;
     KD_TREE_PUBLIC<PointTypeIndex>::PointVector nearPoses;
     std::lock_guard<std::mutex> lock(mtx);
     if (cloudKeyPoses3D->empty() ||
@@ -293,18 +293,15 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
     if (historyKeyPosesDirty.exchange(false, std::memory_order_acq_rel))
         ReconstructIkdTree();
 
-    loopKeyCur = static_cast<int>(cloudKeyPoses3D->size()) - 1;
     if (loopKeyCur < 0)
         return false;
 
-    {
-        std::lock_guard<std::mutex> loopLock(mtxLoopInfo);
-        if (loopUsedKeys.count(loopKeyCur) != 0)
-            return false;
-    }
+    if (loopKeyCur >= static_cast<int>(cloudKeyPoses3D->points.size()) ||
+        loopKeyCur >= static_cast<int>(cloudKeyPoses6D->points.size()))
+        return false;
 
-    current_pose = cloudKeyPoses3D->back();
-    current_time = cloudKeyPoses6D->back().time;
+    current_pose = cloudKeyPoses3D->points[loopKeyCur];
+    current_time = cloudKeyPoses6D->points[loopKeyCur].time;
     nearPoses.clear();
     ikdtreeHistoryKeyPoses->Radius_Search(
         current_pose,
@@ -347,20 +344,18 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
     if (loopKeyPre == -1 || loopKeyCur == loopKeyPre)
         return false;
 
-    *latestID = loopKeyCur;
     *closestID = loopKeyPre;
     return true;
 }
 
-void performLoopClosure()
+void performLoopClosure(int loopKeyCur)
 {
     if (cloudKeyPoses3D->points.empty())
         return;
 
     // find keys
-    int loopKeyCur;
     int loopKeyPre;
-    if (detectLoopClosureDistance(&loopKeyCur, &loopKeyPre) == false) return;
+    if (detectLoopClosureDistance(loopKeyCur, &loopKeyPre) == false) return;
 
     // extract cloud
     pcl::PointCloud<PointTypeIndex>::Ptr curCloud;
@@ -468,7 +463,6 @@ void performLoopClosure()
     // Add pose constraint and reserve both endpoints atomically.
     {
         std::lock_guard<std::mutex> lock(mtxLoopInfo);
-        loopUsedKeys.insert(loopKeyCur);
         loopUsedKeys.insert(loopKeyPre);
         loopIndexQueue.emplace_back(loopKeyCur, loopKeyPre);
         loopPoseQueue.push_back(poseFrom.between(poseTo));
@@ -1393,7 +1387,19 @@ void loopClosureThread()
     while (ros_ok() && !flg_exit)
     {
         rate.sleep();
-        performLoopClosure();
+
+        int latestKey = -1;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            latestKey = static_cast<int>(cloudKeyPoses3D->size()) - 1;
+        }
+
+        while (lastLoopKey < latestKey)
+        {
+            ++lastLoopKey;
+            performLoopClosure(lastLoopKey);
+        }
+
         visualizeLoopClosure();
     }
 }
