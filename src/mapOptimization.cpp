@@ -285,72 +285,71 @@ bool detectLoopClosureDistance(int *latestID, int *closestID)
     double current_time = 0.0;
     int loopKeyCur = -1;
     KD_TREE_PUBLIC<PointTypeIndex>::PointVector nearPoses;
+    std::lock_guard<std::mutex> lock(mtx);
+    if (cloudKeyPoses3D->empty() ||
+        ikdtreeHistoryKeyPoses->Root_Node == nullptr)
+        return false;
+
+    if (historyKeyPosesDirty.exchange(false, std::memory_order_acq_rel))
+        ReconstructIkdTree();
+
+    loopKeyCur = static_cast<int>(cloudKeyPoses3D->size()) - 1;
+    if (loopKeyCur < 0)
+        return false;
+
     {
-        std::lock_guard<std::mutex> lock(mtx);
-        if (cloudKeyPoses3D->empty() ||
-            ikdtreeHistoryKeyPoses->Root_Node == nullptr)
+        std::lock_guard<std::mutex> loopLock(mtxLoopInfo);
+        if (loopUsedKeys.count(loopKeyCur) != 0)
             return false;
+    }
 
-        if (historyKeyPosesDirty.exchange(false, std::memory_order_acq_rel))
-            ReconstructIkdTree();
+    current_pose = cloudKeyPoses3D->back();
+    current_time = cloudKeyPoses6D->back().time;
+    nearPoses.clear();
+    ikdtreeHistoryKeyPoses->Radius_Search(
+        current_pose,
+        historyKeyframeSearchRadius,
+        nearPoses);
 
-        loopKeyCur = static_cast<int>(cloudKeyPoses3D->size()) - 1;
-        if (loopKeyCur < 0)
-            return false;
-
+    int loopKeyPre = -1;
+    float nearestSqDis = std::numeric_limits<float>::max();
+    for (const auto &near_pose : nearPoses)
+    {
+        const int id = static_cast<int>(near_pose.intensity);
+        if (id < 0 || id >= loopKeyCur)
+            continue;
+        if (id >= static_cast<int>(cloudKeyPoses6D->points.size()))
+            continue;
         {
             std::lock_guard<std::mutex> loopLock(mtxLoopInfo);
-            if (loopUsedKeys.count(loopKeyCur) != 0)
-                return false;
+            if (loopUsedKeys.count(id) != 0)
+                continue;
         }
 
-        current_pose = cloudKeyPoses3D->back();
-        current_time = cloudKeyPoses6D->back().time;
-        nearPoses.clear();
-        ikdtreeHistoryKeyPoses->Radius_Search(
-            current_pose,
-            historyKeyframeSearchRadius,
-            nearPoses);
+        const double nearTime = cloudKeyPoses6D->points[id].time;
+        if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
+            continue;
 
-        int loopKeyPre = -1;
-        float nearestSqDis = std::numeric_limits<float>::max();
-        for (const auto &near_pose : nearPoses)
+        if (sceneEnableFlag && !floorMap.allowLoop(loopKeyCur, id))
+            continue;
+
+        const float dx = near_pose.x - current_pose.x;
+        const float dy = near_pose.y - current_pose.y;
+        const float dz = near_pose.z - current_pose.z;
+        const float sqDis = dx * dx + dy * dy + dz * dz;
+        if (sqDis < nearestSqDis)
         {
-            const int id = static_cast<int>(near_pose.intensity);
-            if (id < 0 || id >= loopKeyCur)
-                continue;
-            if (id >= static_cast<int>(cloudKeyPoses6D->points.size()))
-                continue;
-            {
-                std::lock_guard<std::mutex> loopLock(mtxLoopInfo);
-                if (loopUsedKeys.count(id) != 0)
-                    continue;
-            }
-            if (sceneEnableFlag && !floorMap.allowLoop(loopKeyCur, id))
-                continue;
-
-            const double nearTime = cloudKeyPoses6D->points[id].time;
-            if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
-                continue;
-
-            const float dx = near_pose.x - current_pose.x;
-            const float dy = near_pose.y - current_pose.y;
-            const float dz = near_pose.z - current_pose.z;
-            const float sqDis = dx * dx + dy * dy + dz * dz;
-            if (sqDis < nearestSqDis)
-            {
-                nearestSqDis = sqDis;
-                loopKeyPre = id;
-            }
+            nearestSqDis = sqDis;
+            loopKeyPre = id;
         }
-
-        if (loopKeyPre == -1 || loopKeyCur == loopKeyPre)
-            return false;
-
-        *latestID = loopKeyCur;
-        *closestID = loopKeyPre;
-        return true;
     }
+
+    if (loopKeyPre == -1 || loopKeyCur == loopKeyPre)
+        return false;
+
+    *latestID = loopKeyCur;
+    *closestID = loopKeyPre;
+    return true;
 }
 
 void performLoopClosure()
@@ -410,7 +409,10 @@ void performLoopClosure()
     downSizeFilterICP.setInputCloud(prevKeyframeCloud);
     downSizeFilterICP.filter(*prevKeyframeCloudDS);
 
-    if (cureKeyframeCloudDS->size() < 300 || prevKeyframeCloudDS->size() < 1000)
+    if (cureKeyframeCloudDS->size() < 300)
+        return;
+
+    if (prevKeyframeCloudDS->size() < 1000)
         return;
 
     // ICP Settings
@@ -1384,7 +1386,7 @@ void visualizeLoopClosure()
 
 void loopClosureThread()
 {
-    if (loopClosureEnableFlag == false)
+    if (!loopClosureEnableFlag)
         return;
 
     RateType rate(loopClosureFrequency);

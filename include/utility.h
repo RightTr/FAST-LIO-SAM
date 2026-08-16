@@ -40,6 +40,7 @@ extern float globalMapVisualizationLeafSize;
 extern float mappingICPSize;
 extern float groundAssociationAngleDeg;
 extern float groundAssociationDistance;
+extern double floorHeight;
 
 extern int ikdtreeSearchNeighborNum;
 

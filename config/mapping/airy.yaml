@@ -29,6 +29,7 @@ s-graph:
     groundEnableFlag: true
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0
+    floorHeight: 4.0
     
 preprocess:
     lidar_type: 4                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 4 for RoboSense LiDAR

@@ -6,14 +6,13 @@
 
 #include <deque>
 #include <mutex>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 struct Floor
 {
-    int up = -1;
-    int down = -1;
+    int level = 0;
+    double height = 0.0;
     std::vector<Ground> grounds;
 };
 
@@ -47,6 +46,8 @@ private:
     int current_floor_id_ = -1;
     int next_plane_id_ = 0;
     int transition_ = 0;
+    double transition_start_z_ = 0.0;
+    double landing_distance_ = 0.0;
     int last_ground_key_ = -1;
     std::vector<int> key_floor_;
 };

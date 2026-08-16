@@ -43,6 +43,7 @@ s-graph:
     groundEnableFlag: true
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0
+    floorHeight: 4.0
 
 lio_sam:
     

@@ -29,6 +29,7 @@ float globalMapVisualizationLeafSize;
 float mappingICPSize;
 float groundAssociationAngleDeg;
 float groundAssociationDistance;
+double floorHeight = 4.0;
 
 int ikdtreeSearchNeighborNum;
 
@@ -130,6 +131,7 @@ void read_sgraph_params()
     rosparam_get("s-graph/sceneEnableFlag", sceneEnableFlag, true);
     rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
     rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
+    rosparam_get("s-graph/floorHeight", floorHeight, 4.0);
 }
 
 void read_gnss_params() {
