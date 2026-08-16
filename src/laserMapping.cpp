@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <csignal>
 #include <unistd.h>
+#include <chrono>
 #include <limits>
 #include <Python.h>
 #include <so3_math.h>
@@ -80,6 +81,7 @@ double zupt_gyro_var_threshold;
 double prior_lidar_cov = 0.001;
 bool prior_init_en = false;
 bool prior_init_done = false;
+std::atomic<int64_t> last_input_time{-1};
 // Adaptive ZUPT params
 double zupt_r_min              = 1e-5;
 double zupt_r_max              = 1.0;
@@ -1958,7 +1960,24 @@ int main(int argc, char** argv)
         rate.sleep();
     }            
 
-    if (!flg_exit && pcl_wait_save->size() > 0 && feat_accum_save_en)
+    flg_exit = true;
+    if (odomhighthread.joinable()) {
+        odomhighthread.join();
+    }
+    if (loopthread.joinable()) {
+        loopthread.join();
+    }
+    if (globalthread.joinable()) {
+        globalthread.join();
+    }
+    if (gnssthread.joinable()) {
+        gnssthread.join();
+    }
+    if (structurethread.joinable()) {
+        structurethread.join();
+    }
+
+    if (pcl_wait_save->size() > 0 && feat_accum_save_en)
     {
         const std::string stamp_str = format_unix_time(lidar_end_time);
         const std::string file_name = stamp_str + string(".pcd");
@@ -1994,31 +2013,19 @@ int main(int argc, char** argv)
         pcd_writer.writeBinary(global_keyframe_path, *keyframe_global_cloud);
     }
 
-    flg_exit = true;
-    if (odomhighthread.joinable()) {
-        odomhighthread.join();
-    }
-    if (loopthread.joinable()) {
-        loopthread.join();
-    }
-    if (globalthread.joinable()) {
-        globalthread.join();
-    }
-    if (gnssthread.joinable()) {
-        gnssthread.join();
-    }
-    if (structurethread.joinable()) {
-        structurethread.join();
-    }
     if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)
     {
         save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");
-        const string ikdtree_snapshot_path = ikdtree_output_dir + "prior_tree.bin";
-        if (ikdtree.SaveIkdtree(ikdtree_snapshot_path))
-            ROS_PRINT_INFO("saved final ikdtree snapshot to %s", ikdtree_snapshot_path.c_str());
+        const string ikdtree_path = ikdtree_output_dir + "prior_tree.bin";
+        if (ikdtree.SaveIkdtree(ikdtree_path))
+            ROS_PRINT_INFO("saved final ikdtree to %s", ikdtree_path.c_str());
         else
-            ROS_PRINT_WARN("failed to save final ikdtree snapshot to %s", ikdtree_snapshot_path.c_str());
+            ROS_PRINT_WARN("failed to save final ikdtree to %s", ikdtree_path.c_str());
     }
+
+    shutdownMapOptimization();
+
+    ros_shutdown();
 
     return 0;
 }

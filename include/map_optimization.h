@@ -56,6 +56,8 @@ void correctPoses();
 
 void publishSamMsg();
 
+void shutdownMapOptimization();
+
 void loopClosureThread();
 
 void gnssMatchingThread();

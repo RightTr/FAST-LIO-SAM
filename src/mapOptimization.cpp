@@ -1032,7 +1032,24 @@ void AddSceneFactor()
     graphUpdate = true;
 }
 
-static void rebuildPlaneFromCorrectedPoses(int lastProcessedKey)
+void shutdownMapOptimization()
+{
+    pubKeyPoses.reset();
+    pubPath.reset();
+    pubLaserCloudGlobal.reset();
+    pubPlanes.reset();
+    pubRecentKeyFrame.reset();
+    pubLoopConstraintEdge.reset();
+    pubKeyFrameYawMarkers.reset();
+
+    if (isam != nullptr)
+    {
+        delete isam;
+        isam = nullptr;
+    }
+}
+
+static void rebuildPlane(int lastProcessedKey)
 {
     if (lastProcessedKey < 0)
         return;
@@ -1079,7 +1096,7 @@ static void performSceneMatching()
     static int lastProcessedKey = -1;
 
     if (poseDirty.exchange(false, std::memory_order_acq_rel))
-        rebuildPlaneFromCorrectedPoses(lastProcessedKey);
+        rebuildPlane(lastProcessedKey);
 
     std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
     std::vector<PointTypePose> poses;
