@@ -97,24 +97,14 @@ void FloorMap::update(const std::deque<int> &keys,
 
     if (current_floor_id_ < 0 ||
         current_floor_id_ >= static_cast<int>(floors_.size()))
-    {
-        if (!floors_.empty())
-            current_floor_id_ = 0;
-    }
-
-    if (current_floor_id_ < 0 ||
-        current_floor_id_ >= static_cast<int>(floors_.size()))
-        return;
+        current_floor_id_ = 0;
 
     if (transition_ == 0)
     {
-        if (angle > kStairStartAngle && angle < kStairMaxAngle)
+        if (std::abs(angle) > kStairStartAngle &&
+            std::abs(angle) < kStairMaxAngle)
         {
-            transition_ = 1;
-        }
-        else if (angle < -kStairStartAngle && angle > -kStairMaxAngle)
-        {
-            transition_ = -1;
+            transition_ = angle > 0.0 ? 1 : -1;
         }
 
         if (transition_ != 0)
@@ -158,6 +148,7 @@ void FloorMap::update(const std::deque<int> &keys,
         if (std::abs(floor_dz) < kFloorHeightMatchTolerance ||
             transition_ * floor_dz <= 0.0)
         {
+            const int direction = transition_;
             transition_ = 0;
             landing_distance_ = 0.0;
 
@@ -167,7 +158,7 @@ void FloorMap::update(const std::deque<int> &keys,
             ROS_PRINT_INFO(
                 "[FLOOR] CANCEL old=%d dir=%s floor_dz=%.2f",
                 old_floor,
-                transition_ > 0 ? "UP" : "DOWN",
+                direction > 0 ? "UP" : "DOWN",
                 floor_dz);
             return;
         }
@@ -179,12 +170,8 @@ void FloorMap::update(const std::deque<int> &keys,
             if (i == old_floor)
                 continue;
 
-            const double dh = floors_[static_cast<size_t>(i)].height -
-                              floors_[static_cast<size_t>(old_floor)].height;
-            if (transition_ * dh <= 0.0)
-                continue;
-
-            const double diff = std::abs(floors_[static_cast<size_t>(i)].height - cur_z);
+            const double diff = std::abs(
+                floors_[static_cast<size_t>(i)].height - cur_z);
             if (diff < best_diff)
             {
                 best_diff = diff;
@@ -236,13 +223,13 @@ void FloorMap::groundKeys(const std::deque<int> &keys,
     const int confirmed_key = keys.back() - (kFloorSlopeWindow - 1);
     for (int key : keys)
     {
-        if (key < 0 || static_cast<size_t>(key) >= key_floor_.size())
-            continue;
-        if (key > confirmed_key)
-            continue;
-        if (key_floor_[static_cast<size_t>(key)] != current_floor_id_)
-            continue;
-        allowed_keys.insert(key);
+        if (key >= 0 &&
+            key <= confirmed_key &&
+            static_cast<size_t>(key) < key_floor_.size() &&
+            key_floor_[static_cast<size_t>(key)] == current_floor_id_)
+        {
+            allowed_keys.insert(key);
+        }
     }
 }
 
@@ -281,16 +268,8 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
     double best_xy = std::numeric_limits<double>::infinity();
     for (auto &ground : floor.grounds)
     {
-        const Eigen::Vector3d ground_n = ground.plane.head<3>();
-        const Eigen::Vector3d candidate_n = candidate.plane.head<3>();
-        const double ground_norm = ground_n.norm();
-        const double candidate_norm = candidate_n.norm();
-        if (ground_norm <= 1e-12 || candidate_norm <= 1e-12)
-            continue;
-
-        const Eigen::Vector3d gn = ground_n / ground_norm;
-        const Eigen::Vector3d cn = candidate_n / candidate_norm;
-        const double dot = std::max(-1.0, std::min(1.0, gn.dot(cn)));
+        const double dot = clampDot(
+            ground.plane.head<3>().dot(candidate.plane.head<3>()));
         const double angle = std::acos(dot);
         if (angle > rad(groundAssociationAngleDeg))
             continue;
@@ -344,8 +323,5 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         next_plane_id_++;
     }
 
-    return !batch.plane_init.empty() ||
-           !batch.plane_factors.empty() ||
-           !batch.floor_init.empty() ||
-           !batch.floor_factors.empty();
+    return true;
 }
