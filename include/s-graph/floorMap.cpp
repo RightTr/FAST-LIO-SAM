@@ -11,12 +11,13 @@
 namespace
 {
 constexpr int kFloorSlopeWindow = 6;
-const double kStairStartAngle = std::atan(0.20);
-const double kStairEndAngle = std::atan(0.10);
-const double kStairMaxAngle = std::atan(1.00);
+const double kStairStartAngle = std::atan(0.08);  // 4.6°
+const double kStairEndAngle   = std::atan(0.04);  // 2.3°
+const double kStairMaxAngle   = std::atan(1.00);  // 45°
 constexpr double kMinHorizontalDistance = 0.50;
 constexpr double kGroundLandmarkRadius = 8.0;
 constexpr double kLandingConfirmDistance = 1.8;
+constexpr double kFloorHeightMin = 1.5;
 constexpr double kFloorHeightMatchTolerance = 1.5;
 } // namespace
 
@@ -111,11 +112,12 @@ void FloorMap::update(int key,
             std::abs(angle) < kStairMaxAngle)
         {
             transition_ = angle > 0.0 ? 1 : -1;
+            transition_height_ = 0.0;
+            landing_distance_ = 0.0;
         }
 
         if (transition_ != 0)
         {
-            landing_distance_ = 0.0;
             key_floor_[static_cast<size_t>(key)] = -1;
             ROS_PRINT_INFO(
                 "[FLOOR] START key=%d floor=%d dir=%s angle=%.3f",
@@ -132,6 +134,14 @@ void FloorMap::update(int key,
 
     key_floor_[static_cast<size_t>(key)] = -1;
 
+    if (recent_poses_.size() >= 2)
+    {
+        const Eigen::Vector3d prev_pose =
+            poseTranslation(recent_poses_[recent_poses_.size() - 2]);
+        const Eigen::Vector3d delta = poseTranslation(pose) - prev_pose;
+        transition_height_ += up.dot(delta);
+    }
+
     if (std::abs(angle) < kStairEndAngle)
     {
         if (recent_poses_.size() >= 2)
@@ -147,19 +157,21 @@ void FloorMap::update(int key,
             return;
 
         const int old_floor = current_floor_id_;
-        const double floor_dz = cur_z - floors_[static_cast<size_t>(old_floor)].height;
+        const double floor_dz = transition_height_;
+        const double target_height =
+            floors_[static_cast<size_t>(old_floor)].height + transition_height_;
 
-        if (std::abs(floor_dz) < kFloorHeightMatchTolerance ||
-            transition_ * floor_dz <= 0.0)
+        if (transition_ * floor_dz < kFloorHeightMin)
         {
             const int direction = transition_;
             transition_ = 0;
+            transition_height_ = 0.0;
             landing_distance_ = 0.0;
 
             key_floor_[static_cast<size_t>(key)] = old_floor;
 
             ROS_PRINT_INFO(
-                "[FLOOR] CANCEL old=%d dir=%s floor_dz=%.2f",
+                "[FLOOR] CANCEL old=%d dir=%s stair_dh=%.2f",
                 old_floor,
                 direction > 0 ? "UP" : "DOWN",
                 floor_dz);
@@ -174,7 +186,7 @@ void FloorMap::update(int key,
                 continue;
 
             const double diff = std::abs(
-                floors_[static_cast<size_t>(i)].height - cur_z);
+                floors_[static_cast<size_t>(i)].height - target_height);
             if (diff < best_diff)
             {
                 best_diff = diff;
@@ -185,33 +197,34 @@ void FloorMap::update(int key,
         if (target_floor < 0)
         {
             Floor floor;
-            floor.height = cur_z;
+            floor.height = target_height;
             floors_.push_back(std::move(floor));
             target_floor = static_cast<int>(floors_.size()) - 1;
             ROS_PRINT_INFO(
                 "[FLOOR] CREATE id=%d height=%.2f",
                 target_floor,
-                cur_z);
+                target_height);
         }
 
         current_floor_id_ = target_floor;
         key_floor_[static_cast<size_t>(key)] = current_floor_id_;
 
         ROS_PRINT_INFO(
-            "[FLOOR] END old=%d new=%d dir=%s floor_dz=%.2f",
+            "[FLOOR] END old=%d new=%d dir=%s stair_dh=%.2f target_h=%.2f",
             old_floor,
             target_floor,
             transition_ > 0 ? "UP" : "DOWN",
-            floor_dz);
+            floor_dz,
+            target_height);
 
         transition_ = 0;
+        transition_height_ = 0.0;
         landing_distance_ = 0.0;
         return;
     }
 
     if (std::abs(angle) > kStairStartAngle)
         landing_distance_ = 0.0;
-
 }
 
 bool FloorMap::sameFloor(int key1, int key2) const

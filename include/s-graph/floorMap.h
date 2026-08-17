@@ -39,6 +39,7 @@ private:
     int current_floor_id_ = -1;
     int next_plane_id_ = 0;
     int transition_ = 0;
+    double transition_height_ = 0.0;
     double landing_distance_ = 0.0;
     std::vector<int> key_floor_;
     std::deque<PointTypePose> recent_poses_;

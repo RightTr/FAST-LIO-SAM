@@ -987,7 +987,7 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
         cloudKeyPoses6D->push_back(thisPose6D);
         floorMap.update(
             static_cast<int>(cloudKeyPoses6D->points.size()) - 1,
-            thisPose6D);
+            OdomPose);
         updatePath(thisPose6D);
 
         // cout << "****************************************************" << endl;
