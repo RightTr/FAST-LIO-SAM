@@ -5,6 +5,7 @@
 #include "map_optimization.h"
 
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <unordered_set>
 #include <vector>
@@ -31,6 +32,8 @@ public:
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
+    void syncGrounds(const std::function<bool(int, Eigen::Vector4d &plane_out)> &getter);
+
     bool allowLoop(int key1, int key2) const;
 
 private:
@@ -43,7 +46,6 @@ private:
     int next_plane_id_ = 0;
     int transition_ = 0;
     double landing_distance_ = 0.0;
-    int last_ground_key_ = -1;
     std::vector<int> key_floor_;
 };
 

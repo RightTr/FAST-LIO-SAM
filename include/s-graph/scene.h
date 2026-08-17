@@ -61,9 +61,8 @@ struct SceneBatch
 {
     std::vector<PlaneLandmark> plane_init;
     std::vector<PlaneFactor> plane_factors;
-    std::vector<std::pair<int, double>> floor_init;
-    std::vector<std::tuple<int, int, Eigen::Vector4d>,
-                Eigen::aligned_allocator<std::tuple<int, int, Eigen::Vector4d>>> floor_factors;
+    std::vector<int> floor_init;
+    std::vector<std::pair<int, int>> floor_factors;
 };
 
 #endif

@@ -20,6 +20,15 @@ constexpr int kMinPts = 100;
 constexpr double kGroundNzThreshold = 0.9396926207859084;
 constexpr double kEps = 1e-12;
 
+Eigen::Vector3d gravityUpAxis()
+{
+    Eigen::Vector3d up = Eigen::Vector3d::UnitZ();
+    Eigen::Vector3d stored_up;
+    if (getGravityUp(stored_up) && stored_up.allFinite() && stored_up.norm() > 1e-6)
+        up = stored_up.normalized();
+    return up;
+}
+
 inline bool fitPlane(const PointCluster &s,
                      Eigen::Vector3d &n,
                      Eigen::Vector3d &c,
@@ -52,7 +61,8 @@ inline PlaneType classifyPlane(const Eigen::Vector4d &plane)
         return PlaneType::UNKNOWN;
 
     normalized /= normalized.head<3>().norm();
-    const double nz = std::abs(normalized[2]);
+    const Eigen::Vector3d up = gravityUpAxis();
+    const double nz = std::abs(normalized.head<3>().dot(up));
     if (nz >= kGroundNzThreshold)
         return PlaneType::GROUND;
     if (nz <= 0.25)
@@ -99,7 +109,8 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
     if (!fitPlane(map_sum, map_n, map_c, map_d))
         return false;
 
-    if (map_n.z() < 0.0)
+    const Eigen::Vector3d up = gravityUpAxis();
+    if (map_n.dot(up) < 0.0)
     {
         map_n = -map_n;
         map_d = -map_d;

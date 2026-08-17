@@ -17,6 +17,29 @@ constexpr double kMinHorizontalDistance = 0.50;
 constexpr double kGroundLandmarkRadius = 8.0;
 constexpr double kLandingConfirmDistance = 1.8;
 constexpr double kFloorHeightMatchTolerance = 1.5;
+
+Eigen::Vector3d gravityUpAxis()
+{
+    Eigen::Vector3d up = Eigen::Vector3d::UnitZ();
+    Eigen::Vector3d stored_up;
+    if (getGravityUp(stored_up) && stored_up.allFinite() && stored_up.norm() > 1e-6)
+        up = stored_up.normalized();
+    return up;
+}
+
+double gravityHeight(const PointTypePose &pose, const Eigen::Vector3d &up)
+{
+    return up.dot(poseTranslation(pose));
+}
+
+double gravityHorizontalDistance(const PointTypePose &a,
+                                 const PointTypePose &b,
+                                 const Eigen::Vector3d &up)
+{
+    const Eigen::Vector3d diff = poseTranslation(b) - poseTranslation(a);
+    const Eigen::Vector3d horizontal = diff - up * diff.dot(up);
+    return horizontal.norm();
+}
 } // namespace
 
 double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
@@ -26,15 +49,14 @@ double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
 
     const size_t count = kFloorSlopeWindow;
     const size_t begin = poses.size() - count;
+    const Eigen::Vector3d up = gravityUpAxis();
 
     std::vector<double> dist(count, 0.0);
     for (size_t i = 1; i < count; ++i)
     {
         const auto &a = poses[begin + i - 1];
         const auto &b = poses[begin + i];
-        const double dx = b.x - a.x;
-        const double dy = b.y - a.y;
-        dist[i] = dist[i - 1] + std::sqrt(dx * dx + dy * dy);
+        dist[i] = dist[i - 1] + gravityHorizontalDistance(a, b, up);
     }
 
     const double horizontal_distance = dist.back();
@@ -46,7 +68,7 @@ double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
     for (size_t i = 0; i < count; ++i)
     {
         x_mean += dist[i];
-        z_mean += poses[begin + i].z;
+        z_mean += gravityHeight(poses[begin + i], up);
     }
     x_mean /= static_cast<double>(count);
     z_mean /= static_cast<double>(count);
@@ -56,7 +78,7 @@ double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
     for (size_t i = 0; i < count; ++i)
     {
         const double x = dist[i];
-        const double z = poses[begin + i].z;
+        const double z = gravityHeight(poses[begin + i], up);
         num += (x - x_mean) * (z - z_mean);
         den += (x - x_mean) * (x - x_mean);
     }
@@ -80,7 +102,8 @@ void FloorMap::update(const std::deque<int> &keys,
         key_floor_.resize(static_cast<size_t>(cur_key) + 1, -1);
 
     const PointTypePose &cur_pose = poses.back();
-    const double cur_z = cur_pose.z;
+    const Eigen::Vector3d up = gravityUpAxis();
+    const double cur_z = gravityHeight(cur_pose, up);
     const double angle = trajectoryAngle(poses);
 
     if (floors_.empty())
@@ -134,9 +157,7 @@ void FloorMap::update(const std::deque<int> &keys,
         if (poses.size() >= 2)
         {
             const auto &last = poses[poses.size() - 2];
-            const double dx = cur_pose.x - last.x;
-            const double dy = cur_pose.y - last.y;
-            landing_distance_ += std::sqrt(dx * dx + dy * dy);
+            landing_distance_ += gravityHorizontalDistance(last, cur_pose, up);
         }
 
         if (landing_distance_ < kLandingConfirmDistance)
@@ -220,15 +241,42 @@ void FloorMap::groundKeys(const std::deque<int> &keys,
     if (keys.empty() || transition_ != 0 || current_floor_id_ < 0)
         return;
 
-    const int confirmed_key = keys.back() - (kFloorSlopeWindow - 1);
     for (int key : keys)
     {
         if (key >= 0 &&
-            key <= confirmed_key &&
             static_cast<size_t>(key) < key_floor_.size() &&
             key_floor_[static_cast<size_t>(key)] == current_floor_id_)
         {
             allowed_keys.insert(key);
+        }
+    }
+}
+
+void FloorMap::syncGrounds(
+    const std::function<bool(int, Eigen::Vector4d &plane_out)> &getter)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!getter)
+        return;
+
+    for (auto &floor : floors_)
+    {
+        for (auto &ground : floor.grounds)
+        {
+            Eigen::Vector4d plane = ground.plane;
+            if (!getter(ground.id, plane))
+                continue;
+            if (!plane.allFinite() || plane.head<3>().norm() <= 1e-6)
+                continue;
+
+            Eigen::Vector3d up = gravityUpAxis();
+            if (plane.head<3>().dot(up) < 0.0)
+                plane = -plane;
+
+            ground.plane = plane;
+            const Eigen::Vector3d n = plane.head<3>().normalized();
+            const double signed_dist = n.dot(ground.center) + plane[3];
+            ground.center -= signed_dist * n;
         }
     }
 }
@@ -286,6 +334,7 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
     Ground *active_ground = best_ground;
     const bool is_new_ground = (active_ground == nullptr);
     const int ground_id = is_new_ground ? next_plane_id_ : active_ground->id;
+    int max_added_key = -1;
 
     if (is_new_ground)
     {
@@ -294,33 +343,44 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         new_ground.center = candidate.center;
     }
 
-    int factor_key = -1;
-    Eigen::Vector4d factor_obs = Eigen::Vector4d::Zero();
     for (const auto &kv : candidate.obs)
     {
         const int key = kv.first;
-        if (key > factor_key)
+        const Eigen::Vector4d &factor_obs = kv.second;
+        const int last_key = is_new_ground ? new_ground.last_key : active_ground->last_key;
+        if (key <= last_key)
+            continue;
+
+        batch.plane_factors.emplace_back(key, ground_id, factor_obs);
+        max_added_key = std::max(max_added_key, key);
+        if (is_new_ground)
         {
-            factor_key = key;
-            factor_obs = kv.second;
+            new_ground.last_key = std::max(new_ground.last_key, key);
+        }
+        else
+        {
+            active_ground->last_key = std::max(active_ground->last_key, key);
         }
     }
 
-    if (factor_key < 0 || factor_key <= last_ground_key_)
+    if (batch.plane_factors.empty())
         return false;
-
-    batch.plane_factors.emplace_back(factor_key, ground_id, factor_obs);
-    batch.floor_factors.emplace_back(current_floor_id_, factor_key, factor_obs);
-    last_ground_key_ = factor_key;
 
     if (is_new_ground)
     {
         if (floor.grounds.empty())
-            batch.floor_init.emplace_back(current_floor_id_, candidate.center.z());
+            batch.floor_init.push_back(current_floor_id_);
 
         batch.plane_init.emplace_back(ground_id, candidate.plane, candidate.center);
+        batch.floor_factors.emplace_back(current_floor_id_, ground_id);
         floor.grounds.push_back(std::move(new_ground));
         next_plane_id_++;
+    }
+    else
+    {
+        active_ground->plane = candidate.plane;
+        active_ground->center = candidate.center;
+        active_ground->last_key = std::max(active_ground->last_key, max_added_key);
     }
 
     return true;

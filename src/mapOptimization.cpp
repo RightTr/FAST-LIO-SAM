@@ -103,7 +103,11 @@ std::mutex mtxSceneBatch;
 
 std::deque<SceneBatch> sceneBatchQueue;
 gtsam::noiseModel::Diagonal::shared_ptr planeNoise;
-gtsam::SharedNoiseModel floorGroundNoise;
+gtsam::SharedNoiseModel floorNormalPriorNoise;
+gtsam::SharedNoiseModel floorPlaneNoise;
+std::mutex gravityAxisMutex;
+Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
+bool gravityUpReady = false;
 
 std::mutex mtx;
 std::mutex mtxLoopInfo;
@@ -135,8 +139,29 @@ std::unordered_set<int> yaw_keys;
 
 void correctPoses();
 void ReconstructIkdTree();
-static void AddSceneFactor();
+static bool AddSceneFactor();
+void updateSceneGraph();
 static void performSceneMatching();
+
+void setGravityUp(const Eigen::Vector3d &gravity_up)
+{
+    if (!gravity_up.allFinite() || gravity_up.norm() <= 1e-6)
+        return;
+
+    std::lock_guard<std::mutex> lock(gravityAxisMutex);
+    gravityUpAxis = gravity_up.normalized();
+    gravityUpReady = true;
+}
+
+bool getGravityUp(Eigen::Vector3d &gravity_up)
+{
+    std::lock_guard<std::mutex> lock(gravityAxisMutex);
+    if (!gravityUpReady)
+        return false;
+
+    gravity_up = gravityUpAxis;
+    return true;
+}
 
 pcl::VoxelGrid<PointTypeIndex> downSizeFilterICP;
 
@@ -241,9 +266,11 @@ void MapOptimizationInit()
     gtsam::Vector3 plane_sigmas;
     plane_sigmas << (M_PI / 180.0) * 3.0, (M_PI / 180.0) * 3.0, 0.08;
     planeNoise = gtsam::noiseModel::Diagonal::Sigmas(plane_sigmas);
-    floorGroundNoise = gtsam::noiseModel::Robust::Create(
-        gtsam::noiseModel::mEstimator::Huber::Create(1.0),
-        gtsam::noiseModel::Isotropic::Sigma(1, 0.08));
+    floorNormalPriorNoise = gtsam::noiseModel::Isotropic::Sigma(
+        2, (M_PI / 180.0) * 0.2);
+    floorPlaneNoise = gtsam::noiseModel::Isotropic::Sigma(
+        2, (M_PI / 180.0) * 0.5);
+    setGravityUp(Eigen::Vector3d::UnitZ());
 
     init_ros_node();
     
@@ -973,31 +1000,40 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
 }
 
-void AddSceneFactor()
+static bool AddSceneFactor()
 {
-    if (!planeNoise || !floorGroundNoise)
-        return;
+    if (!planeNoise || !floorNormalPriorNoise || !floorPlaneNoise)
+        return false;
 
     std::deque<SceneBatch> batchQueue;
     {
         std::lock_guard<std::mutex> lock(mtxSceneBatch);
         if (sceneBatchQueue.empty())
-            return;
+            return false;
 
         std::swap(batchQueue, sceneBatchQueue);
     }
 
+    bool graph_changed = false;
+    Eigen::Vector3d floor_up_vec = Eigen::Vector3d::UnitZ();
+    if (!getGravityUp(floor_up_vec) || !floor_up_vec.allFinite() || floor_up_vec.norm() <= 1e-6)
+        floor_up_vec = Eigen::Vector3d::UnitZ();
+    const gtsam::Unit3 floor_up(floor_up_vec);
+
     for (auto &batch : batchQueue)
     {
-        for (const auto &[floor_id, height] : batch.floor_init)
+        for (int floor_id : batch.floor_init)
         {
             const gtsam::Key fkey = gtsam::Symbol('f', floor_id);
             if (initialEstimate.exists(fkey) || isamCurrentEstimate.exists(fkey))
                 continue;
 
-            gtsam::Vector1 floor_value;
-            floor_value << height;
-            initialEstimate.insert(fkey, floor_value);
+            initialEstimate.insert(fkey, floor_up);
+            gtSAMgraph.add(gtsam::PriorFactor<gtsam::Unit3>(
+                fkey,
+                floor_up,
+                floorNormalPriorNoise));
+            graph_changed = true;
         }
 
         for (const auto &plane : batch.plane_init)
@@ -1006,17 +1042,18 @@ void AddSceneFactor()
             if (initialEstimate.exists(pkey) || isamCurrentEstimate.exists(pkey))
                 continue;
             initialEstimate.insert(pkey, gtsam::OrientedPlane3(plane.plane));
+            graph_changed = true;
         }
 
-        for (const auto &[floor_id, key, body_plane] : batch.floor_factors)
+        for (const auto &[floor_id, plane_id] : batch.floor_factors)
         {
             gtSAMgraph.add(
                 boost::shared_ptr<FloorFactor>(
                     new FloorFactor(
                     gtsam::Symbol('f', floor_id),
-                    static_cast<gtsam::Key>(key),
-                    body_plane,
-                    floorGroundNoise)));
+                    gtsam::Symbol('p', plane_id),
+                    floorPlaneNoise)));
+            graph_changed = true;
         }
 
         for (const auto &factor : batch.plane_factors)
@@ -1026,9 +1063,37 @@ void AddSceneFactor()
             gtSAMgraph.add(gtsam::OrientedPlane3Factor(
                 factor.obs, planeNoise,
                 pose_key, pkey));
+            graph_changed = true;
         }
     }
 
+    if (graph_changed)
+        graphUpdate = true;
+    return graph_changed;
+}
+
+void updateSceneGraph()
+{
+    if (!AddSceneFactor())
+        return;
+
+    isam->update(gtSAMgraph, initialEstimate);
+    isam->update();
+
+    gtSAMgraph.resize(0);
+    initialEstimate.clear();
+
+    isamCurrentEstimate = isam->calculateEstimate();
+    floorMap.syncGrounds([&](int ground_id, Eigen::Vector4d &plane_out) -> bool
+    {
+        const gtsam::Key pkey = gtsam::Symbol('p', ground_id);
+        if (!isamCurrentEstimate.exists(pkey))
+            return false;
+
+        const gtsam::OrientedPlane3 plane = isamCurrentEstimate.at<gtsam::OrientedPlane3>(pkey);
+        plane_out = plane.planeCoefficients();
+        return true;
+    });
     graphUpdate = true;
 }
 

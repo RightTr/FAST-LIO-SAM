@@ -13,6 +13,7 @@
 struct Ground
 {
     int id = -1;
+    int last_key = -1;
     Eigen::Vector4d plane = Eigen::Vector4d::Zero();
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
 };

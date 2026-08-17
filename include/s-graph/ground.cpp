@@ -11,6 +11,15 @@ namespace
 {
 constexpr double kEps = 1e-12;
 
+Eigen::Vector3d gravityUpAxis()
+{
+    Eigen::Vector3d up = Eigen::Vector3d::UnitZ();
+    Eigen::Vector3d stored_up;
+    if (getGravityUp(stored_up) && stored_up.allFinite() && stored_up.norm() > 1e-6)
+        up = stored_up.normalized();
+    return up;
+}
+
 inline bool validPlane(const Eigen::Vector4d &plane)
 {
     if (!plane.allFinite())
@@ -32,7 +41,8 @@ inline bool normalizePlane(Eigen::Vector4d &plane)
 
 inline void canonicalizePlane(Eigen::Vector4d &plane)
 {
-    if (plane[2] < 0.0)
+    const Eigen::Vector3d up = gravityUpAxis();
+    if (plane.head<3>().dot(up) < 0.0)
         plane = -plane;
 }
 

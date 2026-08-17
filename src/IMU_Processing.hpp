@@ -22,6 +22,7 @@
 #include "use-ikfom.hpp"
 #include "preprocess.h"
 #include "posebuffer.h"
+#include "map_optimization.h"
 
 /// *************Preconfiguration
 
@@ -320,6 +321,8 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
   }
   else init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
 
+  const Eigen::Vector3d init_gravity(init_state.grav[0], init_state.grav[1], init_state.grav[2]);
+  setGravityUp((-init_gravity).normalized());
   
   //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   init_state.bg  = mean_gyr;
