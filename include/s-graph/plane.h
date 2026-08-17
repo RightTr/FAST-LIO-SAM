@@ -15,6 +15,8 @@
 class Plane
 {
 public:
+    static constexpr int kWindowSize = 20;
+
     Plane() = default;
     ~Plane();
 
@@ -22,8 +24,7 @@ public:
 
     void update(int key,
                 const pcl::PointCloud<PointTypeIndex>::Ptr &cloud,
-                const PointTypePose &pose,
-                pcl::PointCloud<PointTypeIndex>::Ptr display_cloud = nullptr);
+                const PointTypePose &pose);
 
     void extract(const std::unordered_set<int> &allowed_keys,
                  std::vector<PlaneObs> &planes) const;
@@ -32,8 +33,6 @@ public:
     const std::deque<PointTypePose> &poses() const;
 
 private:
-    static constexpr int kWindowSize = 20;
-
     std::deque<int> keys_;
     std::deque<PointTypePose> poses_;
     std::unordered_map<VOXEL_LOC, OCTO_TREE_ROOT *> surf_map_;

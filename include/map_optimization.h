@@ -49,7 +49,7 @@ extern pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 void MapOptimizationInit();
 
 void setGravityUp(const Eigen::Vector3d &gravity_up);
-bool getGravityUp(Eigen::Vector3d &gravity_up);
+Eigen::Vector3d getGravityUp();
 
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
 

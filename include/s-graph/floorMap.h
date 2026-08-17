@@ -5,9 +5,7 @@
 #include "map_optimization.h"
 
 #include <deque>
-#include <functional>
 #include <mutex>
-#include <unordered_set>
 #include <vector>
 
 struct Floor
@@ -21,23 +19,18 @@ class FloorMap
 public:
     FloorMap() = default;
 
-    void update(const std::deque<int> &keys,
-                const std::deque<PointTypePose> &poses);
-
-    void groundKeys(const std::deque<int> &keys,
-                    std::unordered_set<int> &allowed_keys) const;
+    void update(int key,
+                const PointTypePose &pose);
 
     bool updateGround(const std::vector<PlaneObs> &planes,
                       const std::deque<int> &keys,
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
-    void syncGrounds(const std::function<bool(int, Eigen::Vector4d &plane_out)> &getter);
-
     bool allowLoop(int key1, int key2) const;
 
 private:
-    double trajectoryAngle(const std::deque<PointTypePose> &poses) const;
+    double trajectoryAngle() const;
 
 private:
     mutable std::mutex mutex_;
@@ -47,6 +40,7 @@ private:
     int transition_ = 0;
     double landing_distance_ = 0.0;
     std::vector<int> key_floor_;
+    std::deque<PointTypePose> recent_poses_;
 };
 
 #endif

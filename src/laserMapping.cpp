@@ -24,7 +24,6 @@
 #include "ikd-Tree/ikdtree_public.h"
 #include <atomic>
 #include "posebuffer.h"
-#include <thread>
 #include "ros_utils.h"
 #include "map_optimization.h"
 #include "utility.h"
@@ -62,9 +61,9 @@ double imu_dt = 0.005;
 bool   timeRepair = true;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
-double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
+double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, lidar_end_time = 0, first_lidar_time = 0.0;
 int    effct_feat_num = 0, publish_count = 0;
-int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, res_save_interval = -1;
+int    feats_down_size = 0, NUM_MAX_ITERATIONS = 0, res_save_interval = -1;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 std::atomic<bool> flg_exit(false);
@@ -115,7 +114,6 @@ void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
 void publishGnssPath(const PosData &pos);
 bool initGnssMap(double lidar_stamp_sec);
 
-vector<vector<int>>  pointSearchInd_surf; 
 vector<BoxPointType> cub_needrm;
 vector<PointVector>  Nearest_Points;
 vector<PointVector>  Prior_Nearest_Points;
@@ -150,7 +148,6 @@ KD_TREE_PUBLIC<PointType> prior_ikdtree;
 V3F XAxisPoint_body(LIDAR_SP_LEN, 0.0, 0.0);
 V3F XAxisPoint_world(LIDAR_SP_LEN, 0.0, 0.0);
 V3D euler_cur;
-V3D position_last(Zero3d);
 V3D Lidar_T_wrt_IMU(Zero3d);
 M3D Lidar_R_wrt_IMU(Eye3d);
 
@@ -869,7 +866,6 @@ bool sync_packages(MeasureGroup &meas)
     return true;
 }
 
-int process_increments = 0;
 void map_incremental()
 {
     if (!use_online_map)
@@ -922,7 +918,6 @@ void map_incremental()
     kdtree_incremental_time = omp_get_wtime() - st_time;
 }
 
-PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI(500000, 1));
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
 
 void getCurrPose(const state_ikfom& curr_state) {
@@ -1670,9 +1665,6 @@ int main(int argc, char** argv)
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
 
     /*** variables definition ***/
-    int effect_feat_num = 0;
-    bool flg_EKF_converged, EKF_stop_flg = 0;
-    
     FOV_DEG = (fov_deg + 10.0) > 179.9 ? 179.9 : (fov_deg + 10.0);
     HALF_FOV_COS = cos((FOV_DEG) * 0.5 * PI_M / 180.0);
 

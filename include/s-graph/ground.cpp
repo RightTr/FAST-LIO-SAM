@@ -11,55 +11,17 @@ namespace
 {
 constexpr double kEps = 1e-12;
 
-Eigen::Vector3d gravityUpAxis()
-{
-    Eigen::Vector3d up = Eigen::Vector3d::UnitZ();
-    Eigen::Vector3d stored_up;
-    if (getGravityUp(stored_up) && stored_up.allFinite() && stored_up.norm() > 1e-6)
-        up = stored_up.normalized();
-    return up;
-}
-
-inline bool validPlane(const Eigen::Vector4d &plane)
+inline bool normalizePlane(Eigen::Vector4d &plane)
 {
     if (!plane.allFinite())
         return false;
 
     const double norm = plane.head<3>().norm();
-    return std::isfinite(norm) && norm > 1e-6;
-}
-
-inline bool normalizePlane(Eigen::Vector4d &plane)
-{
-    if (!validPlane(plane))
+    if (!std::isfinite(norm) || norm <= 1e-6)
         return false;
 
-    const double norm = plane.head<3>().norm();
     plane /= norm;
     return plane.allFinite();
-}
-
-inline void canonicalizePlane(Eigen::Vector4d &plane)
-{
-    const Eigen::Vector3d up = gravityUpAxis();
-    if (plane.head<3>().dot(up) < 0.0)
-        plane = -plane;
-}
-
-inline double planeAngle(const Eigen::Vector3d &a,
-                         const Eigen::Vector3d &b)
-{
-    if (a.norm() <= kEps || b.norm() <= kEps)
-        return std::numeric_limits<double>::infinity();
-
-    return std::acos(clampDot(a.normalized().dot(b.normalized())));
-}
-
-inline double planeDistanceToPoint(const Eigen::Vector3d &n,
-                                   double d,
-                                   const Eigen::Vector3d &p)
-{
-    return std::abs(n.dot(p) + d);
 }
 
 inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
@@ -84,11 +46,9 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
             continue;
 
         Eigen::Vector3d n = map_plane.head<3>();
-        double d = map_plane[3];
         if (seed_n.dot(n) < 0.0)
         {
             n = -n;
-            d = -d;
         }
 
         const double w = static_cast<double>(std::max(1, plane->n));
@@ -134,10 +94,9 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
         return false;
 
     out.plane << n.x(), n.y(), n.z(), -n.dot(out.center);
-    canonicalizePlane(out.plane);
-    if (!validPlane(out.plane))
-        return false;
-
+    const Eigen::Vector3d up = getGravityUp();
+    if (out.plane.head<3>().dot(up) < 0.0)
+        out.plane = -out.plane;
     out.plane.head<3>().normalize();
     out.n = static_cast<int>(std::llround(weight_sum));
 
@@ -207,7 +166,6 @@ bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
         return false;
 
     const Eigen::Vector3d seed_n = seed_plane.head<3>();
-    const double seed_d = seed_plane[3];
 
     std::vector<const PlaneObs *> members;
     members.push_back(seed);
@@ -221,11 +179,15 @@ bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
         if (!normalizePlane(cand_plane))
             continue;
 
-        const double angle = planeAngle(seed_n, cand_plane.head<3>());
+        if (seed_n.norm() <= kEps || cand_plane.head<3>().norm() <= kEps)
+            continue;
+
+        const double angle = std::acos(
+            clampDot(seed_n.normalized().dot(cand_plane.head<3>().normalized())));
         if (!std::isfinite(angle) || angle > rad(groundAssociationAngleDeg))
             continue;
 
-        if (planeDistanceToPoint(seed_n, seed_d, cand->center) >
+        if (std::abs(seed_n.dot(cand->center) + seed_plane[3]) >
             groundAssociationDistance)
         {
             continue;

@@ -20,15 +20,6 @@ constexpr int kMinPts = 100;
 constexpr double kGroundNzThreshold = 0.9396926207859084;
 constexpr double kEps = 1e-12;
 
-Eigen::Vector3d gravityUpAxis()
-{
-    Eigen::Vector3d up = Eigen::Vector3d::UnitZ();
-    Eigen::Vector3d stored_up;
-    if (getGravityUp(stored_up) && stored_up.allFinite() && stored_up.norm() > 1e-6)
-        up = stored_up.normalized();
-    return up;
-}
-
 inline bool fitPlane(const PointCluster &s,
                      Eigen::Vector3d &n,
                      Eigen::Vector3d &c,
@@ -61,7 +52,7 @@ inline PlaneType classifyPlane(const Eigen::Vector4d &plane)
         return PlaneType::UNKNOWN;
 
     normalized /= normalized.head<3>().norm();
-    const Eigen::Vector3d up = gravityUpAxis();
+    const Eigen::Vector3d up = getGravityUp();
     const double nz = std::abs(normalized.head<3>().dot(up));
     if (nz >= kGroundNzThreshold)
         return PlaneType::GROUND;
@@ -109,7 +100,7 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
     if (!fitPlane(map_sum, map_n, map_c, map_d))
         return false;
 
-    const Eigen::Vector3d up = gravityUpAxis();
+    const Eigen::Vector3d up = getGravityUp();
     if (map_n.dot(up) < 0.0)
     {
         map_n = -map_n;
@@ -193,12 +184,8 @@ void Plane::reset()
 
 void Plane::update(int key,
                    const pcl::PointCloud<PointTypeIndex>::Ptr &cloud,
-                   const PointTypePose &pose,
-                   pcl::PointCloud<PointTypeIndex>::Ptr display_cloud)
+                   const PointTypePose &pose)
 {
-    if (display_cloud)
-        display_cloud->clear();
-
     if (static_cast<int>(keys_.size()) == kWindowSize)
     {
         for (auto &entry : surf_map_)
@@ -235,24 +222,6 @@ void Plane::update(int key,
         else
         {
             ++it;
-        }
-    }
-
-    if (display_cloud)
-    {
-        pcl::PointCloud<PointType> balm_plane_cloud;
-        for (const auto &entry : surf_map_)
-            entry.second->tras_display(balm_plane_cloud, active_count);
-
-        display_cloud->reserve(balm_plane_cloud.size());
-        for (const auto &src : balm_plane_cloud.points)
-        {
-            PointTypeIndex dst;
-            dst.x = src.x;
-            dst.y = src.y;
-            dst.z = src.z;
-            dst.intensity = src.intensity;
-            display_cloud->push_back(dst);
         }
     }
 

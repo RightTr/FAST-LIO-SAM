@@ -18,15 +18,6 @@ constexpr double kGroundLandmarkRadius = 8.0;
 constexpr double kLandingConfirmDistance = 1.8;
 constexpr double kFloorHeightMatchTolerance = 1.5;
 
-Eigen::Vector3d gravityUpAxis()
-{
-    Eigen::Vector3d up = Eigen::Vector3d::UnitZ();
-    Eigen::Vector3d stored_up;
-    if (getGravityUp(stored_up) && stored_up.allFinite() && stored_up.norm() > 1e-6)
-        up = stored_up.normalized();
-    return up;
-}
-
 double gravityHeight(const PointTypePose &pose, const Eigen::Vector3d &up)
 {
     return up.dot(poseTranslation(pose));
@@ -42,20 +33,20 @@ double gravityHorizontalDistance(const PointTypePose &a,
 }
 } // namespace
 
-double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
+double FloorMap::trajectoryAngle() const
 {
-    if (poses.size() < kFloorSlopeWindow)
+    if (recent_poses_.size() < kFloorSlopeWindow)
         return 0.0;
 
     const size_t count = kFloorSlopeWindow;
-    const size_t begin = poses.size() - count;
-    const Eigen::Vector3d up = gravityUpAxis();
+    const size_t begin = recent_poses_.size() - count;
+    const Eigen::Vector3d up = getGravityUp();
 
     std::vector<double> dist(count, 0.0);
     for (size_t i = 1; i < count; ++i)
     {
-        const auto &a = poses[begin + i - 1];
-        const auto &b = poses[begin + i];
+        const auto &a = recent_poses_[begin + i - 1];
+        const auto &b = recent_poses_[begin + i];
         dist[i] = dist[i - 1] + gravityHorizontalDistance(a, b, up);
     }
 
@@ -68,7 +59,7 @@ double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
     for (size_t i = 0; i < count; ++i)
     {
         x_mean += dist[i];
-        z_mean += gravityHeight(poses[begin + i], up);
+        z_mean += gravityHeight(recent_poses_[begin + i], up);
     }
     x_mean /= static_cast<double>(count);
     z_mean /= static_cast<double>(count);
@@ -78,7 +69,7 @@ double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
     for (size_t i = 0; i < count; ++i)
     {
         const double x = dist[i];
-        const double z = gravityHeight(poses[begin + i], up);
+        const double z = gravityHeight(recent_poses_[begin + i], up);
         num += (x - x_mean) * (z - z_mean);
         den += (x - x_mean) * (x - x_mean);
     }
@@ -90,21 +81,24 @@ double FloorMap::trajectoryAngle(const std::deque<PointTypePose> &poses) const
     return std::atan(slope);
 }
 
-void FloorMap::update(const std::deque<int> &keys,
-                      const std::deque<PointTypePose> &poses)
+void FloorMap::update(int key,
+                      const PointTypePose &pose)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (keys.empty() || poses.empty())
+    if (key < 0)
         return;
 
-    const int cur_key = keys.back();
-    if (cur_key >= 0 && key_floor_.size() <= static_cast<size_t>(cur_key))
-        key_floor_.resize(static_cast<size_t>(cur_key) + 1, -1);
+    if (key_floor_.size() <= static_cast<size_t>(key))
+        key_floor_.resize(static_cast<size_t>(key) + 1, -1);
 
-    const PointTypePose &cur_pose = poses.back();
-    const Eigen::Vector3d up = gravityUpAxis();
-    const double cur_z = gravityHeight(cur_pose, up);
-    const double angle = trajectoryAngle(poses);
+    const Eigen::Vector3d up = getGravityUp();
+    const double cur_z = gravityHeight(pose, up);
+
+    recent_poses_.push_back(pose);
+    if (recent_poses_.size() > kFloorSlopeWindow)
+        recent_poses_.pop_front();
+
+    const double angle = trajectoryAngle();
 
     if (floors_.empty())
     {
@@ -133,31 +127,28 @@ void FloorMap::update(const std::deque<int> &keys,
         if (transition_ != 0)
         {
             landing_distance_ = 0.0;
-            if (cur_key >= 0)
-                key_floor_[static_cast<size_t>(cur_key)] = -1;
+            key_floor_[static_cast<size_t>(key)] = -1;
             ROS_PRINT_INFO(
                 "[FLOOR] START key=%d floor=%d dir=%s angle=%.3f",
-                cur_key,
+                key,
                 current_floor_id_,
                 transition_ > 0 ? "UP" : "DOWN",
                 angle);
             return;
         }
 
-        if (cur_key >= 0)
-            key_floor_[static_cast<size_t>(cur_key)] = current_floor_id_;
+        key_floor_[static_cast<size_t>(key)] = current_floor_id_;
         return;
     }
 
-    if (cur_key >= 0)
-        key_floor_[static_cast<size_t>(cur_key)] = -1;
+    key_floor_[static_cast<size_t>(key)] = -1;
 
     if (std::abs(angle) < kStairEndAngle)
     {
-        if (poses.size() >= 2)
+        if (recent_poses_.size() >= 2)
         {
-            const auto &last = poses[poses.size() - 2];
-            landing_distance_ += gravityHorizontalDistance(last, cur_pose, up);
+            const auto &last = recent_poses_[recent_poses_.size() - 2];
+            landing_distance_ += gravityHorizontalDistance(last, pose, up);
         }
 
         if (landing_distance_ < kLandingConfirmDistance)
@@ -173,8 +164,7 @@ void FloorMap::update(const std::deque<int> &keys,
             transition_ = 0;
             landing_distance_ = 0.0;
 
-            if (cur_key >= 0)
-                key_floor_[static_cast<size_t>(cur_key)] = old_floor;
+            key_floor_[static_cast<size_t>(key)] = old_floor;
 
             ROS_PRINT_INFO(
                 "[FLOOR] CANCEL old=%d dir=%s floor_dz=%.2f",
@@ -213,8 +203,7 @@ void FloorMap::update(const std::deque<int> &keys,
         }
 
         current_floor_id_ = target_floor;
-        if (cur_key >= 0)
-            key_floor_[static_cast<size_t>(cur_key)] = current_floor_id_;
+        key_floor_[static_cast<size_t>(key)] = current_floor_id_;
 
         ROS_PRINT_INFO(
             "[FLOOR] END old=%d new=%d dir=%s floor_dz=%.2f",
@@ -230,55 +219,6 @@ void FloorMap::update(const std::deque<int> &keys,
 
     if (std::abs(angle) > kStairStartAngle)
         landing_distance_ = 0.0;
-}
-
-void FloorMap::groundKeys(const std::deque<int> &keys,
-                          std::unordered_set<int> &allowed_keys) const
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    allowed_keys.clear();
-
-    if (keys.empty() || transition_ != 0 || current_floor_id_ < 0)
-        return;
-
-    for (int key : keys)
-    {
-        if (key >= 0 &&
-            static_cast<size_t>(key) < key_floor_.size() &&
-            key_floor_[static_cast<size_t>(key)] == current_floor_id_)
-        {
-            allowed_keys.insert(key);
-        }
-    }
-}
-
-void FloorMap::syncGrounds(
-    const std::function<bool(int, Eigen::Vector4d &plane_out)> &getter)
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!getter)
-        return;
-
-    for (auto &floor : floors_)
-    {
-        for (auto &ground : floor.grounds)
-        {
-            Eigen::Vector4d plane = ground.plane;
-            if (!getter(ground.id, plane))
-                continue;
-            if (!plane.allFinite() || plane.head<3>().norm() <= 1e-6)
-                continue;
-
-            Eigen::Vector3d up = gravityUpAxis();
-            if (plane.head<3>().dot(up) < 0.0)
-                plane = -plane;
-
-            ground.plane = plane;
-            const Eigen::Vector3d n = plane.head<3>().normalized();
-            const double signed_dist = n.dot(ground.center) + plane[3];
-            ground.center -= signed_dist * n;
-        }
-    }
 }
 
 bool FloorMap::allowLoop(int key1, int key2) const
