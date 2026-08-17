@@ -5,16 +5,8 @@
 #include <Eigen/StdVector>
 
 #include <unordered_map>
-#include <tuple>
 #include <utility>
 #include <vector>
-
-enum class PlaneType
-{
-    UNKNOWN,
-    GROUND,
-    WALL
-};
 
 struct PlaneObs
 {
@@ -23,21 +15,20 @@ struct PlaneObs
     Eigen::Vector4d plane = Eigen::Vector4d::Zero();
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
     int n = 0;
-    PlaneType type = PlaneType::UNKNOWN;
     std::unordered_map<int, Eigen::Vector4d> obs;
 };
 
-struct PlaneLandmark
+struct PlaneInit
 {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+    int floor = -1;
     int id = -1;
     Eigen::Vector4d plane = Eigen::Vector4d::Zero();
-    Eigen::Vector3d center = Eigen::Vector3d::Zero();
 
-    PlaneLandmark() = default;
-    PlaneLandmark(int id_in, const Eigen::Vector4d &plane_in, const Eigen::Vector3d &center_in)
-        : id(id_in), plane(plane_in), center(center_in)
+    PlaneInit() = default;
+    PlaneInit(int floor_in, int id_in, const Eigen::Vector4d &plane_in)
+        : floor(floor_in), id(id_in), plane(plane_in)
     {
     }
 };
@@ -59,10 +50,8 @@ struct PlaneFactor
 
 struct SceneBatch
 {
-    std::vector<PlaneLandmark> plane_init;
-    std::vector<PlaneFactor> plane_factors;
-    std::vector<int> floor_init;
-    std::vector<std::pair<int, int>> floor_factors;
+    std::vector<PlaneInit> planes;
+    std::vector<PlaneFactor> factors;
 };
 
 #endif

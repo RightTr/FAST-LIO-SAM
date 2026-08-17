@@ -45,22 +45,6 @@ inline bool fitPlane(const PointCluster &s,
     return true;
 }
 
-inline PlaneType classifyPlane(const Eigen::Vector4d &plane)
-{
-    Eigen::Vector4d normalized = plane;
-    if (!normalized.allFinite() || normalized.head<3>().norm() <= kEps)
-        return PlaneType::UNKNOWN;
-
-    normalized /= normalized.head<3>().norm();
-    const Eigen::Vector3d up = getGravityUp();
-    const double nz = std::abs(normalized.head<3>().dot(up));
-    if (nz >= kGroundNzThreshold)
-        return PlaneType::GROUND;
-    if (nz <= 0.25)
-        return PlaneType::WALL;
-    return PlaneType::UNKNOWN;
-}
-
 inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
                           const std::deque<int> &keys,
                           const std::deque<PointTypePose> &poses,
@@ -101,7 +85,10 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
         return false;
 
     const Eigen::Vector3d up = getGravityUp();
-    if (map_n.dot(up) < 0.0)
+    const double nz = map_n.dot(up);
+    if (std::abs(nz) < kGroundNzThreshold)
+        return false;
+    if (nz < 0.0)
     {
         map_n = -map_n;
         map_d = -map_d;
@@ -109,7 +96,6 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 
     obs.plane << map_n.x(), map_n.y(), map_n.z(), map_d;
     obs.center = map_c;
-    obs.type = classifyPlane(obs.plane);
 
     for (int slot = 0; slot < active_count; ++slot)
     {

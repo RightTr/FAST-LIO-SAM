@@ -10,6 +10,7 @@
 namespace
 {
 constexpr double kEps = 1e-12;
+constexpr double kGroundNzThreshold = 0.9396926207859084;
 
 inline bool normalizePlane(Eigen::Vector4d &plane)
 {
@@ -131,17 +132,18 @@ bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
         return false;
 
     const Eigen::Vector3d cur_pos = poseTranslation(poses.back());
+    const Eigen::Vector3d up = getGravityUp();
 
     std::vector<const PlaneObs *> seeds;
     seeds.reserve(planes.size());
 
     for (const auto &plane : planes)
     {
-        if (plane.type != PlaneType::GROUND)
-            continue;
-
         Eigen::Vector4d map_plane = plane.plane;
         if (!normalizePlane(map_plane))
+            continue;
+
+        if (map_plane.head<3>().dot(up) < kGroundNzThreshold)
             continue;
 
         if (map_plane.head<3>().dot(cur_pos) + map_plane[3] <= 0.0)

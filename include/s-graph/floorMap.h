@@ -27,7 +27,7 @@ public:
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
-    bool allowLoop(int key1, int key2) const;
+    bool sameFloor(int key1, int key2) const;
 
 private:
     double trajectoryAngle() const;
