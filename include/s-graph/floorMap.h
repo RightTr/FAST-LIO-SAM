@@ -8,10 +8,17 @@
 #include <mutex>
 #include <vector>
 
+struct FloorRange
+{
+    int begin = -1;
+    int end = -1;
+};
+
 struct Floor
 {
     double height = 0.0;
     std::vector<Ground> grounds;
+    std::vector<FloorRange> ranges;
 };
 
 class FloorMap
@@ -19,7 +26,7 @@ class FloorMap
 public:
     FloorMap() = default;
 
-    void update(int key,
+    bool update(int key,
                 const PointTypePose &pose);
 
     bool updateGround(const std::vector<PlaneObs> &planes,
@@ -27,8 +34,9 @@ public:
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
-    bool inTransition() const;
-    bool sameFloor(int key1, int key2) const;
+    bool getFloorRanges(int key,
+                        std::vector<FloorRange> &ranges,
+                        FloorRange &current_range) const;
 
 private:
     double trajectoryAngle() const;
@@ -41,7 +49,6 @@ private:
     int transition_ = 0;
     double transition_height_ = 0.0;
     double landing_distance_ = 0.0;
-    std::vector<int> key_floor_;
     std::deque<PointTypePose> recent_poses_;
 };
 

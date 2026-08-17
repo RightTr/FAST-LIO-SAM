@@ -10,7 +10,6 @@
 
 #include <deque>
 #include <unordered_map>
-#include <unordered_set>
 
 class Plane
 {
@@ -26,8 +25,7 @@ public:
                 const pcl::PointCloud<PointTypeIndex>::Ptr &cloud,
                 const PointTypePose &pose);
 
-    void extract(const std::unordered_set<int> &allowed_keys,
-                 std::vector<PlaneObs> &planes) const;
+    void extract(std::vector<PlaneObs> &planes) const;
 
     const std::deque<int> &keys() const;
     const std::deque<PointTypePose> &poses() const;

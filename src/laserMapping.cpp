@@ -1925,13 +1925,15 @@ int main(int argc, char** argv)
             spin_once();
 
             if (sam_enable) {
+                std::lock_guard<std::recursive_mutex> poseLock(mtxLoop);
                 if (keyframe)
                 {
                     saveKeyFramesAndFactor(feats_undistort);
                 }
                 correctPoses();
-                publishSamMsg();
             }
+
+            publishSamMsg();
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
@@ -1967,6 +1969,20 @@ int main(int argc, char** argv)
     }
     if (structurethread.joinable()) {
         structurethread.join();
+    }
+
+    if (sam_enable)
+    {
+        poseGraphUpdate();
+        publishSamMsg();
+        visualizeLoopClosure();
+        publishGlobalMap();
+
+        for (int i = 0; i < 3; ++i)
+        {
+            spin_once();
+            usleep(100000);
+        }
     }
 
     if (pcl_wait_save->size() > 0 && feat_accum_save_en)

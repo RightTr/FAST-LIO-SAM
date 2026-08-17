@@ -2,6 +2,7 @@
 #define MAP_OPTIMIZATION_H
 
 #include <vector>
+#include <mutex>
 #include <Eigen/Core>
 #include <pcl/common/transforms.h>
 
@@ -51,13 +52,19 @@ void MapOptimizationInit();
 void setGravityUp(const Eigen::Vector3d &gravity_up);
 Eigen::Vector3d getGravityUp();
 
+extern std::recursive_mutex mtxLoop;
+
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
+void addLoopFactor();
+void poseGraphUpdate();
 
 bool isKeyFrame();
 
 void correctPoses();
 
 void publishSamMsg();
+void visualizeLoopClosure();
+void publishGlobalMap();
 
 void shutdownMapOptimization();
 

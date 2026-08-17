@@ -10,7 +10,6 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
-#include <unordered_set>
 
 #include <Eigen/Eigenvalues>
 
@@ -48,7 +47,6 @@ inline bool fitPlane(const PointCluster &s,
 inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
                           const std::deque<int> &keys,
                           const std::deque<PointTypePose> &poses,
-                          const std::unordered_set<int> &allowed_keys,
                           PlaneObs &obs)
 {
     if (node == nullptr || node->push_state != 1)
@@ -60,12 +58,6 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 
     for (int slot = 0; slot < active_count; ++slot)
     {
-        const int key = keys[static_cast<size_t>(slot)];
-        if (allowed_keys.find(key) == allowed_keys.end())
-        {
-            continue;
-        }
-
         const PointCluster &sig_tran = node->sig_tran[slot];
         const PointCluster &sig_orig = node->sig_orig[slot];
         if (sig_tran.N <= 0.0 || sig_orig.N <= 0.0)
@@ -100,11 +92,6 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
     for (int slot = 0; slot < active_count; ++slot)
     {
         const int key = keys[static_cast<size_t>(slot)];
-        if (allowed_keys.find(key) == allowed_keys.end())
-        {
-            continue;
-        }
-
         const PointCluster &sig_orig = node->sig_orig[slot];
         if (sig_orig.N <= 0.0)
             continue;
@@ -134,7 +121,6 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
 inline void collectPlanes(const OCTO_TREE_NODE *node,
                           const std::deque<int> &keys,
                           const std::deque<PointTypePose> &poses,
-                          const std::unordered_set<int> &allowed_keys,
                           std::vector<PlaneObs> &planes)
 {
     if (node == nullptr)
@@ -143,12 +129,12 @@ inline void collectPlanes(const OCTO_TREE_NODE *node,
     if (node->octo_state == 1)
     {
         for (const auto *child : node->leaves)
-            collectPlanes(child, keys, poses, allowed_keys, planes);
+            collectPlanes(child, keys, poses, planes);
         return;
     }
 
     PlaneObs obs;
-    if (buildPlaneObs(node, keys, poses, allowed_keys, obs))
+    if (buildPlaneObs(node, keys, poses, obs))
         planes.push_back(std::move(obs));
 }
 
@@ -214,15 +200,14 @@ void Plane::update(int key,
     return;
 }
 
-void Plane::extract(const std::unordered_set<int> &allowed_keys,
-                    std::vector<PlaneObs> &planes) const
+void Plane::extract(std::vector<PlaneObs> &planes) const
 {
     planes.clear();
     if (keys_.empty() || poses_.empty())
         return;
 
     for (const auto &entry : surf_map_)
-        collectPlanes(entry.second, keys_, poses_, allowed_keys, planes);
+        collectPlanes(entry.second, keys_, poses_, planes);
 }
 
 const std::deque<int> &Plane::keys() const
