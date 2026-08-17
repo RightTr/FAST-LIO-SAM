@@ -88,8 +88,8 @@ Plane plane;
 FloorMap floorMap;
 
 std::mutex mtxSceneBatch;
-
-std::deque<SceneBatch> sceneBatchQueue;
+SceneBatch sceneBatch;
+bool sceneReady = false;
 gtsam::noiseModel::Diagonal::shared_ptr planeNoise;
 gtsam::SharedNoiseModel floorNormalPriorNoise;
 gtsam::SharedNoiseModel floorPlaneNoise;
@@ -99,7 +99,7 @@ Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
 std::mutex mtx;
 std::mutex mtxLoopInfo;
 std::mutex mtxGnssFactor;
-bool poseDirty = false;
+bool planeDirty = false;
 bool poseTreeDirty = false;
 
 bool graphUpdate = false;
@@ -121,7 +121,6 @@ std::unordered_set<int> yaw_keys;
 
 void correctPoses();
 void ReconstructIkdTree();
-void updateSceneGraph();
 void performSceneMatching();
 
 void setGravityUp(const Eigen::Vector3d &gravity_up)
@@ -346,6 +345,9 @@ bool detectLoopClosureDistance(int loopKeyCur, int *closestID)
 
 void performLoopClosure(int loopKeyCur)
 {
+    if (floorMap.inTransition())
+        return;
+
     if (cloudKeyPoses3D->points.empty())
         return;
 
@@ -528,6 +530,67 @@ void addLoopFactor()
 
     loopIsClosed = true;
     graphUpdate = true;
+}
+
+bool addSceneFactor()
+{
+    SceneBatch batch;
+    {
+        std::lock_guard<std::mutex> lock(mtxSceneBatch);
+        if (!sceneReady)
+            return false;
+
+        batch = std::move(sceneBatch);
+        sceneBatch = SceneBatch();
+        sceneReady = false;
+    }
+
+    const gtsam::Unit3 floor_up(getGravityUp());
+
+    for (const auto &plane : batch.planes)
+    {
+        const gtsam::Key fkey = gtsam::Symbol('f', plane.floor);
+        const gtsam::Key pkey = gtsam::Symbol('p', plane.id);
+
+        if (!initialEstimate.exists(fkey) &&
+            !isamCurrentEstimate.exists(fkey))
+        {
+            initialEstimate.insert(fkey, floor_up);
+            gtSAMgraph.add(
+                gtsam::PriorFactor<gtsam::Unit3>(
+                    fkey,
+                    floor_up,
+                    floorNormalPriorNoise));
+        }
+
+        if (!initialEstimate.exists(pkey) &&
+            !isamCurrentEstimate.exists(pkey))
+        {
+            initialEstimate.insert(
+                pkey,
+                gtsam::OrientedPlane3(plane.plane));
+        }
+
+        gtSAMgraph.add(
+            boost::shared_ptr<FloorFactor>(
+                new FloorFactor(
+                    fkey,
+                    pkey,
+                    floorPlaneNoise)));
+    }
+
+    for (const auto &factor : batch.factors)
+    {
+        gtSAMgraph.add(
+            gtsam::OrientedPlane3Factor(
+                factor.obs,
+                planeNoise,
+                static_cast<gtsam::Key>(factor.key),
+                gtsam::Symbol('p', factor.id)));
+    }
+
+    graphUpdate = true;
+    return true;
 }
 
 bool findNearestKeyframeByTime(const std::vector<PointTypePose> &keyposes,
@@ -866,6 +929,8 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     // odom factor
     addOdomFactor();
 
+    addSceneFactor();
+
     addGNSSFactor();
 
     addGNSSYawFactor();
@@ -969,74 +1034,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
 }
 
-void updateSceneGraph()
-{
-    if (!planeNoise || !floorNormalPriorNoise || !floorPlaneNoise)
-        return;
-
-    std::deque<SceneBatch> batches;
-    {
-        std::lock_guard<std::mutex> lock(mtxSceneBatch);
-        if (sceneBatchQueue.empty())
-            return;
-
-        batches.swap(sceneBatchQueue);
-    }
-
-    const gtsam::Unit3 floor_up(getGravityUp());
-
-    for (const auto &batch : batches)
-    {
-        for (const auto &plane : batch.planes)
-        {
-            const gtsam::Key fkey = gtsam::Symbol('f', plane.floor);
-            const gtsam::Key pkey = gtsam::Symbol('p', plane.id);
-
-            if (!initialEstimate.exists(fkey) &&
-                !isamCurrentEstimate.exists(fkey))
-            {
-                initialEstimate.insert(fkey, floor_up);
-                gtSAMgraph.add(gtsam::PriorFactor<gtsam::Unit3>(
-                    fkey,
-                    floor_up,
-                    floorNormalPriorNoise));
-            }
-
-            if (!initialEstimate.exists(pkey) &&
-                !isamCurrentEstimate.exists(pkey))
-            {
-                initialEstimate.insert(pkey, gtsam::OrientedPlane3(plane.plane));
-            }
-
-            gtSAMgraph.add(
-                boost::shared_ptr<FloorFactor>(
-                    new FloorFactor(fkey, pkey, floorPlaneNoise)));
-        }
-
-        for (const auto &factor : batch.factors)
-        {
-            gtSAMgraph.add(
-                gtsam::OrientedPlane3Factor(
-                    factor.obs,
-                    planeNoise,
-                    static_cast<gtsam::Key>(factor.key),
-                    gtsam::Symbol('p', factor.id)));
-        }
-    }
-
-    if (gtSAMgraph.size() == 0)
-        return;
-
-    isam->update(gtSAMgraph, initialEstimate);
-    isam->update();
-
-    gtSAMgraph.resize(0);
-    initialEstimate.clear();
-
-    isamCurrentEstimate = isam->calculateEstimate();
-    graphUpdate = true;
-}
-
 void shutdownMapOptimization()
 {
     pubKeyPoses.reset();
@@ -1082,6 +1079,12 @@ void performSceneMatching()
 
     static int lastProcessedKey = -1;
 
+    {
+        std::lock_guard<std::mutex> lock(mtxSceneBatch);
+        if (sceneReady)
+            return;
+    }
+
     std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
     std::vector<PointTypePose> poses;
     bool rebuild = false;
@@ -1095,8 +1098,8 @@ void performSceneMatching()
         if (numKeyFrame <= 0 || lastProcessedKey >= numKeyFrame - 1)
             return;
 
-        rebuild = poseDirty;
-        poseDirty = false;
+        rebuild = planeDirty;
+        planeDirty = false;
 
         clouds.assign(
             featCloudKeyFrames.begin(),
@@ -1131,14 +1134,22 @@ void performSceneMatching()
             plane.poses(),
             batch);
 
-        std::lock_guard<std::mutex> lock(mtx);
-        if (poseDirty)
-            return;
-
         if (valid)
         {
+            {
+                std::lock_guard<std::mutex> lock(mtx);
+                if (planeDirty)
+                    return;
+            }
+
             std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-            sceneBatchQueue.push_back(std::move(batch));
+            if (sceneReady)
+                return;
+
+            sceneBatch = std::move(batch);
+            sceneReady = true;
+            lastProcessedKey = key;
+            return;
         }
 
         lastProcessedKey = key;
@@ -1183,6 +1194,7 @@ void correctPoses()
 
     if (graphUpdate)
     {
+        bool clearSceneQueue = false;
         {
             std::lock_guard<std::mutex> lock(mtx);
 
@@ -1211,10 +1223,19 @@ void correctPoses()
                 updatePath(cloudKeyPoses6D->points[i]);
             }
 
-            poseDirty = true;
             poseTreeDirty = true;
+            if (loopIsClosed)
+            {
+                planeDirty = true;
+                clearSceneQueue = true;
+            }
+        }
+
+        if (clearSceneQueue)
+        {
             std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-            sceneBatchQueue.clear();
+            sceneBatch = SceneBatch();
+            sceneReady = false;
         }
     }
 

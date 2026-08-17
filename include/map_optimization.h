@@ -53,8 +53,6 @@ Eigen::Vector3d getGravityUp();
 
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
 
-void updateSceneGraph();
-
 bool isKeyFrame();
 
 void correctPoses();

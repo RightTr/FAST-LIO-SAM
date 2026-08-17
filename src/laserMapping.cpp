@@ -1929,7 +1929,6 @@ int main(int argc, char** argv)
                 {
                     saveKeyFramesAndFactor(feats_undistort);
                 }
-                updateSceneGraph();
                 correctPoses();
                 publishSamMsg();
             }

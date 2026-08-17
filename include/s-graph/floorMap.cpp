@@ -3,6 +3,7 @@
 #include "common_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -210,6 +211,7 @@ void FloorMap::update(int key,
 
     if (std::abs(angle) > kStairStartAngle)
         landing_distance_ = 0.0;
+
 }
 
 bool FloorMap::sameFloor(int key1, int key2) const
@@ -223,6 +225,12 @@ bool FloorMap::sameFloor(int key1, int key2) const
     return floor1 >= 0 && floor1 == key_floor_[static_cast<size_t>(key2)];
 }
 
+bool FloorMap::inTransition() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return transition_ != 0;
+}
+
 bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
                             const std::deque<int> &keys,
                             const std::deque<PointTypePose> &poses,
@@ -230,6 +238,9 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
 {
     std::lock_guard<std::mutex> lock(mutex_);
     batch = SceneBatch();
+    if (transition_ != 0)
+        return false;
+
     if (keys.empty() || poses.empty() || planes.empty())
         return false;
 
@@ -243,9 +254,11 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         return false;
 
     Ground *best_ground = nullptr;
+    size_t best_ground_index = 0;
     double best_xy = std::numeric_limits<double>::infinity();
-    for (auto &ground : floor.grounds)
+    for (size_t i = 0; i < floor.grounds.size(); ++i)
     {
+        auto &ground = floor.grounds[i];
         const double dot = clampDot(
             ground.plane.head<3>().dot(candidate.plane.head<3>()));
         const double angle = std::acos(dot);
@@ -258,49 +271,47 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
 
         best_xy = xy;
         best_ground = &ground;
+        best_ground_index = i;
     }
 
-    Ground new_ground;
     Ground *active_ground = best_ground;
     const bool is_new_ground = (active_ground == nullptr);
     const int ground_id = is_new_ground ? next_plane_id_ : active_ground->id;
+    const int key = keys.back();
     const int last_added_key = active_ground ? active_ground->last_key : -1;
-    int newest_key = last_added_key;
+
+    if (key <= last_added_key)
+        return false;
+
+    const auto it = candidate.obs.find(key);
+    if (it == candidate.obs.end())
+        return false;
+
+    batch.factors.emplace_back(key, ground_id, it->second);
 
     if (is_new_ground)
     {
+        Ground new_ground;
         new_ground.id = ground_id;
         new_ground.plane = candidate.plane;
         new_ground.center = candidate.center;
-    }
-
-    for (const auto &kv : candidate.obs)
-    {
-        const int key = kv.first;
-        const Eigen::Vector4d &factor_obs = kv.second;
-        if (key <= last_added_key)
-            continue;
-
-        batch.factors.emplace_back(key, ground_id, factor_obs);
-        newest_key = std::max(newest_key, key);
-    }
-
-    if (batch.factors.empty())
-        return false;
-
-    if (is_new_ground)
-    {
-        batch.planes.emplace_back(current_floor_id_, ground_id, candidate.plane);
+        new_ground.last_key = key;
         floor.grounds.push_back(std::move(new_ground));
-        floor.grounds.back().last_key = newest_key;
-        next_plane_id_++;
+        next_plane_id_ = std::max(next_plane_id_, ground_id + 1);
+        batch.planes.emplace_back(current_floor_id_, ground_id, candidate.plane);
     }
     else
     {
         active_ground->plane = candidate.plane;
         active_ground->center = candidate.center;
-        active_ground->last_key = newest_key;
+        active_ground->last_key = key;
     }
 
+    ROS_PRINT_INFO(
+        "[GROUND] floor=%d ground=%d key=%d new=%d",
+        current_floor_id_,
+        ground_id,
+        key,
+        is_new_ground ? 1 : 0);
     return true;
 }

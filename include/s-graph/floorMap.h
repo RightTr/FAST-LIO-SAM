@@ -27,6 +27,7 @@ public:
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
+    bool inTransition() const;
     bool sameFloor(int key1, int key2) const;
 
 private:
