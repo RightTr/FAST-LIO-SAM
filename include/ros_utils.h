@@ -6,6 +6,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <memory>
+#include <type_traits>
+#include <utility>
 
 #ifdef USE_ROS1
 #include <ros/ros.h>
@@ -375,5 +377,17 @@ inline typename rclcpp::Subscription<T>::SharedPtr create_subscriber_qos(const s
     return get_ros_node()->create_subscription<T>(topic, qos, cb);
 }
 #endif
+
+template<typename SubscriberT>
+inline std::shared_ptr<void> keep_subscriber(SubscriberT&& subscriber)
+{
+    using Decayed = std::decay_t<SubscriberT>;
+    return std::shared_ptr<void>(
+        new Decayed(std::forward<SubscriberT>(subscriber)),
+        [](void *ptr)
+        {
+            delete static_cast<Decayed *>(ptr);
+        });
+}
 
 #endif

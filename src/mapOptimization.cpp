@@ -70,6 +70,11 @@ Pcl2Publisher pubLaserCloudGlobal;
 Pcl2Publisher pubRecentKeyFrame;
 MarkerArrayPublisher pubLoopConstraintEdge;
 MarkerArrayPublisher pubKeyFrameYawMarkers;
+#ifdef USE_ROS1
+std::shared_ptr<tf::TransformBroadcaster> samTfBroadcaster;
+#elif defined(USE_ROS2)
+std::shared_ptr<tf2_ros::TransformBroadcaster> samTfBroadcaster;
+#endif
 
 TimeType timeLaserInfoStamp;
 
@@ -245,6 +250,11 @@ void MapOptimizationInit()
     pubRecentKeyFrame = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_recent_keyframe", 1);
     pubLoopConstraintEdge = create_publisher<MarkerArrayMsg>("lio_sam/loop_closure_constraints", 1);
     pubKeyFrameYawMarkers = create_publisher<MarkerArrayMsg>("lio_sam/mapping/keyframe_yaw", 1);
+#ifdef USE_ROS1
+    samTfBroadcaster = std::make_shared<tf::TransformBroadcaster>();
+#elif defined(USE_ROS2)
+    samTfBroadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(get_ros_node());
+#endif
 
     downSizeFilterICP.setLeafSize(mappingICPSize, mappingICPSize, mappingICPSize);
 
@@ -547,17 +557,22 @@ void addLoopFactor()
     graphUpdate = true;
 }
 
+void addGNSSFactor();
+void addGNSSYawFactor();
+
 void poseGraphUpdate()
 {
     std::lock_guard<std::recursive_mutex> poseLock(mtxLoop);
 
+    addGNSSFactor();
+    addGNSSYawFactor();
     addSceneFactor();
     addLoopFactor();
     if (gtSAMgraph.empty())
         return;
 
     isam->update(gtSAMgraph, initialEstimate);
-    for (int i = 0; i < 50; ++i)
+    for (int i = 0; i < 5; ++i)
         isam->update();
 
     gtSAMgraph.resize(0);
@@ -1144,6 +1159,11 @@ void shutdownMapOptimization()
     pubRecentKeyFrame.reset();
     pubLoopConstraintEdge.reset();
     pubKeyFrameYawMarkers.reset();
+#ifdef USE_ROS1
+    samTfBroadcaster.reset();
+#elif defined(USE_ROS2)
+    samTfBroadcaster.reset();
+#endif
 
     if (isam != nullptr)
     {
@@ -1413,12 +1433,8 @@ void gnssMatchingThread()
                 tf_msg.transform.translation.z = pos.p.z();
                 tf_msg.transform.rotation = quaternion_from_rpy(0.0, 0.0, yaw.yaw);
 
-            #ifdef USE_ROS1
-                static tf::TransformBroadcaster br;
-            #elif defined(USE_ROS2)
-                static tf2_ros::TransformBroadcaster br(get_ros_node());
-            #endif
-                br.sendTransform(tf_msg);
+            if (samTfBroadcaster)
+                samTfBroadcaster->sendTransform(tf_msg);
             }
         }
     }

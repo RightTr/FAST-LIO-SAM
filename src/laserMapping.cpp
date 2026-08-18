@@ -94,6 +94,11 @@ double lidar_residual_ref      = 0.05;
 
 std::shared_ptr<GnssProcess> p_gnss = std::make_shared<GnssProcess>();
 PathPublisher pubGnssPath;
+#ifdef USE_ROS1
+std::shared_ptr<tf::TransformBroadcaster> laserTfBroadcaster;
+#elif defined(USE_ROS2)
+std::shared_ptr<tf2_ros::TransformBroadcaster> laserTfBroadcaster;
+#endif
 
 static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
                           const Eigen::Vector3d &t_map_body,
@@ -1063,11 +1068,12 @@ void publishMapToOdomTf(const TimeType& stamp)
     map_to_odom_msg.transform.rotation.w = q_map_odom.w();
 
 #ifdef USE_ROS1
-    static tf::TransformBroadcaster br;
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(map_to_odom_msg);
 #elif defined(USE_ROS2)
-    static tf2_ros::TransformBroadcaster br(get_ros_node());
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(map_to_odom_msg);
 #endif
-    br.sendTransform(map_to_odom_msg);
 }
 
 bool refinePriorPointToPlane(Eigen::Matrix3d &R_map_odom_,
@@ -1301,11 +1307,12 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
         ros_publish(pubOdomHighFreqLocal, msg_local);
 
 #ifdef USE_ROS1
-        static tf::TransformBroadcaster br_hf;
+        if (laserTfBroadcaster)
+            laserTfBroadcaster->sendTransform(tf_msg);
 #elif defined(USE_ROS2)
-        static tf2_ros::TransformBroadcaster br_hf(get_ros_node());
+        if (laserTfBroadcaster)
+            laserTfBroadcaster->sendTransform(tf_msg);
 #endif
-        br_hf.sendTransform(tf_msg);
 
         if (imu_state_save_en && imu_pose_file.is_open())
         {
@@ -1361,11 +1368,12 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
     ros_publish(pubOdomAftMappedLocal, odomAftMapped);
     publishMapToOdomTf(stamp);
 #ifdef USE_ROS1
-    static tf::TransformBroadcaster br;
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(tf_msg);
 #elif defined(USE_ROS2)
-    static tf2_ros::TransformBroadcaster br(get_ros_node());
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(tf_msg);
 #endif
-    br.sendTransform(tf_msg);
 }
 
 void publish_path(const PathPublisher pubPath)
@@ -1723,17 +1731,31 @@ int main(int argc, char** argv)
     /*** debug record ***/
     prepareResultDirs();
 
+    {
     /*** ROS subscribe initialization ***/
+    std::shared_ptr<void> sub_pcl;
+#ifdef USE_ROS1
     if (p_pre->lidar_type == AVIA) {
-        static auto sub_pcl = create_subscriber<LivoxMsg>(lid_topic, 200000, livox_pcl_cbk);
+        sub_pcl = keep_subscriber(
+            create_subscriber<LivoxMsg>(lid_topic, 200000, livox_pcl_cbk));
     } else {
-        static auto sub_pcl = create_subscriber<PointCloud2Msg>(lid_topic, 200000, standard_pcl_cbk);
+        sub_pcl = keep_subscriber(
+            create_subscriber<PointCloud2Msg>(lid_topic, 200000, standard_pcl_cbk));
     }
+#elif defined(USE_ROS2)
+    if (p_pre->lidar_type == AVIA) {
+        sub_pcl = keep_subscriber(
+            create_subscriber<LivoxMsg>(lid_topic, 200000, livox_pcl_cbk));
+    } else {
+        sub_pcl = keep_subscriber(
+            create_subscriber<PointCloud2Msg>(lid_topic, 200000, standard_pcl_cbk));
+    }
+#endif
     
     auto sub_reloc = create_subscriber<PoseStampedMsg>(reloc_topic, 10, reloc_cbk);
     auto sub_imu = create_subscriber<ImuMsg>(imu_topic, 200000, imu_cbk);
-    static auto sub_gnss = create_subscriber<GnssFixMsg>(gnss_topic, 10, gnss_cbk);
-    static auto sub_gnss_heading = create_subscriber<OdometryMsg>(gnss_heading_topic, 10, gnss_heading_cbk);
+    auto sub_gnss = create_subscriber<GnssFixMsg>(gnss_topic, 10, gnss_cbk);
+    auto sub_gnss_heading = create_subscriber<OdometryMsg>(gnss_heading_topic, 10, gnss_heading_cbk);
     auto pubLaserCloudFull = create_publisher<PointCloud2Msg>("/cloud_registered", 100000);
     auto pubLaserCloudFull_body = create_publisher<PointCloud2Msg>("/cloud_registered_body", 100000);
     auto pubLaserCloudEffect = create_publisher<PointCloud2Msg>("/cloud_effected", 100000);
@@ -1757,35 +1779,42 @@ int main(int argc, char** argv)
         MapOptimizationInit();
         printf("...... Pose graph optimization backend start......\n");
     }
+#ifdef USE_ROS1
+        laserTfBroadcaster = std::make_shared<tf::TransformBroadcaster>();
+#elif defined(USE_ROS2)
+        laserTfBroadcaster =
+            std::make_shared<tf2_ros::TransformBroadcaster>(
+                get_ros_node());
+#endif
 
-    std::thread odomhighthread([&](){
-        publish_odometryhighfreq(p_imu->pbuffer, pubOdomHighFreq);
-    });
+        std::thread odomhighthread([&](){
+            publish_odometryhighfreq(p_imu->pbuffer, pubOdomHighFreq);
+        });
 
-    std::thread loopthread;
-    std::thread globalthread;
-    std::thread gnssthread;
-    std::thread structurethread;
-    if (sam_enable)
-    {
-        loopthread = std::thread(&loopClosureThread);
-        globalthread = std::thread(&visualizeGlobalMapThread);
-        if (groundEnableFlag)
+        std::thread loopthread;
+        std::thread globalthread;
+        std::thread gnssthread;
+        std::thread structurethread;
+        if (sam_enable)
         {
-            structurethread = std::thread(&structureMatchingThread);
+            loopthread = std::thread(&loopClosureThread);
+            globalthread = std::thread(&visualizeGlobalMapThread);
+            if (groundEnableFlag)
+            {
+                structurethread = std::thread(&structureMatchingThread);
+            }
+            if (gnssEnableFlag)
+            {
+                gnssthread = std::thread(&gnssMatchingThread);
+            }
         }
-        if (gnssEnableFlag)
-        {
-            gnssthread = std::thread(&gnssMatchingThread);
-        }
-    }
 
 //------------------------------------------------------------------------------------------------------
-    signal(SIGINT, SigHandle);
-    RateType rate(5000);
-    while (ros_ok() && !flg_exit)
-    {
-        spin_once();
+        signal(SIGINT, SigHandle);
+        RateType rate(5000);
+        while (ros_ok() && !flg_exit)
+        {
+            spin_once();
 
         // relocalization trigger
         if(relocalize_flag.load())
@@ -1955,41 +1984,35 @@ int main(int argc, char** argv)
             /*** Debug variables ***/
         }
         
-        const int64_t input_time = last_input_time.load();
-        if (input_time > 0 && nowTimeUs() - input_time >= 2000000) break;
-        rate.sleep();
-    }            
-
-    flg_exit = true;
-    if (odomhighthread.joinable()) {
-        odomhighthread.join();
-    }
-    if (loopthread.joinable()) {
-        loopthread.join();
-    }
-    if (globalthread.joinable()) {
-        globalthread.join();
-    }
-    if (structurethread.joinable()) {
-        structurethread.join();
-    }
-    if (gnssthread.joinable()) {
-        gnssthread.join();
-    }
-
-    if (sam_enable)
-    {
-        poseGraphUpdate();
-        publishSamMsg();
-        visualizeLoopClosure();
-        publishGlobalMap();
-
-        for (int i = 0; i < 3; ++i)
-        {
-            spin_once();
-            usleep(100000);
+            const int64_t input_time = last_input_time.load();
+            if (input_time > 0 && nowTimeUs() - input_time >= 2000000) break;
+            rate.sleep();
         }
-    }
+
+        flg_exit = true;
+        if (odomhighthread.joinable()) {
+            odomhighthread.join();
+        }
+        if (loopthread.joinable()) {
+            loopthread.join();
+        }
+        if (globalthread.joinable()) {
+            globalthread.join();
+        }
+        if (structurethread.joinable()) {
+            structurethread.join();
+        }
+        if (gnssthread.joinable()) {
+            gnssthread.join();
+        }
+
+        if (sam_enable)
+        {
+            poseGraphUpdate();
+            publishSamMsg();
+            visualizeLoopClosure();
+            publishGlobalMap();
+        }
 
     if (pcl_wait_save->size() > 0 && feat_accum_save_en)
     {
@@ -2027,17 +2050,22 @@ int main(int argc, char** argv)
         pcd_writer.writeBinary(global_keyframe_path, *keyframe_global_cloud);
     }
 
-    if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)
-    {
-        save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");
-        const string ikdtree_path = ikdtree_output_dir + "prior_tree.bin";
-        if (ikdtree.SaveIkdtree(ikdtree_path))
-            ROS_PRINT_INFO("saved final ikdtree to %s", ikdtree_path.c_str());
-        else
-            ROS_PRINT_WARN("failed to save final ikdtree to %s", ikdtree_path.c_str());
-    }
+        if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)
+        {
+            save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");
+            const string ikdtree_path = ikdtree_output_dir + "prior_tree.bin";
+            if (ikdtree.SaveIkdtree(ikdtree_path))
+                ROS_PRINT_INFO("saved final ikdtree to %s", ikdtree_path.c_str());
+            else
+                ROS_PRINT_WARN("failed to save final ikdtree to %s", ikdtree_path.c_str());
+        }
 
-    shutdownMapOptimization();
+        shutdownMapOptimization();
+        pubGnssPath.reset();
+        p_pre->pub_corn.reset();
+        p_pre->pub_surf.reset();
+        laserTfBroadcaster.reset();
+    }
 
     ros_shutdown();
 
