@@ -29,7 +29,7 @@ float globalMapVisualizationLeafSize;
 float mappingICPSize;
 float groundAssociationAngleDeg;
 float groundAssociationDistance;
-double floorHeight = 4.0;
+double floorHeight;
 
 int ikdtreeSearchNeighborNum;
 

@@ -592,6 +592,8 @@ void lasermap_fov_segment()
 
 void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
 {
+    last_input_time.store(nowTimeUs());
+
     mtx_buffer.lock();
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
     const double corrected_timestamp = raw_timestamp + imu_timestamp_offset_sec;
@@ -617,6 +619,8 @@ double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
 void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg) 
 {
+    last_input_time.store(nowTimeUs());
+
     mtx_buffer.lock();
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
     const double corrected_timestamp = raw_timestamp + imu_timestamp_offset_sec; // vital!!!
@@ -1766,7 +1770,7 @@ int main(int argc, char** argv)
     {
         loopthread = std::thread(&loopClosureThread);
         globalthread = std::thread(&visualizeGlobalMapThread);
-        if (sceneEnableFlag && groundEnableFlag)
+        if (groundEnableFlag)
         {
             structurethread = std::thread(&structureMatchingThread);
         }
@@ -1950,7 +1954,9 @@ int main(int argc, char** argv)
             if (feature_pub_en && use_prior_map) publish_prior_map(pubLaserCloudPriorMap);
             /*** Debug variables ***/
         }
-
+        
+        const int64_t input_time = last_input_time.load();
+        if (input_time > 0 && nowTimeUs() - input_time >= 2000000) break;
         rate.sleep();
     }            
 
@@ -1964,11 +1970,11 @@ int main(int argc, char** argv)
     if (globalthread.joinable()) {
         globalthread.join();
     }
-    if (gnssthread.joinable()) {
-        gnssthread.join();
-    }
     if (structurethread.joinable()) {
         structurethread.join();
+    }
+    if (gnssthread.joinable()) {
+        gnssthread.join();
     }
 
     if (sam_enable)

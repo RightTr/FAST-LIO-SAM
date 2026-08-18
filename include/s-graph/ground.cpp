@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <iterator>
 #include <unordered_map>
 
 namespace
@@ -59,9 +60,10 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
         for (const auto &kv : plane->obs)
         {
             const int key = kv.first;
-            const int local_id = key - keys.front();
-            if (local_id < 0 || local_id >= static_cast<int>(poses.size()))
+            const auto key_it = std::find(keys.begin(), keys.end(), key);
+            if (key_it == keys.end())
                 continue;
+            const int local_id = static_cast<int>(std::distance(keys.begin(), key_it));
 
             Eigen::Vector4d obs = kv.second;
             if (!normalizePlane(obs))
@@ -155,13 +157,23 @@ bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
     if (seeds.empty())
         return false;
 
-    const PlaneObs *seed = *std::max_element(
-        seeds.begin(),
-        seeds.end(),
-        [](const PlaneObs *a, const PlaneObs *b)
+    const PlaneObs *seed = nullptr;
+    int best_support = -1;
+    double best_distance = std::numeric_limits<double>::infinity();
+    for (const auto *cand : seeds)
+    {
+        const int support = cand->n;
+        const double distance = (cand->center - cur_pos).norm();
+
+        if (seed == nullptr ||
+            support > best_support ||
+            (support == best_support && distance < best_distance))
         {
-            return a->n < b->n;
-        });
+            seed = cand;
+            best_support = support;
+            best_distance = distance;
+        }
+    }
 
     Eigen::Vector4d seed_plane = seed->plane;
     if (!normalizePlane(seed_plane))

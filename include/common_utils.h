@@ -31,6 +31,13 @@ inline std::string format_unix_time(double t)
     return oss.str();
 }
 
+inline int64_t nowTimeUs()
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 inline double normalizeYaw(double yaw, double offset = 0.0)
 {
     yaw += offset;

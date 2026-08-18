@@ -87,9 +87,6 @@ PathMsg globalPath;
 Plane plane;
 FloorMap floorMap;
 
-std::mutex mtxSceneBatch;
-SceneBatch sceneBatch;
-bool sceneReady = false;
 gtsam::noiseModel::Diagonal::shared_ptr planeNoise;
 gtsam::SharedNoiseModel floorNormalPriorNoise;
 gtsam::SharedNoiseModel floorPlaneNoise;
@@ -98,13 +95,14 @@ Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
 
 std::recursive_mutex mtxLoop;
 std::mutex mtxGnssFactor;
-bool planeDirty = false;
-bool planeResetPending = false;
-int planeResetKey = -1;
+std::mutex mtxSceneBatch;
 bool poseTreeDirty = false;
 
 bool graphUpdate = false;
 bool loopIsClosed = false;
+SceneBatch sceneBatch;
+bool sceneReady = false;
+int planeResetKey = -1;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
 vector<pair<int, int>> loopIndexQueue;
@@ -121,7 +119,9 @@ std::unordered_set<int> yaw_keys;
 
 void correctPoses();
 void ReconstructIkdTree();
-void performSceneMatching();
+bool addSceneFactor();
+bool performSceneMatching();
+void structureMatchingThread();
 
 void setGravityUp(const Eigen::Vector3d &gravity_up)
 {
@@ -301,10 +301,7 @@ bool detectLoopClosureDistance(int loopKeyCur,
     current_pose = cloudKeyPoses3D->points[loopKeyCur];
     current_time = cloudKeyPoses6D->points[loopKeyCur].time;
     nearPoses.clear();
-    ikdtreeHistoryKeyPoses->Radius_Search(
-        current_pose,
-        historyKeyframeSearchRadius,
-        nearPoses);
+    ikdtreeHistoryKeyPoses->Radius_Search(current_pose, historyKeyframeSearchRadius, nearPoses);
 
     int loopKeyPre = -1;
     float nearestSqDis = std::numeric_limits<float>::max();
@@ -365,7 +362,6 @@ void performLoopClosure(int loopKeyCur)
     FloorRange currentRange;
     if (!floorMap.getFloorRanges(loopKeyCur, floorRanges, currentRange))
         return;
-    (void)currentRange;
 
     // find keys
     int loopKeyPre;
@@ -433,7 +429,7 @@ void performLoopClosure(int loopKeyCur)
 
     // ICP Settings
     static pcl::IterativeClosestPoint<PointTypeIndex, PointTypeIndex> icp;
-    icp.setMaxCorrespondenceDistance(historyKeyframeSearchRadius*2);
+    icp.setMaxCorrespondenceDistance(2.0);
     icp.setMaximumIterations(100);
     icp.setTransformationEpsilon(1e-6);
     icp.setEuclideanFitnessEpsilon(1e-6);
@@ -555,12 +551,13 @@ void poseGraphUpdate()
 {
     std::lock_guard<std::recursive_mutex> poseLock(mtxLoop);
 
+    addSceneFactor();
     addLoopFactor();
     if (gtSAMgraph.empty())
         return;
 
     isam->update(gtSAMgraph, initialEstimate);
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < 50; ++i)
         isam->update();
 
     gtSAMgraph.resize(0);
@@ -574,6 +571,7 @@ void poseGraphUpdate()
 bool addSceneFactor()
 {
     SceneBatch batch;
+
     {
         std::lock_guard<std::mutex> lock(mtxSceneBatch);
         if (!sceneReady)
@@ -630,6 +628,70 @@ bool addSceneFactor()
 
     graphUpdate = true;
     return true;
+}
+
+void structureMatchingThread()
+{
+    if (!sceneEnableFlag || !groundEnableFlag)
+        return;
+
+    RateType rate(20);
+    while (ros_ok() && !flg_exit)
+    {
+        rate.sleep();
+        performSceneMatching();
+    }
+}
+
+bool performSceneMatching()
+{
+    if (!groundEnableFlag)
+        return false;
+
+    std::lock_guard<std::recursive_mutex> lock(mtxLoop);
+
+    {
+        std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
+        if (sceneReady)
+            return false;
+    }
+
+    static int lastKey = -1;
+
+    if (planeResetKey >= 0)
+    {
+        plane.reset();
+        lastKey = planeResetKey - 1;
+        planeResetKey = -1;
+    }
+
+    const int numKeyFrame = std::min(
+        featCloudKeyFrames.size(),
+        cloudKeyOdomPoses6D->points.size());
+
+
+    for (int key = lastKey + 1; key < numKeyFrame; ++key)
+    {
+        plane.update(key, featCloudKeyFrames[key], cloudKeyOdomPoses6D->points[key]);
+        lastKey = key;
+
+        if (key < 3 || key % 3 != 0)
+            continue;
+
+        std::vector<PlaneObs> planes;
+        plane.extract(planes);
+
+        SceneBatch batch;
+        if (!floorMap.updateGround(planes, plane.keys(), plane.poses(), batch))
+            continue;
+        {
+            std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
+            sceneBatch = std::move(batch);
+            sceneReady = true;
+        }
+        return true;
+    }
+    return false;
 }
 
 bool findNearestKeyframeByTime(const std::vector<PointTypePose> &keyposes,
@@ -968,19 +1030,12 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
     // odom factor
     addOdomFactor();
-
-    addSceneFactor();
-
     addGNSSFactor();
 
     addGNSSYawFactor();
+    addSceneFactor();
     // loop factor
     addLoopFactor();
-
-    // cout << "****************************************************" << endl;
-    // gtSAMgraph.print("GTSAM Graph:\n");
-
-    // update iSAM
     isam->update(gtSAMgraph, initialEstimate);
     isam->update();
 
@@ -996,15 +1051,13 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     gtSAMgraph.resize(0);
     initialEstimate.clear();
 
+    isamCurrentEstimate = isam->calculateEstimate();
+    graphUpdate = true;
+
     //save key poses
     PointTypeIndex thisPose3D;
     PointTypePose thisPose6D;
-    Pose3 latestEstimate;
-
-    isamCurrentEstimate = isam->calculateEstimate();
-    latestEstimate = isamCurrentEstimate.at<Pose3>(latestPoseKey);
-    // cout << "****************************************************" << endl;
-    // isamCurrentEstimate.print("Current estimate: ");
+    const Pose3 latestEstimate = isamCurrentEstimate.at<Pose3>(latestPoseKey);
 
     thisPose3D.x = latestEstimate.translation().x();
     thisPose3D.y = latestEstimate.translation().y();
@@ -1028,11 +1081,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
         floorChanged = floorMap.update(
             static_cast<int>(cloudKeyPoses6D->points.size()) - 1,
             OdomPose);
-        if (floorChanged)
-        {
-            planeResetPending = true;
-            planeResetKey = static_cast<int>(cloudKeyPoses6D->points.size()) - 1;
-        }
         updatePath(thisPose6D);
 
         // cout << "****************************************************" << endl;
@@ -1075,15 +1123,17 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
         } else {
             ikdtreeHistoryKeyPoses->Add_Point(thisPose3D);
         }
+
     }
 
+    const int currentKey = static_cast<int>(cloudKeyPoses3D->points.size()) - 1;
     if (floorChanged)
     {
         std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
         sceneBatch = SceneBatch();
         sceneReady = false;
+        planeResetKey = currentKey;
     }
-
 }
 
 void shutdownMapOptimization()
@@ -1099,140 +1149,6 @@ void shutdownMapOptimization()
     {
         delete isam;
         isam = nullptr;
-    }
-}
-
-static void rebuildPlane(
-    int lastProcessedKey,
-    const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds,
-    const std::vector<PointTypePose> &poses)
-{
-    if (lastProcessedKey < 0)
-        return;
-
-    plane.reset();
-
-    const int begin = std::max(0, lastProcessedKey - Plane::kWindowSize + 1);
-    for (int key = begin; key <= lastProcessedKey; ++key)
-    {
-        if (key < 0 || key >= static_cast<int>(clouds.size()))
-            continue;
-        if (!clouds[key])
-            continue;
-
-        plane.update(key, clouds[key], poses[key]);
-    }
-}
-
-void performSceneMatching()
-{
-    if (!groundEnableFlag)
-        return;
-
-    static int lastProcessedKey = -1;
-
-    {
-        std::lock_guard<std::mutex> lock(mtxSceneBatch);
-        if (sceneReady)
-            return;
-    }
-
-    std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
-    std::vector<PointTypePose> poses;
-    bool resetPlane = false;
-    int resetKey = -1;
-    bool rebuild = false;
-    {
-        std::lock_guard<std::recursive_mutex> lock(mtxLoop);
-        if (!cloudKeyPoses6D)
-            return;
-
-        if (planeResetPending)
-        {
-            resetPlane = true;
-            resetKey = planeResetKey;
-            planeResetPending = false;
-        }
-
-        const int numKeyFrame = static_cast<int>(
-            std::min(featCloudKeyFrames.size(), cloudKeyPoses6D->points.size()));
-        if (numKeyFrame <= 0 || lastProcessedKey >= numKeyFrame - 1)
-        {
-            if (!resetPlane)
-                return;
-        }
-
-        if (resetPlane)
-        {
-            plane.reset();
-            lastProcessedKey = resetKey - 1;
-            planeDirty = false;
-        }
-
-        if (numKeyFrame <= 0)
-            return;
-
-        rebuild = planeDirty && !resetPlane;
-        if (rebuild)
-            planeDirty = false;
-
-        clouds.assign(
-            featCloudKeyFrames.begin(),
-            featCloudKeyFrames.begin() + numKeyFrame);
-        poses.assign(
-            cloudKeyPoses6D->points.begin(),
-            cloudKeyPoses6D->points.begin() + numKeyFrame);
-    }
-
-    if (rebuild)
-        rebuildPlane(lastProcessedKey, clouds, poses);
-
-    for (int key = lastProcessedKey + 1; key < static_cast<int>(clouds.size()); ++key)
-    {
-        plane.update(key, clouds[key], poses[key]);
-
-        std::vector<PlaneObs> ground_plane_obs;
-        plane.extract(ground_plane_obs);
-
-        SceneBatch batch;
-        const bool valid = floorMap.updateGround(
-            ground_plane_obs,
-            plane.keys(),
-            plane.poses(),
-            batch);
-
-        if (valid)
-        {
-            {
-                std::lock_guard<std::recursive_mutex> lock(mtxLoop);
-                if (planeDirty)
-                    return;
-            }
-
-            std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-            if (sceneReady)
-                return;
-
-            sceneBatch = std::move(batch);
-            sceneReady = true;
-            lastProcessedKey = key;
-            return;
-        }
-
-        lastProcessedKey = key;
-    }
-}
-
-void structureMatchingThread()
-{
-    if (!sceneEnableFlag || !groundEnableFlag)
-        return;
-
-    RateType rate(20);
-    while (ros_ok() && !flg_exit)
-    {
-        rate.sleep();
-        performSceneMatching();
     }
 }
 
@@ -1261,7 +1177,6 @@ void correctPoses()
 
     if (graphUpdate)
     {
-        bool clearSceneQueue = false;
         {
             std::lock_guard<std::recursive_mutex> lock(mtxLoop);
 
@@ -1291,18 +1206,6 @@ void correctPoses()
             }
 
             poseTreeDirty = true;
-            if (loopIsClosed)
-            {
-                planeDirty = true;
-                clearSceneQueue = true;
-            }
-        }
-
-        if (clearSceneQueue)
-        {
-            std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-            sceneBatch = SceneBatch();
-            sceneReady = false;
         }
     }
 
