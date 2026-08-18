@@ -1775,10 +1775,7 @@ int main(int argc, char** argv)
     p_pre->pub_corn = create_publisher<PointCloud2Msg>("/corn_feature", 100000);
     p_pre->pub_surf = create_publisher<PointCloud2Msg>("/surf_feature", 100000);
 
-    if (sam_enable) {
-        MapOptimizationInit();
-        printf("...... Pose graph optimization backend start......\n");
-    }
+    if (sam_enable) MapOptimizationInit();
 #ifdef USE_ROS1
         laserTfBroadcaster = std::make_shared<tf::TransformBroadcaster>();
 #elif defined(USE_ROS2)

@@ -105,9 +105,7 @@ bool poseTreeDirty = false;
 
 bool graphUpdate = false;
 bool loopIsClosed = false;
-SceneBatch sceneBatch;
-bool sceneReady = false;
-int planeResetKey = -1;
+std::deque<SceneBatch> sceneQueue;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
 vector<pair<int, int>> loopIndexQueue;
@@ -283,7 +281,6 @@ bool isKeyFrame()
 }  
 
 bool detectLoopClosureDistance(int loopKeyCur,
-                               const std::vector<FloorRange> &floorRanges,
                                int *closestID)
 {
     std::lock_guard<std::recursive_mutex> lock(mtxLoop);
@@ -329,18 +326,7 @@ bool detectLoopClosureDistance(int loopKeyCur,
         if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
             continue;
 
-        bool inFloorRange = false;
-        for (const auto &range : floorRanges)
-        {
-            if (id < range.begin)
-                continue;
-            if (range.end >= 0 && id > range.end)
-                continue;
-            inFloorRange = true;
-            break;
-        }
-
-        if (!inFloorRange)
+        if (!floorMap.sameFloor(loopKeyCur, id))
             continue;
 
         const float dx = near_pose.x - current_pose.x;
@@ -368,14 +354,9 @@ void performLoopClosure(int loopKeyCur)
     if (cloudKeyPoses3D->points.empty())
         return;
 
-    std::vector<FloorRange> floorRanges;
-    FloorRange currentRange;
-    if (!floorMap.getFloorRanges(loopKeyCur, floorRanges, currentRange))
-        return;
-
     // find keys
     int loopKeyPre;
-    if (detectLoopClosureDistance(loopKeyCur, floorRanges, &loopKeyPre) == false)
+    if (detectLoopClosureDistance(loopKeyCur, &loopKeyPre) == false)
         return;
 
     // extract cloud
@@ -390,22 +371,15 @@ void performLoopClosure(int loopKeyCur)
     curCloud = featCloudKeyFrames[loopKeyCur];
     curPose = cloudKeyPoses6D->points[loopKeyCur];
 
+    std::vector<FloorRange> prevFloorRanges;
+    FloorRange loopPreRange;
+    if (!floorMap.getFloorRanges(loopKeyPre, prevFloorRanges, loopPreRange))
+        return;
+
     const int cloudSize = static_cast<int>(
         std::min(featCloudKeyFrames.size(), cloudKeyPoses6D->points.size()));
-    FloorRange loopPreRange;
-    for (const auto &range : floorRanges)
-    {
-        if (loopKeyPre < range.begin)
-            continue;
-        if (range.end >= 0 && loopKeyPre > range.end)
-            continue;
-
-        loopPreRange = range;
-        break;
-    }
-
-    const int rangeEnd = loopPreRange.end >= 0 ? loopPreRange.end : cloudSize - 1;
     const int historyBegin = std::max(loopKeyPre - historyKeyframeSearchNum, loopPreRange.begin);
+    const int rangeEnd = loopPreRange.end >= 0 ? loopPreRange.end : cloudSize - 1;
     const int historyEnd = std::min(loopKeyPre + historyKeyframeSearchNum, rangeEnd);
     for (int keyNear = historyBegin; keyNear <= historyEnd; ++keyNear)
     {
@@ -585,63 +559,66 @@ void poseGraphUpdate()
 
 bool addSceneFactor()
 {
-    SceneBatch batch;
+    std::deque<SceneBatch> batches;
 
     {
         std::lock_guard<std::mutex> lock(mtxSceneBatch);
-        if (!sceneReady)
+        if (sceneQueue.empty())
             return false;
 
-        batch = std::move(sceneBatch);
-        sceneBatch = SceneBatch();
-        sceneReady = false;
+        batches.swap(sceneQueue);
     }
 
-    const gtsam::Unit3 floor_up(getGravityUp());
-
-    for (const auto &plane : batch.planes)
+    while (!batches.empty())
     {
-        const gtsam::Key fkey = gtsam::Symbol('f', plane.floor);
-        const gtsam::Key pkey = gtsam::Symbol('p', plane.id);
+        SceneBatch batch = std::move(batches.front());
+        batches.pop_front();
 
-        if (!initialEstimate.exists(fkey) &&
-            !isamCurrentEstimate.exists(fkey))
+        const gtsam::Unit3 floor_up(getGravityUp());
+
+        for (const auto &plane : batch.planes)
         {
-            initialEstimate.insert(fkey, floor_up);
-            gtSAMgraph.add(
-                gtsam::PriorFactor<gtsam::Unit3>(
-                    fkey,
-                    floor_up,
-                    floorNormalPriorNoise));
-        }
+            const gtsam::Key fkey = gtsam::Symbol('f', plane.floor);
+            const gtsam::Key pkey = gtsam::Symbol('p', plane.id);
 
-        if (!initialEstimate.exists(pkey) &&
-            !isamCurrentEstimate.exists(pkey))
-        {
-            initialEstimate.insert(
-                pkey,
-                gtsam::OrientedPlane3(plane.plane));
-        }
+            if (!initialEstimate.exists(fkey) &&
+                !isamCurrentEstimate.exists(fkey))
+            {
+                initialEstimate.insert(fkey, floor_up);
+                gtSAMgraph.add(
+                    gtsam::PriorFactor<gtsam::Unit3>(
+                        fkey,
+                        floor_up,
+                        floorNormalPriorNoise));
+            }
 
-        gtSAMgraph.add(
-            boost::shared_ptr<FloorFactor>(
-                new FloorFactor(
-                    fkey,
+            if (!initialEstimate.exists(pkey) &&
+                !isamCurrentEstimate.exists(pkey))
+            {
+                initialEstimate.insert(
                     pkey,
-                    floorPlaneNoise)));
-    }
+                    gtsam::OrientedPlane3(plane.plane));
+            }
 
-    for (const auto &factor : batch.factors)
-    {
-        gtSAMgraph.add(
-            gtsam::OrientedPlane3Factor(
-                factor.obs,
-                planeNoise,
-                static_cast<gtsam::Key>(factor.key),
-                gtsam::Symbol('p', factor.id)));
-    }
+            gtSAMgraph.add(
+                boost::shared_ptr<FloorFactor>(
+                    new FloorFactor(
+                        fkey,
+                        pkey,
+                        floorPlaneNoise)));
+        }
 
-    graphUpdate = true;
+        for (const auto &factor : batch.factors)
+        {
+            gtSAMgraph.add(
+                gtsam::OrientedPlane3Factor(
+                    factor.obs,
+                    planeNoise,
+                    static_cast<gtsam::Key>(factor.key),
+                    gtsam::Symbol('p', factor.id)));
+        }
+        graphUpdate = true;
+    }
     return true;
 }
 
@@ -665,36 +642,17 @@ bool performSceneMatching()
 
     std::lock_guard<std::recursive_mutex> lock(mtxLoop);
 
-    {
-        std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-        if (sceneReady)
-            return false;
-    }
-
     static int lastKey = -1;
 
     const int numKeyFrame = static_cast<int>(std::min(
         featCloudKeyFrames.size(),
         cloudKeyOdomPoses6D->points.size()));
 
-    if (floorMap.inTransition())
-    {
-        plane.reset();
-        lastKey = numKeyFrame - 1;
-        return false;
-    }
-
-    if (planeResetKey >= 0)
-    {
-        plane.reset();
-        lastKey = planeResetKey - 1;
-        planeResetKey = -1;
-    }
-
-
+    bool enqueued = false;
     for (int key = lastKey + 1; key < numKeyFrame; ++key)
     {
         plane.update(key, featCloudKeyFrames[key], cloudKeyOdomPoses6D->points[key]);
+        floorMap.update(key, cloudKeyOdomPoses6D->points[key]);
         lastKey = key;
 
         if (key < 3 || key % 3 != 0)
@@ -708,12 +666,11 @@ bool performSceneMatching()
             continue;
         {
             std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-            sceneBatch = std::move(batch);
-            sceneReady = true;
+            sceneQueue.push_back(std::move(batch));
         }
-        return true;
+        enqueued = true;
     }
-    return false;
+    return enqueued;
 }
 
 bool findNearestKeyframeByTime(const std::vector<PointTypePose> &keyposes,
@@ -1048,7 +1005,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 {
     const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
     const gtsam::Key latestPoseKey = static_cast<gtsam::Key>(cloudKeyPoses3D->size());
-    bool floorChanged = false;
 
     // odom factor
     addOdomFactor();
@@ -1100,9 +1056,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
         cloudKeyPoses3D->push_back(thisPose3D);
         cloudKeyPoses6D->push_back(thisPose6D);
-        floorChanged = floorMap.update(
-            static_cast<int>(cloudKeyPoses6D->points.size()) - 1,
-            OdomPose);
         updatePath(thisPose6D);
 
         // cout << "****************************************************" << endl;
@@ -1148,14 +1101,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
     }
 
-    const int currentKey = static_cast<int>(cloudKeyPoses3D->points.size()) - 1;
-    if (floorChanged)
-    {
-        std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-        sceneBatch = SceneBatch();
-        sceneReady = false;
-        planeResetKey = currentKey;
-    }
 }
 
 void shutdownMapOptimization()

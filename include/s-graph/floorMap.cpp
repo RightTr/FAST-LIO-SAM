@@ -10,28 +10,24 @@
 
 namespace
 {
-constexpr int kFloorSlopeWindow = 6;
-const double kStairStartAngle = std::atan(0.08);  // 4.6°
-const double kStairEndAngle   = std::atan(0.04);  // 2.3°
-const double kStairMaxAngle   = std::atan(1.00);  // 45°
-constexpr double kMinHorizontalDistance = 0.50;
-constexpr double kGroundLandmarkRadius = 8.0;
-constexpr double kLandingConfirmDistance = 1.8;
-constexpr double kTransitionCancelDistance = 4.0;
-constexpr double kFloorHeightMin = 1.5;
-constexpr double kFloorHeightMatchTolerance = 1.5;
+constexpr int kSlopeWindow = 6;
+const double kStairAngle = std::atan(0.1);  // 4.6°
+constexpr double kSlopeDistance = 0.50;
+constexpr double kGroundRadius = 8.0;
+constexpr double kStairMinDz = 1.5;
+constexpr double kGroundDz = 0.5;
 } // namespace
 
 double FloorMap::trajectoryAngle() const
 {
-    if (recent_poses_.size() < kFloorSlopeWindow)
+    if (recent_poses_.size() < kSlopeWindow)
         return 0.0;
 
-    const size_t count = kFloorSlopeWindow;
+    const size_t count = kSlopeWindow;
     const size_t begin = recent_poses_.size() - count;
     const Eigen::Vector3d up = getGravityUp();
 
-    std::array<double, kFloorSlopeWindow> dist{};
+    std::array<double, kSlopeWindow> dist{};
     for (size_t i = 1; i < count; ++i)
     {
         const Eigen::Vector3d diff =
@@ -42,7 +38,7 @@ double FloorMap::trajectoryAngle() const
     }
 
     const double horizontal_distance = dist.back();
-    if (horizontal_distance < kMinHorizontalDistance)
+    if (horizontal_distance < kSlopeDistance)
         return 0.0;
 
     double x_mean = 0.0;
@@ -72,159 +68,91 @@ double FloorMap::trajectoryAngle() const
     return std::atan(slope);
 }
 
-bool FloorMap::update(int key,
+int FloorMap::floorIdForKey(int key) const
+{
+    if (key < 0)
+        return -1;
+
+    for (int i = 0; i < static_cast<int>(floors_.size()); ++i)
+    {
+        for (const auto &range : floors_[static_cast<size_t>(i)].ranges)
+        {
+            if (key < range.begin)
+                continue;
+            if (range.end >= 0 && key > range.end)
+                continue;
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+void FloorMap::update(int key,
                       const PointTypePose &pose)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (key < 0)
-        return false;
+        return;
 
-    const Eigen::Vector3d up = getGravityUp();
-    const double cur_z = up.dot(poseTranslation(pose));
+    if (key <= last_update_key_)
+        return;
+    last_update_key_ = key;
 
     recent_poses_.push_back(pose);
-    if (recent_poses_.size() > kFloorSlopeWindow)
+    if (recent_poses_.size() > kSlopeWindow)
         recent_poses_.pop_front();
 
     const double angle = trajectoryAngle();
+    const Eigen::Vector3d gravity_up = getGravityUp();
 
-    if (floors_.empty())
-    {
-        Floor floor;
-        floor.height = cur_z;
-        floor.ranges.push_back(FloorRange{key, -1});
-        floors_.push_back(std::move(floor));
-        current_floor_id_ = 0;
-        ROS_PRINT_INFO(
-            "[FLOOR] CREATE id=%d height=%.2f",
-            current_floor_id_,
-            floors_.front().height);
-        return false;
-    }
-
-    if (current_floor_id_ < 0 ||
+    if (floors_.empty() || current_floor_id_ < 0 ||
         current_floor_id_ >= static_cast<int>(floors_.size()))
-        return false;
+        return;
+
+    Floor &current_floor = floors_[static_cast<size_t>(current_floor_id_)];
 
     if (!in_transition_)
     {
-        if (std::abs(angle) > kStairStartAngle &&
-            std::abs(angle) < kStairMaxAngle)
+        landing_ = false;
+
+        if (std::abs(angle) <= kStairAngle)
+            return;
+
+        in_transition_ = true;
+        landing_ = false;
+        transition_dir_ = angle > 0.0 ? 1 : -1;
+        transition_start_z_ = gravity_up.dot(poseTranslation(pose));
+
+        if (!current_floor.ranges.empty() &&
+            current_floor.ranges.back().end < 0)
         {
-            in_transition_ = true;
-            transition_start_z_ = cur_z;
-            landing_distance_ = 0.0;
-
-            if (current_floor_id_ >= 0 &&
-                current_floor_id_ < static_cast<int>(floors_.size()))
-            {
-                Floor &floor = floors_[static_cast<size_t>(current_floor_id_)];
-                if (!floor.ranges.empty() && floor.ranges.back().end < 0)
-                    floor.ranges.back().end = key - 1;
-            }
+            current_floor.ranges.back().end = key - 1;
         }
-
-        if (in_transition_)
-        {
-            ROS_PRINT_INFO(
-                "[FLOOR] START key=%d floor=%d angle=%.3f",
-                key,
-                current_floor_id_,
-                angle);
-        }
-
-        return false;
-    }
-
-    if (std::abs(angle) < kStairEndAngle)
-    {
-        if (recent_poses_.size() >= 2)
-        {
-            const Eigen::Vector3d diff =
-                poseTranslation(pose) -
-                poseTranslation(recent_poses_[recent_poses_.size() - 2]);
-            const Eigen::Vector3d horizontal = diff - up * diff.dot(up);
-            landing_distance_ += horizontal.norm();
-        }
-
-        if (landing_distance_ < kLandingConfirmDistance)
-            return false;
-
-        const int old_floor = current_floor_id_;
-        const double floor_dz = cur_z - transition_start_z_;
-        const double target_height =
-            floors_[static_cast<size_t>(old_floor)].height + floor_dz;
-
-        if (std::abs(floor_dz) < kFloorHeightMin)
-        {
-            if (landing_distance_ < kTransitionCancelDistance)
-                return false;
-
-            in_transition_ = false;
-            transition_start_z_ = 0.0;
-            landing_distance_ = 0.0;
-
-            Floor &floor = floors_[static_cast<size_t>(old_floor)];
-            if (!floor.ranges.empty())
-                floor.ranges.back().end = -1;
-
-            ROS_PRINT_INFO(
-                "[FLOOR] CANCEL old=%d stair_dh=%.2f",
-                old_floor,
-                floor_dz);
-            return false;
-        }
-
-        int target_floor = -1;
-        double best_diff = kFloorHeightMatchTolerance;
-        for (int i = 0; i < static_cast<int>(floors_.size()); ++i)
-        {
-            if (i == old_floor)
-                continue;
-
-            const double diff = std::abs(
-                floors_[static_cast<size_t>(i)].height - target_height);
-            if (diff < best_diff)
-            {
-                best_diff = diff;
-                target_floor = i;
-            }
-        }
-
-        if (target_floor < 0)
-        {
-            Floor floor;
-            floor.height = target_height;
-            floors_.push_back(std::move(floor));
-            target_floor = static_cast<int>(floors_.size()) - 1;
-            ROS_PRINT_INFO(
-                "[FLOOR] CREATE id=%d height=%.2f",
-                target_floor,
-                target_height);
-        }
-
-        const bool floor_changed = (target_floor != old_floor);
-        current_floor_id_ = target_floor;
-        floors_[static_cast<size_t>(current_floor_id_)].ranges.push_back(
-            FloorRange{key, -1});
 
         ROS_PRINT_INFO(
-            "[FLOOR] END old=%d new=%d dir=%s stair_dh=%.2f target_h=%.2f",
-            old_floor,
-            target_floor,
-            floor_dz > 0.0 ? "UP" : "DOWN",
-            floor_dz,
-            target_height);
-
-        in_transition_ = false;
-        transition_start_z_ = 0.0;
-        landing_distance_ = 0.0;
-        return floor_changed;
+            "[FLOOR] START key=%d floor=%d dir=%d angle=%.3f",
+            key,
+            current_floor_id_,
+            transition_dir_,
+            angle);
+        return;
     }
 
-    if (std::abs(angle) > kStairStartAngle)
-        landing_distance_ = 0.0;
-    return false;
+    if (std::abs(angle) > kStairAngle)
+    {
+        landing_ = false;
+        return;
+    }
+
+    if (!landing_)
+    {
+        landing_ = true;
+        ROS_PRINT_INFO(
+            "[FLOOR] LANDING key=%d floor=%d",
+            key,
+            current_floor_id_);
+    }
 }
 
 bool FloorMap::getFloorRanges(int key,
@@ -257,10 +185,20 @@ bool FloorMap::getFloorRanges(int key,
     return false;
 }
 
-bool FloorMap::inTransition() const
+bool FloorMap::sameFloor(int key_a, int key_b) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    return in_transition_;
+
+    if (key_a < 0 || key_b < 0)
+        return false;
+    if (key_a == key_b)
+        return true;
+
+    const int floor_a = floorIdForKey(key_a);
+    const int floor_b = floorIdForKey(key_b);
+    if (floor_a < 0 || floor_b < 0)
+        return false;
+    return floor_a == floor_b;
 }
 
 bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
@@ -270,20 +208,108 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
 {
     std::lock_guard<std::mutex> lock(mutex_);
     batch = SceneBatch();
-    if (in_transition_)
-        return false;
 
     if (keys.empty() || poses.empty() || planes.empty())
         return false;
+
+    PlaneObs candidate;
+    if (!buildGroundCandidate(planes, keys, poses, candidate))
+        return false;
+
+    const Eigen::Vector3d gravity_up = getGravityUp();
+
+    if (floors_.empty())
+    {
+        Floor floor;
+        floor.ranges.push_back(FloorRange{keys.back(), -1});
+        floors_.push_back(std::move(floor));
+        current_floor_id_ = 0;
+        in_transition_ = false;
+        landing_ = false;
+        transition_dir_ = 0;
+        transition_start_z_ = 0.0;
+        ROS_PRINT_INFO(
+            "[FLOOR] CREATE id=0");
+    }
 
     if (current_floor_id_ < 0 ||
         current_floor_id_ >= static_cast<int>(floors_.size()))
         return false;
 
-    Floor &floor = floors_[static_cast<size_t>(current_floor_id_)];
-    PlaneObs candidate;
-    if (!buildGroundCandidate(planes, keys, poses, candidate))
+    Floor &current_floor = floors_[static_cast<size_t>(current_floor_id_)];
+
+    if (in_transition_)
+    {
+        if (!landing_)
+            return false;
+
+        const int old_floor = current_floor_id_;
+        const double current_z = gravity_up.dot(poseTranslation(poses.back()));
+        const double dz = current_z - transition_start_z_;
+
+        int target_floor = old_floor;
+
+        if (static_cast<double>(transition_dir_) * dz >= kStairMinDz)
+        {
+            if (transition_dir_ > 0)
+            {
+                target_floor = floors_[static_cast<size_t>(old_floor)].up;
+            }
+            else
+            {
+                target_floor = floors_[static_cast<size_t>(old_floor)].down;
+            }
+
+            if (target_floor < 0)
+            {
+                Floor floor;
+                floors_.push_back(std::move(floor));
+                target_floor = static_cast<int>(floors_.size()) - 1;
+                if (transition_dir_ > 0)
+                {
+                    floors_[static_cast<size_t>(old_floor)].up = target_floor;
+                    floors_[static_cast<size_t>(target_floor)].down = old_floor;
+                }
+                else
+                {
+                    floors_[static_cast<size_t>(old_floor)].down = target_floor;
+                    floors_[static_cast<size_t>(target_floor)].up = old_floor;
+                }
+                ROS_PRINT_INFO(
+                    "[FLOOR] CREATE id=%d from=%d dir=%d",
+                    target_floor,
+                    old_floor,
+                    transition_dir_);
+            }
+            else
+            {
+                ROS_PRINT_INFO(
+                    "[FLOOR] REUSE old=%d target=%d dir=%d",
+                    old_floor,
+                    target_floor,
+                    transition_dir_);
+            }
+        }
+
+        current_floor_id_ = target_floor;
+        floors_[static_cast<size_t>(current_floor_id_)].ranges.push_back(
+            FloorRange{keys.back(), -1});
+        in_transition_ = false;
+        landing_ = false;
+        transition_dir_ = 0;
+        transition_start_z_ = 0.0;
+        last_update_key_ = keys.back();
+
+        ROS_PRINT_INFO(
+            "[FLOOR] END key=%d old=%d new=%d dz=%.2f",
+            keys.back(),
+            old_floor,
+            target_floor,
+            dz);
         return false;
+    }
+
+    Floor &floor = floors_[static_cast<size_t>(current_floor_id_)];
 
     Ground *best_ground = nullptr;
     double best_xy = std::numeric_limits<double>::infinity();
@@ -297,7 +323,9 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
             continue;
 
         const double xy = (candidate.center - ground.center).head<2>().norm();
-        if (xy > kGroundLandmarkRadius || xy >= best_xy)
+        const double dz = std::abs(
+            gravity_up.dot(candidate.center - ground.center));
+        if (xy > kGroundRadius || dz > kGroundDz || xy >= best_xy)
             continue;
 
         best_xy = xy;
