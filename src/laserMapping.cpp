@@ -1809,6 +1809,9 @@ int main(int argc, char** argv)
 //------------------------------------------------------------------------------------------------------
         signal(SIGINT, SigHandle);
         RateType rate(5000);
+        bool input_finished = false;
+        int final_scene_key = -1;
+        int final_loop_key = -1;
         while (ros_ok() && !flg_exit)
         {
             spin_once();
@@ -1955,15 +1958,13 @@ int main(int argc, char** argv)
             spin_once();
 
             if (sam_enable) {
-                std::lock_guard<std::recursive_mutex> poseLock(mtxLoop);
                 if (keyframe)
                 {
                     saveKeyFramesAndFactor(feats_undistort);
+                    correctPoses();
+                    publishSamMsg();
                 }
-                correctPoses();
             }
-
-            publishSamMsg();
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
@@ -1982,7 +1983,23 @@ int main(int argc, char** argv)
         }
         
             const int64_t input_time = last_input_time.load();
-            if (input_time > 0 && nowTimeUs() - input_time >= 2000000) break;
+            if (!input_finished && input_time > 0 && nowTimeUs() - input_time >= 2000000)
+            {
+                input_finished = true;
+                std::lock_guard<std::mutex> lock(mtxKeyframe);
+                final_scene_key = static_cast<int>(cloudKeyPoses6D->points.size()) - 1;
+                final_loop_key = static_cast<int>(cloudKeyPoses6D->points.size()) - 5;
+            }
+
+            if (input_finished)
+            {
+                const int current_scene_key = sceneKey.load();
+                const int current_loop_key = loopKey.load();
+                const bool scene_done = !groundEnableFlag || current_scene_key >= final_scene_key;
+                const bool loop_done = !loopClosureEnableFlag || current_loop_key >= final_loop_key;
+                if (scene_done && loop_done)
+                    break;
+            }
             rate.sleep();
         }
 

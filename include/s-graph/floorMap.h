@@ -52,9 +52,9 @@ private:
     int next_plane_id_ = 0;
     int last_update_key_ = -1;
     bool in_transition_ = false;
-    bool landing_ = false;
     int transition_dir_ = 0;
     double transition_start_z_ = 0.0;
+    double flat_distance_ = 0.0;
     std::deque<PointTypePose> recent_poses_;
 };
 

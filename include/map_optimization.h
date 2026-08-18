@@ -1,6 +1,7 @@
 #ifndef MAP_OPTIMIZATION_H
 #define MAP_OPTIMIZATION_H
 
+#include <atomic>
 #include <vector>
 #include <mutex>
 #include <Eigen/Core>
@@ -52,7 +53,11 @@ void MapOptimizationInit();
 void setGravityUp(const Eigen::Vector3d &gravity_up);
 Eigen::Vector3d getGravityUp();
 
-extern std::recursive_mutex mtxLoop;
+extern std::mutex mtxKeyframe;
+extern std::mutex mtxFloorMap;
+extern std::mutex mtxLoopFactor;
+extern std::atomic<int> sceneKey;
+extern std::atomic<int> loopKey;
 
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
 void addLoopFactor();

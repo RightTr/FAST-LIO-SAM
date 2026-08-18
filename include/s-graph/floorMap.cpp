@@ -16,6 +16,7 @@ constexpr double kSlopeDistance = 0.50;
 constexpr double kGroundRadius = 8.0;
 constexpr double kStairMinDz = 1.5;
 constexpr double kGroundDz = 0.5;
+constexpr double kLandingDistance = 1.8;
 } // namespace
 
 double FloorMap::trajectoryAngle() const
@@ -114,13 +115,11 @@ void FloorMap::update(int key,
 
     if (!in_transition_)
     {
-        landing_ = false;
-
         if (std::abs(angle) <= kStairAngle)
             return;
 
         in_transition_ = true;
-        landing_ = false;
+        flat_distance_ = 0.0;
         transition_dir_ = angle > 0.0 ? 1 : -1;
         transition_start_z_ = gravity_up.dot(poseTranslation(pose));
 
@@ -141,18 +140,21 @@ void FloorMap::update(int key,
 
     if (std::abs(angle) > kStairAngle)
     {
-        landing_ = false;
+        flat_distance_ = 0.0;
         return;
     }
 
-    if (!landing_)
+    if (recent_poses_.size() >= 2)
     {
-        landing_ = true;
-        ROS_PRINT_INFO(
-            "[FLOOR] LANDING key=%d floor=%d",
-            key,
-            current_floor_id_);
+        const Eigen::Vector3d step =
+            poseTranslation(recent_poses_.back()) -
+            poseTranslation(recent_poses_[recent_poses_.size() - 2]);
+        const Eigen::Vector3d horizontal = step - gravity_up * step.dot(gravity_up);
+        flat_distance_ += horizontal.norm();
     }
+
+    if (flat_distance_ < kLandingDistance)
+        return;
 }
 
 bool FloorMap::getFloorRanges(int key,
@@ -225,9 +227,9 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         floors_.push_back(std::move(floor));
         current_floor_id_ = 0;
         in_transition_ = false;
-        landing_ = false;
         transition_dir_ = 0;
         transition_start_z_ = 0.0;
+        flat_distance_ = 0.0;
         ROS_PRINT_INFO(
             "[FLOOR] CREATE id=0");
     }
@@ -240,7 +242,7 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
 
     if (in_transition_)
     {
-        if (!landing_)
+        if (flat_distance_ < kLandingDistance)
             return false;
 
         const int old_floor = current_floor_id_;
@@ -295,9 +297,9 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         floors_[static_cast<size_t>(current_floor_id_)].ranges.push_back(
             FloorRange{keys.back(), -1});
         in_transition_ = false;
-        landing_ = false;
         transition_dir_ = 0;
         transition_start_z_ = 0.0;
+        flat_distance_ = 0.0;
         last_update_key_ = keys.back();
 
         ROS_PRINT_INFO(
