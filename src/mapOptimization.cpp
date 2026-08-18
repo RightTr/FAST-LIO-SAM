@@ -673,16 +673,23 @@ bool performSceneMatching()
 
     static int lastKey = -1;
 
+    const int numKeyFrame = static_cast<int>(std::min(
+        featCloudKeyFrames.size(),
+        cloudKeyOdomPoses6D->points.size()));
+
+    if (floorMap.inTransition())
+    {
+        plane.reset();
+        lastKey = numKeyFrame - 1;
+        return false;
+    }
+
     if (planeResetKey >= 0)
     {
         plane.reset();
         lastKey = planeResetKey - 1;
         planeResetKey = -1;
     }
-
-    const int numKeyFrame = std::min(
-        featCloudKeyFrames.size(),
-        cloudKeyOdomPoses6D->points.size());
 
 
     for (int key = lastKey + 1; key < numKeyFrame; ++key)

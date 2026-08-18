@@ -257,6 +257,12 @@ bool FloorMap::getFloorRanges(int key,
     return false;
 }
 
+bool FloorMap::inTransition() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return in_transition_;
+}
+
 bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
                             const std::deque<int> &keys,
                             const std::deque<PointTypePose> &poses,

@@ -38,6 +38,8 @@ public:
                         std::vector<FloorRange> &ranges,
                         FloorRange &current_range) const;
 
+    bool inTransition() const;
+
 private:
     double trajectoryAngle() const;
 
