@@ -157,30 +157,24 @@ void FloorMap::update(int key,
         return;
 }
 
-bool FloorMap::getFloorRanges(int key,
-                              std::vector<FloorRange> &ranges,
-                              FloorRange &current_range) const
+bool FloorMap::getFloorRange(int key,
+                             FloorRange &range) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-
-    ranges.clear();
-    current_range = FloorRange();
 
     if (key < 0)
         return false;
 
     for (const auto &floor : floors_)
     {
-        for (const auto &range : floor.ranges)
+        for (const auto &floor_range : floor.ranges)
         {
-            if (key < range.begin)
-                continue;
-            if (range.end >= 0 && key > range.end)
-                continue;
-
-            ranges = floor.ranges;
-            current_range = range;
-            return true;
+            if (key >= floor_range.begin &&
+                (floor_range.end < 0 || key <= floor_range.end))
+            {
+                range = floor_range;
+                return true;
+            }
         }
     }
 

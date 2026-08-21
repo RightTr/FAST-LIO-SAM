@@ -35,9 +35,8 @@ public:
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
-    bool getFloorRanges(int key,
-                        std::vector<FloorRange> &ranges,
-                        FloorRange &current_range) const;
+    bool getFloorRange(int key,
+                       FloorRange &range) const;
 
     bool sameFloor(int key_a, int key_b) const;
 

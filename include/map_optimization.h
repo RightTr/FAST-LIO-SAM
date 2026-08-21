@@ -54,10 +54,11 @@ void setGravityUp(const Eigen::Vector3d &gravity_up);
 Eigen::Vector3d getGravityUp();
 
 extern std::mutex mtxKeyframe;
-extern std::mutex mtxFloorMap;
 extern std::mutex mtxLoopFactor;
 extern std::atomic<int> sceneKey;
 extern std::atomic<int> loopKey;
+extern std::atomic<bool> sceneDone;
+extern std::atomic<bool> loopDone;
 
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
 void addLoopFactor();

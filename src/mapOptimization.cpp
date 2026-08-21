@@ -98,12 +98,13 @@ std::mutex gravityAxisMutex;
 Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
 
 std::mutex mtxKeyframe;
-std::mutex mtxFloorMap;
 std::mutex mtxLoopFactor;
 std::mutex mtxGnssFactor;
 std::mutex mtxSceneBatch;
 std::atomic<int> sceneKey{-1};
 std::atomic<int> loopKey{-1};
+std::atomic<bool> sceneDone{false};
+std::atomic<bool> loopDone{false};
 
 bool graphUpdate = false;
 bool loopIsClosed = false;
@@ -123,8 +124,8 @@ std::unordered_set<int> pos_keys;
 std::unordered_set<int> yaw_keys;
 
 void correctPoses();
-bool addSceneFactor();
-bool performSceneMatching();
+void addSceneFactor();
+void performSceneMatching();
 void structureMatchingThread();
 
 void setGravityUp(const Eigen::Vector3d &gravity_up)
@@ -215,6 +216,9 @@ void allocateMemory()
 
 void MapOptimizationInit()
 {
+    sceneDone.store(!sceneEnableFlag || !groundEnableFlag);
+    loopDone.store(!loopClosureEnableFlag);
+
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
     parameters.relinearizeSkip = 1;
@@ -269,23 +273,22 @@ bool isKeyFrame()
     return true;
 }  
 
-bool detectLoopClosureDistance(const std::vector<PointTypeIndex> &poses3D,
-                               const std::vector<PointTypePose> &poses6D,
-                               pcl::KdTreeFLANN<PointTypeIndex> &poseTree,
-                               int loopKeyCur,
-                               int *closestID)
+int findLoopKey(const std::vector<PointTypeIndex> &poses3D,
+                const std::vector<PointTypePose> &poses6D,
+                pcl::KdTreeFLANN<PointTypeIndex> &poseTree,
+                int loopKeyCur)
 {
     double current_time = 0.0;
     if (poses3D.empty() ||
         loopKeyCur < 0)
-        return false;
+        return -1;
 
     if (loopKeyCur >= static_cast<int>(poses3D.size()) ||
         loopKeyCur >= static_cast<int>(poses6D.size()))
-        return false;
+        return -1;
 
     if (loopUsedKeys.count(loopKeyCur) != 0)
-        return false;
+        return -1;
 
     current_time = poses6D[loopKeyCur].time;
     std::vector<int> indices;
@@ -295,20 +298,14 @@ bool detectLoopClosureDistance(const std::vector<PointTypeIndex> &poses3D,
             historyKeyframeSearchRadius,
             indices,
             sqDists) == 0)
-        return false;
+        return -1;
 
     int loopKeyPre = -1;
     float nearestSqDis = std::numeric_limits<float>::max();
     for (size_t i = 0; i < indices.size(); ++i)
     {
-        const int index = indices[i];
-        if (index < 0 || index >= static_cast<int>(poses3D.size()))
-            continue;
-
-        const int id = static_cast<int>(poses3D[index].intensity);
+        const int id = indices[i];
         if (id < 0 || id >= loopKeyCur)
-            continue;
-        if (id >= static_cast<int>(poses6D.size()))
             continue;
         if (loopUsedKeys.count(id) != 0)
             continue;
@@ -317,11 +314,8 @@ bool detectLoopClosureDistance(const std::vector<PointTypeIndex> &poses3D,
         if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
             continue;
 
-        {
-            std::lock_guard<std::mutex> floorLock(mtxFloorMap);
-            if (!floorMap.sameFloor(loopKeyCur, id))
-                continue;
-        }
+        if (!floorMap.sameFloor(loopKeyCur, id))
+            continue;
 
         const float sqDis = sqDists[i];
         if (sqDis < nearestSqDis)
@@ -332,10 +326,9 @@ bool detectLoopClosureDistance(const std::vector<PointTypeIndex> &poses3D,
     }
 
     if (loopKeyPre == -1 || loopKeyCur == loopKeyPre)
-        return false;
+        return -1;
 
-    *closestID = loopKeyPre;
-    return true;
+    return loopKeyPre;
 }
 
 void performLoopClosure(int loopKeyCur,
@@ -347,47 +340,34 @@ void performLoopClosure(int loopKeyCur,
     if (poses3D.empty())
         return;
 
-    // find keys
-    int loopKeyPre;
-    if (detectLoopClosureDistance(poses3D, poses6D, poseTree, loopKeyCur, &loopKeyPre) == false)
+    const int loopKeyPre = findLoopKey(poses3D, poses6D, poseTree, loopKeyCur);
+    if (loopKeyPre < 0)
         return;
 
     // extract cloud
     pcl::PointCloud<PointTypeIndex>::Ptr curCloud;
-    std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> prevKeyframeClouds;
-    std::vector<PointTypePose> prevKeyposes;
     PointTypePose curPose;
-    if (loopKeyCur >= static_cast<int>(clouds.size()) ||
-        loopKeyCur >= static_cast<int>(poses6D.size()))
+    const int cloudSize = static_cast<int>(std::min(clouds.size(), poses6D.size()));
+    if (loopKeyCur >= cloudSize ||
+        loopKeyPre >= cloudSize)
         return;
 
     curCloud = clouds[loopKeyCur];
     curPose = poses6D[loopKeyCur];
 
-    std::vector<FloorRange> prevFloorRanges;
     FloorRange loopPreRange;
+    if (!floorMap.getFloorRange(loopKeyPre, loopPreRange))
     {
-        std::lock_guard<std::mutex> floorLock(mtxFloorMap);
-        if (!floorMap.getFloorRanges(loopKeyPre, prevFloorRanges, loopPreRange))
-        {
-            ROS_PRINT_INFO(
-                "[LOOP] no floor range pre=%d cur=%d",
-                loopKeyPre,
-                loopKeyCur);
-            return;
-        }
+        ROS_PRINT_INFO(
+            "[LOOP] no floor range pre=%d cur=%d",
+            loopKeyPre,
+            loopKeyCur);
+        return;
     }
 
-    const int cloudSize = static_cast<int>(
-        std::min(clouds.size(), poses6D.size()));
     const int historyBegin = std::max(loopKeyPre - historyKeyframeSearchNum, loopPreRange.begin);
     const int rangeEnd = loopPreRange.end >= 0 ? loopPreRange.end : cloudSize - 1;
     const int historyEnd = std::min(loopKeyPre + historyKeyframeSearchNum, rangeEnd);
-    for (int keyNear = historyBegin; keyNear <= historyEnd; ++keyNear)
-    {
-        prevKeyframeClouds.push_back(clouds[keyNear]);
-        prevKeyposes.push_back(poses6D[keyNear]);
-    }
 
     if (!curCloud || curCloud->empty())
         return;
@@ -395,9 +375,9 @@ void performLoopClosure(int loopKeyCur,
     pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointTypeIndex>());
     pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointTypeIndex>());
     *cureKeyframeCloud += *transformPointCloud(curCloud, &curPose);
-    for (size_t i = 0; i < prevKeyframeClouds.size(); ++i)
+    for (int keyNear = historyBegin; keyNear <= historyEnd; ++keyNear)
     {
-        *prevKeyframeCloud += *transformPointCloud(prevKeyframeClouds[i], &prevKeyposes[i]);
+        *prevKeyframeCloud += *transformPointCloud(clouds[keyNear], &poses6D[keyNear]);
     }
 
     pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloudDS(new pcl::PointCloud<PointTypeIndex>());
@@ -407,10 +387,8 @@ void performLoopClosure(int loopKeyCur,
     downSizeFilterICP.setInputCloud(prevKeyframeCloud);
     downSizeFilterICP.filter(*prevKeyframeCloudDS);
 
-    if (cureKeyframeCloudDS->size() < 300)
-        return;
-
-    if (prevKeyframeCloudDS->size() < 1000)
+    if (cureKeyframeCloudDS->size() < 300 ||
+        prevKeyframeCloudDS->size() < 1000)
         return;
 
     ROS_PRINT_INFO(
@@ -477,10 +455,6 @@ void performLoopClosure(int loopKeyCur,
     // Add pose constraint and reserve both endpoints atomically.
     {
         std::lock_guard<std::mutex> lock(mtxLoopFactor);
-        if (loopUsedKeys.count(loopKeyCur) != 0 ||
-            loopUsedKeys.count(loopKeyPre) != 0)
-            return;
-
         loopIndexQueue.emplace_back(loopKeyCur, loopKeyPre);
         loopPoseQueue.push_back(poseFrom.between(poseTo));
         loopNoiseQueue.push_back(constraintNoise);
@@ -591,14 +565,14 @@ void poseGraphUpdate()
     correctPoses();
 }
 
-bool addSceneFactor()
+void addSceneFactor()
 {
     std::deque<SceneBatch> batches;
 
     {
         std::lock_guard<std::mutex> lock(mtxSceneBatch);
         if (sceneQueue.empty())
-            return false;
+            return;
 
         batches.swap(sceneQueue);
     }
@@ -653,7 +627,6 @@ bool addSceneFactor()
         }
         graphUpdate = true;
     }
-    return true;
 }
 
 void structureMatchingThread()
@@ -669,10 +642,10 @@ void structureMatchingThread()
     }
 }
 
-bool performSceneMatching()
+void performSceneMatching()
 {
     if (!groundEnableFlag)
-        return false;
+        return;
 
     static int nextKey = 0;
     int key = -1;
@@ -685,46 +658,50 @@ bool performSceneMatching()
             cloudKeyOdomPoses6D == nullptr ||
             nextKey >= static_cast<int>(featCloudKeyFrames.size()) ||
             nextKey >= static_cast<int>(cloudKeyOdomPoses6D->points.size()))
-            return false;
+        {
+            sceneDone.store(true);
+            return;
+        }
 
         const int numKeyFrame = static_cast<int>(std::min(
             featCloudKeyFrames.size(),
             cloudKeyOdomPoses6D->points.size()));
         if (nextKey >= numKeyFrame)
-            return false;
+        {
+            sceneDone.store(true);
+            return;
+        }
 
         key = nextKey;
         cloud = featCloudKeyFrames[key];
         pose = cloudKeyOdomPoses6D->points[key];
     }
 
+    sceneDone.store(false);
+
     plane.update(key, cloud, pose);
 
     std::vector<PlaneObs> planes;
-    if (key >= 3 && key % 3 == 0)
-    {
+    const bool groundKey = key >= 3 && key % 3 == 0;
+    if (groundKey)
         plane.extract(planes);
-    }
 
     SceneBatch batch;
-    bool enqueued = false;
-    {
-        std::lock_guard<std::mutex> floorLock(mtxFloorMap);
-        floorMap.update(key, pose);
+    floorMap.update(key, pose);
 
-        if (key >= 3 && key % 3 == 0)
+    if (groundKey)
+    {
+        if (floorMap.updateGround(planes, plane.keys(), plane.poses(), batch))
         {
-            if (floorMap.updateGround(planes, plane.keys(), plane.poses(), batch))
-            {
-                std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-                sceneQueue.push_back(std::move(batch));
-                enqueued = true;
-            }
+            std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
+            sceneQueue.push_back(std::move(batch));
         }
     }
     sceneKey.store(key);
     ++nextKey;
-    return enqueued;
+    sceneDone.store(nextKey >= static_cast<int>(std::min(
+        featCloudKeyFrames.size(),
+        cloudKeyOdomPoses6D->points.size())));
 }
 
 bool findNearestKeyframeByTime(const std::vector<PointTypePose> &keyposes,
@@ -1395,10 +1372,16 @@ void loopClosureThread()
         {
             std::lock_guard<std::mutex> lock(mtxKeyframe);
             if (cloudKeyPoses3D == nullptr || cloudKeyPoses6D == nullptr || cloudKeyOdomPoses6D == nullptr)
+            {
+                loopDone.store(true);
                 continue;
+            }
             if (cloudKeyPoses3D->points.size() < 6 ||
                 cloudKeyPoses6D->points.size() < 6)
+            {
+                loopDone.store(true);
                 continue;
+            }
 
             poses3D.assign(cloudKeyPoses3D->points.begin(), cloudKeyPoses3D->points.end());
             poses6D.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
@@ -1423,28 +1406,35 @@ void loopClosureThread()
         }
 
         if (nextKey > readyKey)
+        {
+            loopDone.store(true);
             continue;
+        }
+
+        loopDone.store(false);
+
+        pcl::PointCloud<PointTypeIndex>::Ptr poseCloud(new pcl::PointCloud<PointTypeIndex>());
+        poseCloud->points.insert(
+            poseCloud->points.end(),
+            poses3D.begin(),
+            poses3D.end());
+        poseCloud->width = static_cast<uint32_t>(poseCloud->points.size());
+        poseCloud->height = 1;
+        poseCloud->is_dense = true;
+
+        pcl::KdTreeFLANN<PointTypeIndex> poseTree;
+        poseTree.setInputCloud(poseCloud);
 
         int processedCount = 0;
         while (nextKey <= readyKey && processedCount < kLoopBatchSize)
         {
-            pcl::PointCloud<PointTypeIndex>::Ptr poseCloud(new pcl::PointCloud<PointTypeIndex>());
-            poseCloud->points.insert(
-                poseCloud->points.end(),
-                poses3D.begin(),
-                poses3D.end());
-            poseCloud->width = static_cast<uint32_t>(poseCloud->points.size());
-            poseCloud->height = 1;
-            poseCloud->is_dense = true;
-
-            pcl::KdTreeFLANN<PointTypeIndex> poseTree;
-            poseTree.setInputCloud(poseCloud);
-
             performLoopClosure(nextKey, poses3D, poses6D, clouds, poseTree);
             loopKey.store(nextKey);
             ++nextKey;
             ++processedCount;
         }
+
+        loopDone.store(nextKey > readyKey);
     }
 }
 

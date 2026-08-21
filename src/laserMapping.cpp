@@ -1810,8 +1810,6 @@ int main(int argc, char** argv)
         signal(SIGINT, SigHandle);
         RateType rate(5000);
         bool input_finished = false;
-        int final_scene_key = -1;
-        int final_loop_key = -1;
         while (ros_ok() && !flg_exit)
         {
             spin_once();
@@ -1986,17 +1984,14 @@ int main(int argc, char** argv)
             if (!input_finished && input_time > 0 && nowTimeUs() - input_time >= 2000000)
             {
                 input_finished = true;
-                std::lock_guard<std::mutex> lock(mtxKeyframe);
-                final_scene_key = static_cast<int>(cloudKeyPoses6D->points.size()) - 1;
-                final_loop_key = static_cast<int>(cloudKeyPoses6D->points.size()) - 5;
             }
 
             if (input_finished)
             {
-                const int current_scene_key = sceneKey.load();
-                const int current_loop_key = loopKey.load();
-                const bool scene_done = !groundEnableFlag || current_scene_key >= final_scene_key;
-                const bool loop_done = !loopClosureEnableFlag || current_loop_key >= final_loop_key;
+                const bool scene_done =
+                    !sceneEnableFlag || !groundEnableFlag || sceneDone.load();
+                const bool loop_done =
+                    !loopClosureEnableFlag || loopDone.load();
                 if (scene_done && loop_done)
                     break;
             }
