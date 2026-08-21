@@ -130,17 +130,12 @@ void structureMatchingThread();
 void setGravityUp(const Eigen::Vector3d &gravity_up)
 {
     std::lock_guard<std::mutex> lock(gravityAxisMutex);
-    if (gravity_up.allFinite() && gravity_up.norm() > 1e-6)
-        gravityUpAxis = gravity_up.normalized();
-    else
-        gravityUpAxis = Eigen::Vector3d::UnitZ();
+    gravityUpAxis = gravity_up.normalized();
 }
 
 Eigen::Vector3d getGravityUp()
 {
     std::lock_guard<std::mutex> lock(gravityAxisMutex);
-    if (!gravityUpAxis.allFinite() || gravityUpAxis.norm() <= 1e-6)
-        return Eigen::Vector3d::UnitZ();
     return gravityUpAxis.normalized();
 }
 
@@ -315,6 +310,8 @@ bool detectLoopClosureDistance(const std::vector<PointTypeIndex> &poses3D,
             continue;
         if (id >= static_cast<int>(poses6D.size()))
             continue;
+        if (loopUsedKeys.count(id) != 0)
+            continue;
 
         const double nearTime = poses6D[id].time;
         if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
@@ -480,12 +477,17 @@ void performLoopClosure(int loopKeyCur,
     // Add pose constraint and reserve both endpoints atomically.
     {
         std::lock_guard<std::mutex> lock(mtxLoopFactor);
+        if (loopUsedKeys.count(loopKeyCur) != 0 ||
+            loopUsedKeys.count(loopKeyPre) != 0)
+            return;
+
         loopIndexQueue.emplace_back(loopKeyCur, loopKeyPre);
         loopPoseQueue.push_back(poseFrom.between(poseTo));
         loopNoiseQueue.push_back(constraintNoise);
-    }
 
-    loopUsedKeys.insert(loopKeyCur);
+        loopUsedKeys.insert(loopKeyCur);
+        loopUsedKeys.insert(loopKeyPre);
+    }
 
     ROS_PRINT_INFO(
         "[LOOP] ICP pass cur=%d pre=%d score=%.3f",
