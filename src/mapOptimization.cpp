@@ -101,9 +101,9 @@ std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
 std::mutex mtxGnssFactor;
 std::mutex mtxSceneBatch;
-std::atomic<int> sceneKey{-1};
+std::atomic<int> groundKey{-1};
 std::atomic<int> loopKey{-1};
-std::atomic<bool> sceneDone{false};
+std::atomic<bool> groundDone{false};
 std::atomic<bool> loopDone{false};
 
 bool graphUpdate = false;
@@ -216,7 +216,7 @@ void allocateMemory()
 
 void MapOptimizationInit()
 {
-    sceneDone.store(!sceneEnableFlag || !groundEnableFlag);
+    groundDone.store(!groundEnableFlag);
     loopDone.store(!loopClosureEnableFlag);
 
     ISAM2Params parameters;
@@ -314,7 +314,7 @@ int findLoopKey(const std::vector<PointTypeIndex> &poses3D,
         if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
             continue;
 
-        if (!floorMap.sameFloor(loopKeyCur, id))
+        if (groundEnableFlag && !floorMap.sameFloor(loopKeyCur, id))
             continue;
 
         const float sqDis = sqDists[i];
@@ -356,18 +356,24 @@ void performLoopClosure(int loopKeyCur,
     curPose = poses6D[loopKeyCur];
 
     FloorRange loopPreRange;
-    if (!floorMap.getFloorRange(loopKeyPre, loopPreRange))
-    {
-        ROS_PRINT_INFO(
-            "[LOOP] no floor range pre=%d cur=%d",
-            loopKeyPre,
-            loopKeyCur);
-        return;
-    }
+    int historyBegin = std::max(0, loopKeyPre - historyKeyframeSearchNum);
+    int historyEnd = std::min(loopKeyPre + historyKeyframeSearchNum, cloudSize - 1);
 
-    const int historyBegin = std::max(loopKeyPre - historyKeyframeSearchNum, loopPreRange.begin);
-    const int rangeEnd = loopPreRange.end >= 0 ? loopPreRange.end : cloudSize - 1;
-    const int historyEnd = std::min(loopKeyPre + historyKeyframeSearchNum, rangeEnd);
+    if (groundEnableFlag)
+    {
+        if (!floorMap.getFloorRange(loopKeyPre, loopPreRange))
+        {
+            ROS_PRINT_INFO(
+                "[LOOP] no floor range pre=%d cur=%d",
+                loopKeyPre,
+                loopKeyCur);
+            return;
+        }
+
+        historyBegin = std::max(loopKeyPre - historyKeyframeSearchNum, loopPreRange.begin);
+        const int rangeEnd = loopPreRange.end >= 0 ? loopPreRange.end : cloudSize - 1;
+        historyEnd = std::min(loopKeyPre + historyKeyframeSearchNum, rangeEnd);
+    }
 
     if (!curCloud || curCloud->empty())
         return;
@@ -505,6 +511,9 @@ void addOdomFactor()
 
 void addLoopFactor()
 {
+    if (!loopClosureEnableFlag)
+        return;
+
     std::vector<std::pair<int, int>> indexQueue;
     std::vector<gtsam::Pose3> poseQueue;
     std::vector<gtsam::noiseModel::Diagonal::shared_ptr> noiseQueue;
@@ -567,6 +576,9 @@ void poseGraphUpdate()
 
 void addSceneFactor()
 {
+    if (!sceneEnableFlag)
+        return;
+
     std::deque<SceneBatch> batches;
 
     {
@@ -631,7 +643,7 @@ void addSceneFactor()
 
 void structureMatchingThread()
 {
-    if (!sceneEnableFlag || !groundEnableFlag)
+    if (!groundEnableFlag)
         return;
 
     RateType rate(20);
@@ -652,23 +664,23 @@ void performSceneMatching()
     pcl::PointCloud<PointTypeIndex>::Ptr cloud;
     PointTypePose pose;
 
-    {
-        std::lock_guard<std::mutex> lock(mtxKeyframe);
-        if (cloudKeyPoses3D == nullptr ||
-            cloudKeyOdomPoses6D == nullptr ||
-            nextKey >= static_cast<int>(featCloudKeyFrames.size()) ||
-            nextKey >= static_cast<int>(cloudKeyOdomPoses6D->points.size()))
         {
-            sceneDone.store(true);
-            return;
-        }
+            std::lock_guard<std::mutex> lock(mtxKeyframe);
+            if (cloudKeyPoses3D == nullptr ||
+                cloudKeyOdomPoses6D == nullptr ||
+                nextKey >= static_cast<int>(featCloudKeyFrames.size()) ||
+                nextKey >= static_cast<int>(cloudKeyOdomPoses6D->points.size()))
+            {
+                groundDone.store(true);
+                return;
+            }
 
         const int numKeyFrame = static_cast<int>(std::min(
             featCloudKeyFrames.size(),
             cloudKeyOdomPoses6D->points.size()));
         if (nextKey >= numKeyFrame)
         {
-            sceneDone.store(true);
+            groundDone.store(true);
             return;
         }
 
@@ -677,19 +689,19 @@ void performSceneMatching()
         pose = cloudKeyOdomPoses6D->points[key];
     }
 
-    sceneDone.store(false);
+    groundDone.store(false);
 
     plane.update(key, cloud, pose);
 
     std::vector<PlaneObs> planes;
-    const bool groundKey = key >= 3 && key % 3 == 0;
-    if (groundKey)
+    const bool isGroundKey = key >= 3 && key % 3 == 0;
+    if (isGroundKey)
         plane.extract(planes);
 
     SceneBatch batch;
     floorMap.update(key, pose);
 
-    if (groundKey)
+    if (isGroundKey)
     {
         if (floorMap.updateGround(planes, plane.keys(), plane.poses(), batch))
         {
@@ -697,9 +709,9 @@ void performSceneMatching()
             sceneQueue.push_back(std::move(batch));
         }
     }
-    sceneKey.store(key);
+    groundKey.store(key);
     ++nextKey;
-    sceneDone.store(nextKey >= static_cast<int>(std::min(
+    groundDone.store(nextKey >= static_cast<int>(std::min(
         featCloudKeyFrames.size(),
         cloudKeyOdomPoses6D->points.size())));
 }
@@ -1392,17 +1404,17 @@ void loopClosureThread()
             continue;
 
         int readyKey = static_cast<int>(poses3D.size()) - 5;
-        if (sceneEnableFlag && groundEnableFlag)
-            readyKey = std::min(readyKey, sceneKey.load());
+        if (groundEnableFlag)
+            readyKey = std::min(readyKey, groundKey.load());
 
         if (nextKey % 25 == 0 || nextKey == 1 || nextKey >= readyKey)
         {
             ROS_PRINT_INFO(
-                "[LOOP] next=%d ready=%d latest=%d scene=%d",
+                "[LOOP] next=%d ready=%d latest=%d ground=%d",
                 nextKey,
                 readyKey,
                 static_cast<int>(poses3D.size()) - 1,
-                sceneKey.load());
+                groundKey.load());
         }
 
         if (nextKey > readyKey)

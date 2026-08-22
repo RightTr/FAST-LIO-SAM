@@ -1794,8 +1794,11 @@ int main(int argc, char** argv)
         std::thread structurethread;
         if (sam_enable)
         {
-            loopthread = std::thread(&loopClosureThread);
             globalthread = std::thread(&visualizeGlobalMapThread);
+            if (loopClosureEnableFlag)
+            {
+                loopthread = std::thread(&loopClosureThread);
+            }
             if (groundEnableFlag)
             {
                 structurethread = std::thread(&structureMatchingThread);
@@ -1988,11 +1991,11 @@ int main(int argc, char** argv)
 
             if (input_finished)
             {
-                const bool scene_done =
-                    !sceneEnableFlag || !groundEnableFlag || sceneDone.load();
+                const bool ground_done =
+                    !groundEnableFlag || groundDone.load();
                 const bool loop_done =
                     !loopClosureEnableFlag || loopDone.load();
-                if (scene_done && loop_done)
+                if (ground_done && loop_done)
                     break;
             }
             rate.sleep();

@@ -13,6 +13,10 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
 
 * ROS1 and ROS2 adaptation
 
+* Hierarchical representation
+
+* Support ground normal constraint in pose graph
+
 * Manual initial pose setting for relocalization
 
 * Support GNSS factors in the pose graph
@@ -70,7 +74,11 @@ source devel/setup.bash
 roslaunch fast_lio_sam mapping_airy.launch
 ```
 
-### TF Layout
+### Ground normal constraint
+
+### Hierarchical representation
+
+### TF layout
 
 The system uses one global correction link and two local odometry outputs:
 
@@ -123,8 +131,8 @@ roslaunch fast_lio_sam odom_airy.launch
 
 ## 📝 TODO List
 
-* [x] ROS2 adaptation Test
 * [x] GNSS fusion test
+* [ ] Full situational_graphs adaptation
 * [ ] ZUPT parameter tuning and test
 * [ ] Prior localization test
 
@@ -140,3 +148,7 @@ roslaunch fast_lio_sam odom_airy.launch
 [robosense_fast_lio](https://github.com/RuanJY/robosense_fast_lio.git)
 
 [point_lio_unilidar](https://github.com/unitreerobotics/point_lio_unilidar.git)
+
+[BALM](https://github.com/hku-mars/BALM.git)
+
+[lidar_situational_graphs](https://github.com/snt-arg/lidar_situational_graphs.git)
