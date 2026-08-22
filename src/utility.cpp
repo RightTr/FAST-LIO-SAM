@@ -39,6 +39,7 @@ bool keyframe_export_en = false;
 bool keyframe_global_pcd_en = false;
 bool groundEnableFlag = true;
 bool sceneEnableFlag = false;
+int groundInterval = 3;
 
 std::string map_frame = "map";
 std::string odom_frame = "odom";
@@ -133,6 +134,7 @@ void read_sgraph_params()
 {
     rosparam_get("s-graph/groundEnableFlag", groundEnableFlag, true);
     rosparam_get("s-graph/sceneEnableFlag", sceneEnableFlag, true);
+    rosparam_get("s-graph/groundInterval", groundInterval, 3);
     rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
     rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
     rosparam_get("s-graph/floorHeight", floorHeight, 4.0);

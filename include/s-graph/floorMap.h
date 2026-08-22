@@ -10,7 +10,6 @@
 
 struct FloorRange
 {
-    int floor = -1;
     int begin = -1;
     int end = -1;
 };
@@ -28,8 +27,6 @@ class FloorMap
 public:
     FloorMap() = default;
 
-    void setMultiFloor(bool enabled);
-
     void update(int key,
                 const PointTypePose &pose);
 
@@ -43,22 +40,16 @@ public:
 
 private:
     double trajectoryAngle() const;
-    bool findRangesLocked(int key,
-                         std::vector<FloorRange> &ranges) const;
-    Floor &ensureFloorLocked(int floor_id);
 
 private:
     mutable std::mutex mutex_;
     std::vector<Floor> floors_;
     int current_floor_id_ = -1;
     int next_plane_id_ = 0;
-    int last_update_key_ = -1;
-    bool in_transition_ = false;
     int transition_dir_ = 0;
     double transition_start_z_ = 0.0;
     double flat_distance_ = 0.0;
     std::deque<PointTypePose> recent_poses_;
-    bool multiFloor_ = false;
 };
 
 #endif

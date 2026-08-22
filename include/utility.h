@@ -54,6 +54,7 @@ extern bool imu_state_save_en;
 extern bool ikdtree_output_save_en;
 extern bool groundEnableFlag;
 extern bool sceneEnableFlag;
+extern int groundInterval;
 
 extern std::string map_frame;
 extern std::string odom_frame;
