@@ -2,7 +2,6 @@
 #define MAP_OPTIMIZATION_H
 
 #include <atomic>
-#include <condition_variable>
 #include <vector>
 #include <mutex>
 #include <Eigen/Core>
@@ -56,7 +55,6 @@ Eigen::Vector3d getGravityUp();
 
 extern std::mutex mtxKeyframe;
 extern std::mutex mtxLoopFactor;
-extern std::condition_variable sceneCv;
 extern std::atomic<bool> sceneDone;
 extern std::atomic<bool> loopDone;
 

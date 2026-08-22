@@ -15,7 +15,6 @@
 #include <fstream>
 #include <limits>
 #include <deque>
-#include <condition_variable>
 #include <tuple>
 #include <utility>
 #include <unordered_set>
@@ -102,7 +101,6 @@ std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
 std::mutex mtxGnssFactor;
 std::mutex mtxSceneBatch;
-std::condition_variable sceneCv;
 std::atomic<bool> sceneDone{false};
 std::atomic<bool> loopDone{false};
 
@@ -221,6 +219,7 @@ void MapOptimizationInit()
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
     parameters.relinearizeSkip = 1;
+    parameters.factorization = ISAM2Params::QR;
     isam = new ISAM2(parameters);
 
     gtsam::Vector3 plane_sigmas;
@@ -297,7 +296,7 @@ void performLoopClosure(int loopKeyCur,
             PointTypeIndex pt;
             pt.x = poses6D[key].x;
             pt.y = poses6D[key].y;
-            pt.z = poses6D[key].z;
+            pt.z = 0.0f;
             pt.intensity = static_cast<float>(key);
             poseCloud->push_back(pt);
         }
@@ -402,7 +401,11 @@ void performLoopClosure(int loopKeyCur,
         icp.setInputSource(cureKeyframeCloudDS);
         icp.setInputTarget(prevKeyframeCloudDS);
         pcl::PointCloud<PointTypeIndex> aligned;
-        icp.align(aligned);
+        Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
+        initial_guess(0, 3) = static_cast<float>(poses6D[id].x - curPose.x);
+        initial_guess(1, 3) = static_cast<float>(poses6D[id].y - curPose.y);
+        initial_guess(2, 3) = static_cast<float>(poses6D[id].z - curPose.z);
+        icp.align(aligned, initial_guess);
 
         const double score = icp.getFitnessScore();
         if (!icp.hasConverged() ||
@@ -550,7 +553,7 @@ void poseGraphUpdate()
 
 void addSceneFactor()
 {
-    if (!groundEnableFlag && !sceneEnableFlag)
+    if (!groundEnableFlag)
         return;
 
     std::deque<SceneBatch> batches;
@@ -570,21 +573,48 @@ void addSceneFactor()
 
         const gtsam::Unit3 floor_up(getGravityUp());
 
-        for (const auto &plane : batch.planes)
+        for (const auto &factor : batch.factors)
         {
-            const gtsam::Key pkey = gtsam::Symbol('p', plane.id);
-
+            const gtsam::Key pkey = gtsam::Symbol('p', factor.id);
             if (!initialEstimate.exists(pkey) &&
                 !isamCurrentEstimate.exists(pkey))
             {
+                if (batch.planes.empty() ||
+                    !isamCurrentEstimate.exists(static_cast<gtsam::Key>(factor.key)))
+                    continue;
+
+                Eigen::Vector4d body_plane = factor.obs;
+                const double body_norm = body_plane.head<3>().norm();
+                if (!body_plane.allFinite() || body_norm <= 1e-6)
+                {
+                    continue;
+                }
+                body_plane /= body_norm;
+
+                const gtsam::Pose3 pose_map =
+                    isamCurrentEstimate.at<Pose3>(
+                        static_cast<gtsam::Key>(factor.key));
+                const Eigen::Matrix3d R = pose_map.rotation().matrix();
+                const Eigen::Vector3d t(
+                    pose_map.translation().x(),
+                    pose_map.translation().y(),
+                    pose_map.translation().z());
+
+                Eigen::Vector3d normal = R * body_plane.head<3>();
+                double d = body_plane[3] - normal.dot(t);
+                Eigen::Vector4d map_plane;
+                map_plane << normal.x(), normal.y(), normal.z(), d;
+
+                const Eigen::Vector3d up = getGravityUp();
+                if (map_plane.head<3>().dot(up) < 0.0)
+                    map_plane = -map_plane;
+
                 initialEstimate.insert(
                     pkey,
-                    gtsam::OrientedPlane3(plane.plane));
-            }
+                    gtsam::OrientedPlane3(map_plane));
 
-            if (sceneEnableFlag)
-            {
-                const gtsam::Key fkey = gtsam::Symbol('f', plane.floor);
+                const int floor_id = sceneEnableFlag ? batch.planes.front().floor : 0;
+                const gtsam::Key fkey = gtsam::Symbol('f', floor_id);
 
                 if (!initialEstimate.exists(fkey) &&
                     !isamCurrentEstimate.exists(fkey))
@@ -603,20 +633,22 @@ void addSceneFactor()
                             fkey,
                             pkey,
                             floorPlaneNoise)));
-            }
-        }
 
-        if (groundEnableFlag)
-        {
-            for (const auto &factor : batch.factors)
-            {
-                gtSAMgraph.add(
-                    gtsam::OrientedPlane3Factor(
-                        factor.obs,
-                        planeNoise,
-                        static_cast<gtsam::Key>(factor.key),
-                        gtsam::Symbol('p', factor.id)));
+                ROS_PRINT_INFO(
+                    "[GROUND GRAPH] NEW p%d floor=%d key=%d body=(%.3f %.3f %.3f %.3f) map=(%.3f %.3f %.3f %.3f)",
+                    factor.id,
+                    floor_id,
+                    factor.key,
+                    body_plane[0], body_plane[1], body_plane[2], body_plane[3],
+                    map_plane[0], map_plane[1], map_plane[2], map_plane[3]);
             }
+
+            gtSAMgraph.add(
+                gtsam::OrientedPlane3Factor(
+                    factor.obs,
+                    planeNoise,
+                    static_cast<gtsam::Key>(factor.key),
+                    pkey));
         }
         graphUpdate = true;
     }
@@ -627,24 +659,18 @@ void sceneMatchingThread()
     if (!groundEnableFlag)
         return;
 
+    RateType rate(20);
     int nextKey = 0;
 
     while (ros_ok() && !flg_exit)
     {
+        rate.sleep();
+
         pcl::PointCloud<PointTypeIndex>::Ptr cloud;
         PointTypePose pose;
 
         {
-            std::unique_lock<std::mutex> lock(mtxKeyframe);
-            sceneCv.wait(lock, [&]()
-            {
-                return flg_exit ||
-                       nextKey < static_cast<int>(featCloudKeyFrames.size());
-            });
-
-            if (flg_exit)
-                break;
-
+            std::lock_guard<std::mutex> lock(mtxKeyframe);
             if (nextKey >= static_cast<int>(featCloudKeyFrames.size()))
             {
                 sceneDone.store(true);
@@ -677,7 +703,9 @@ void sceneMatchingThread()
         }
 
         ++nextKey;
-        sceneDone.store(nextKey >= static_cast<int>(featCloudKeyFrames.size()));
+        std::lock_guard<std::mutex> lock(mtxKeyframe);
+        sceneDone.store(
+            nextKey >= static_cast<int>(featCloudKeyFrames.size()));
     }
 
     sceneDone.store(true);
@@ -867,7 +895,7 @@ void processGnssPos(const std::vector<PointTypePose> &keyposes)
         if (!useGnssElevation)
         {
             gnss_pos.z() = pose.z;
-            gnss_cov(2, 2) = 0.01;
+            gnss_cov(2, 2) = 100.0;
         }
 
         if (!gnss_pos.allFinite())
@@ -1088,8 +1116,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
     {
         floorMap.update(static_cast<int>(latestPoseKey), OdomPose);
     }
-
-    sceneCv.notify_one();
 
     updatePath(thisPose6D);
     poseCovariance = isam->marginalCovariance(latestPoseKey);

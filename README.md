@@ -5,13 +5,24 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
 <p align="center">
   <img src="assets/floor_1.png" alt="Floor 1" width="45%">
   <img src="assets/floor_2.png" alt="Floor 2" width="45%">
+  <br>
+  <sub>
+    🔴 <strong>PGO</strong>
+    &nbsp;&nbsp;&nbsp;
+    🟢 <strong>Odom (latest map→odom TF)</strong>
+  </sub>
+  <br><br>
   <img src="assets/floor_3.png" alt="Floor 3" width="45%">
   <img src="assets/floor_4.png" alt="Floor 4" width="45%">
+  <br>
+  <sub>
+    🟢 <strong>Odom (raw odometry)</strong>
+  </sub>
 </p>
 
 <p align="center">
 <em>
-Comparison of multi-floor mapping results: 
+Comparison of multi-floor trajectory and mapping results (): 
 <strong>our method</strong> enhanced with 
 <strong>hierarchical scene representation</strong>, 
 <strong>ground-normal constraints</strong>, and 
@@ -21,17 +32,31 @@ Comparison of multi-floor mapping results:
 </p>
 
 <p align="center">
-  <img src="assets/outdoor_difficult_1.png" alt="outdoor difficult 1" width="45%">
-  <img src="assets/outdoor_difficult_2.png" alt="outdoor difficult 2" width="45%">
+  <img src="assets/outdoor_difficult_5.png" alt="outdoor difficult 5" width="45%">
+  <img src="assets/outdoor_difficult_6.png" alt="outdoor difficult 6" width="45%">
+  <br>
+  <sub>
+    🔴 <strong>PGO</strong>
+    &nbsp;&nbsp;&nbsp;
+    🟠 <strong>GNSS</strong>
+    &nbsp;&nbsp;&nbsp;
+    🟢 <strong>Odom (latest map→odom TF)</strong>
+  </sub>
+  <br><br>
   <img src="assets/outdoor_difficult_3.png" alt="outdoor difficult 3" width="45%">
   <img src="assets/outdoor_difficult_4.png" alt="outdoor difficult 4" width="45%">
+  <br>
+  <sub>
+    🟢 <strong>Odom (raw odometry)</strong>
+  </sub>
 </p>
 
 <p align="center">
 <em>
-Comparison of outdoor mapping results: 
+Comparison of outdoor trajectory and mapping results: 
 <strong>our method</strong> enhanced with
-<strong>ground-normal constraints</strong>, and 
+<strong>ground-normal constraints</strong>, 
+<strong>GNSS position and heading constraints</strong>, and 
 <strong>loop closure</strong> (top) versus 
 <strong>FAST-LIO2</strong> (bottom).
 </em>
@@ -84,7 +109,6 @@ mkdir src && cd src
 git clone https://github.com/RightTr/FAST-LIO-SAM.git
 
 cd src/FAST-LIO-SAM
-git submodule update --init --recursive
 
 # ROS1 build
 ./build.sh ROS1
@@ -106,11 +130,11 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 ### Ground normal constraint
 
-`groundEnableFlag` enables ground-normal pose-graph constraints from plane observations.
+`groundEnableFlag` enables ground-normal pose-graph constraints from ground observations.
 
 ### Hierarchical representation
 
-`sceneEnableFlag` enables floor-range hierarchy for floor-aware loop closure and ground constraints; when off, loop falls back to ordinary spatial search.
+`sceneEnableFlag` enables multi-floor switching and floor-aware loop filtering; when off, ground stays in `floor0` and loop uses ordinary spatial search.
 
 ### TF layout
 
