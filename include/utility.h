@@ -30,6 +30,7 @@ extern float historyKeyframeSearchRadius;
 extern float historyKeyframeSearchTimeDiff;
 extern int   historyKeyframeSearchNum;
 extern float historyKeyframeFitnessScore;
+extern float icpMaxCorrDistance;
 extern float loopWeight;
 extern int   loopCurNum;
 extern int   loopPreNum;

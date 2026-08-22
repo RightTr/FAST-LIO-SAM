@@ -393,7 +393,7 @@ void performLoopClosure(int loopKeyCur,
             prevKeyframeCloudDS->size());
 
         static pcl::IterativeClosestPoint<PointTypeIndex, PointTypeIndex> icp;
-        icp.setMaxCorrespondenceDistance(2.0);
+        icp.setMaxCorrespondenceDistance(icpMaxCorrDistance);
         icp.setMaximumIterations(100);
         icp.setTransformationEpsilon(1e-6);
         icp.setEuclideanFitnessEpsilon(1e-6);

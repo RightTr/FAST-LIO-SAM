@@ -28,7 +28,7 @@ gnss:
     useGnssElevation: false
 
 preprocess:
-    lidar_type: 8                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
+    lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
     scan_line: 4
     blind: 0.5
 
@@ -50,7 +50,7 @@ mapping:
 
 s-graph:
     groundEnableFlag: true
-    sceneEnableFlag: true
+    sceneEnableFlag: false
     groundInterval: 3
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0
@@ -75,6 +75,7 @@ lio_sam:
     historyKeyframeSearchTimeDiff: 30.0           # seconds, key frame that is n seconds older will be considered for loop closure
     historyKeyframeSearchNum: 25                  # number of hostory key frames will be fused into a submap for loop closure
     historyKeyframeFitnessScore: 0.2              # icp threshold, the smaller the better alignment
+    icpMaxCorrDistance: 10.0                       # meters, loop-closure ICP max correspondence distance
     loopWeight: 0.02                               # loop factor variance scale, smaller is stronger
     loopCurNum: 3                                  # max current keyframes processed per loop tick
     loopPreNum: 2                                  # max ICP attempts per current keyframe

@@ -1,10 +1,40 @@
 # FAST-LIO-SAM
 
-A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency frontend with a **LIO-SAM-style** factor graph backend for global optimization, supporting **RoboSense LiDARs**, **Unilidar LiDARs**, and compatible with both **ROS1** and **ROS2**.
+A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency frontend with a **LIO-SAM-style factor graph backend** for global optimization, enhanced by **hierarchical scene representation** and **ground-normal constraints**, and compatible with both **ROS1** and **ROS2**.
 
 <p align="center">
-  <img src="assets/outdoor3.png" alt="Outdoor 3" width="30%">
-  <img src="assets/outdoor4.png" alt="Outdoor 4" width="30%">
+  <img src="assets/floor_1.png" alt="Floor 1" width="45%">
+  <img src="assets/floor_2.png" alt="Floor 2" width="45%">
+  <img src="assets/floor_3.png" alt="Floor 3" width="45%">
+  <img src="assets/floor_4.png" alt="Floor 4" width="45%">
+</p>
+
+<p align="center">
+<em>
+Comparison of multi-floor mapping results: 
+<strong>our method</strong> enhanced with 
+<strong>hierarchical scene representation</strong>, 
+<strong>ground-normal constraints</strong>, and 
+<strong>loop closure</strong> (top) versus 
+<strong>FAST-LIO2</strong> (bottom).
+</em>
+</p>
+
+<p align="center">
+  <img src="assets/outdoor_difficult_1.png" alt="outdoor difficult 1" width="45%">
+  <img src="assets/outdoor_difficult_2.png" alt="outdoor difficult 2" width="45%">
+  <img src="assets/outdoor_difficult_3.png" alt="outdoor difficult 3" width="45%">
+  <img src="assets/outdoor_difficult_4.png" alt="outdoor difficult 4" width="45%">
+</p>
+
+<p align="center">
+<em>
+Comparison of outdoor mapping results: 
+<strong>our method</strong> enhanced with
+<strong>ground-normal constraints</strong>, and 
+<strong>loop closure</strong> (top) versus 
+<strong>FAST-LIO2</strong> (bottom).
+</em>
 </p>
 
 ## 🧩 Contributions
@@ -13,9 +43,9 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
 
 * ROS1 and ROS2 adaptation
 
-* Hierarchical representation
+* Hierarchical scene representation
 
-* Support ground normal constraint in pose graph
+* Support ground-normal constraints in pose graph
 
 * Manual initial pose setting for relocalization
 
@@ -76,7 +106,11 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 ### Ground normal constraint
 
+`groundEnableFlag` enables ground-normal pose-graph constraints from plane observations.
+
 ### Hierarchical representation
+
+`sceneEnableFlag` enables floor-range hierarchy for floor-aware loop closure and ground constraints; when off, loop falls back to ordinary spatial search.
 
 ### TF layout
 

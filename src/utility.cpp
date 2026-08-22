@@ -22,6 +22,7 @@ float historyKeyframeSearchRadius;
 float historyKeyframeSearchTimeDiff;
 int   historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
+float icpMaxCorrDistance;
 float loopWeight;
 int   loopCurNum;
 int   loopPreNum;
@@ -118,6 +119,7 @@ void read_liosam_params() {
     rosparam_get("lio_sam/historyKeyframeSearchTimeDiff", historyKeyframeSearchTimeDiff, 30.0f);
     rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
+    rosparam_get("lio_sam/icpMaxCorrDistance", icpMaxCorrDistance, 2.0f);
     rosparam_get("lio_sam/loopWeight", loopWeight, 0.2f);
     rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
     rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
