@@ -759,15 +759,11 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
     }
 
     last_gnss_timestamp = t;
-    p_gnss->pushFix(msg_in);
-
-    if (!(gnssEnableFlag || gnssPathVis) || !gnss_aligned.load())
-    {
-        return;
-    }
 
     PosData pos;
-    if (p_gnss->latestPos(pos) && pos.t >= 0.0)
+    if (p_gnss->pushFix(msg_in, pos) &&
+        gnssPathVis &&
+        gnss_aligned.load())
     {
         publishGnssPath(pos);
     }
@@ -1790,7 +1786,6 @@ int main(int argc, char** argv)
 
         std::thread loopthread;
         std::thread globalthread;
-        std::thread gnssthread;
         std::thread scenethread;
         if (sam_enable)
         {
@@ -1802,10 +1797,6 @@ int main(int argc, char** argv)
             if (groundEnableFlag)
             {
                 scenethread = std::thread(&sceneMatchingThread);
-            }
-            if (gnssEnableFlag)
-            {
-                gnssthread = std::thread(&gnssMatchingThread);
             }
         }
 
@@ -2013,9 +2004,6 @@ int main(int argc, char** argv)
         }
         if (scenethread.joinable()) {
             scenethread.join();
-        }
-        if (gnssthread.joinable()) {
-            gnssthread.join();
         }
 
         if (sam_enable)

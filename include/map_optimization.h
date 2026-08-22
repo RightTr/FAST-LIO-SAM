@@ -74,8 +74,6 @@ void shutdownMapOptimization();
 
 void loopClosureThread();
 
-void gnssMatchingThread();
-
 void sceneMatchingThread();
 
 void setLaserCurTime(double lidar_end_time);
