@@ -38,11 +38,14 @@ public:
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
-    bool getRange(int key,
-                   FloorRange &range) const;
+    bool getRanges(int key,
+                    std::vector<FloorRange> &ranges) const;
 
 private:
     double trajectoryAngle() const;
+    bool findRangesLocked(int key,
+                         std::vector<FloorRange> &ranges) const;
+    Floor &ensureFloorLocked(int floor_id);
 
 private:
     mutable std::mutex mutex_;

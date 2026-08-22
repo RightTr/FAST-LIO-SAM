@@ -55,7 +55,6 @@ Eigen::Vector3d getGravityUp();
 
 extern std::mutex mtxKeyframe;
 extern std::mutex mtxLoopFactor;
-extern std::atomic<int> sceneKey;
 extern std::atomic<bool> sceneDone;
 extern std::atomic<bool> loopDone;
 

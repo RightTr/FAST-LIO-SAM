@@ -101,7 +101,6 @@ std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
 std::mutex mtxGnssFactor;
 std::mutex mtxSceneBatch;
-std::atomic<int> sceneKey{-1};
 std::atomic<bool> sceneDone{false};
 std::atomic<bool> loopDone{false};
 
@@ -277,12 +276,15 @@ void performLoopClosure(int loopKeyCur,
                         const std::vector<PointTypeIndex> &poses3D,
                         const std::vector<PointTypePose> &poses6D,
                         const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds,
+                        const std::vector<FloorRange> &floorRanges,
+                        const std::vector<int> &poseKeys,
                         pcl::KdTreeFLANN<PointTypeIndex> &poseTree)
 {
     if (loopKeyCur < 0 ||
         loopKeyCur >= static_cast<int>(poses3D.size()) ||
         loopKeyCur >= static_cast<int>(poses6D.size()) ||
-        loopUsedKeys.count(loopKeyCur) != 0)
+        loopUsedKeys.count(loopKeyCur) != 0 ||
+        poseKeys.empty())
         return;
 
     std::vector<int> indices;
@@ -296,10 +298,6 @@ void performLoopClosure(int loopKeyCur,
 
     const pcl::PointCloud<PointTypeIndex>::Ptr &curCloud = clouds[loopKeyCur];
     if (!curCloud || curCloud->empty())
-        return;
-
-    FloorRange curRange;
-    if (sceneEnableFlag && !floorMap.getRange(loopKeyCur, curRange))
         return;
 
     const PointTypePose curPose = poses6D[loopKeyCur];
@@ -318,7 +316,11 @@ void performLoopClosure(int loopKeyCur,
     int preCount = 0;
     for (size_t i = 0; i < indices.size(); ++i)
     {
-        const int id = indices[i];
+        const int poseIndex = indices[i];
+        if (poseIndex < 0 || poseIndex >= static_cast<int>(poseKeys.size()))
+            continue;
+
+        const int id = poseKeys[poseIndex];
         if (id < 0 || id >= loopKeyCur)
             continue;
         if (loopUsedKeys.count(id) != 0)
@@ -328,25 +330,24 @@ void performLoopClosure(int loopKeyCur,
         if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
             continue;
 
-        FloorRange preRange;
-        if (sceneEnableFlag)
-        {
-            if (!floorMap.getRange(id, preRange))
-                continue;
-
-            if (curRange.floor != preRange.floor)
-                continue;
-        }
-
         const int cloudSize = static_cast<int>(std::min(clouds.size(), poses6D.size()));
         int historyBegin = std::max(0, id - historyKeyframeSearchNum);
         int historyEnd = std::min(id + historyKeyframeSearchNum, cloudSize - 1);
+        historyEnd = std::min(historyEnd, loopKeyCur - 1);
 
-        if (sceneEnableFlag)
+        if (!floorRanges.empty())
         {
-            historyBegin = std::max(historyBegin, preRange.begin);
-            if (preRange.end >= 0)
-                historyEnd = std::min(historyEnd, preRange.end);
+            for (const auto &range : floorRanges)
+            {
+                if (id >= range.begin &&
+                    (range.end < 0 || id <= range.end))
+                {
+                    historyBegin = std::max(historyBegin, range.begin);
+                    if (range.end >= 0)
+                        historyEnd = std::min(historyEnd, range.end);
+                    break;
+                }
+            }
         }
 
         if (historyBegin > historyEnd)
@@ -670,7 +671,6 @@ void performSceneMatching()
         plane.extract(planes);
 
     SceneBatch batch;
-    floorMap.update(key, pose);
 
     if (isGroundKey && (groundEnableFlag || sceneEnableFlag))
     {
@@ -680,8 +680,6 @@ void performSceneMatching()
             sceneQueue.push_back(std::move(batch));
         }
     }
-    if (sceneEnableFlag)
-        sceneKey.store(key);
     ++nextKey;
     sceneDone.store(nextKey >= static_cast<int>(std::min(
         featCloudKeyFrames.size(),
@@ -1089,6 +1087,11 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
         cloudKeyOdomPoses6D->push_back(OdomPose);
     }
 
+    if (sceneEnableFlag)
+    {
+        floorMap.update(static_cast<int>(latestPoseKey), OdomPose);
+    }
+
     updatePath(thisPose6D);
     poseCovariance = isam->marginalCovariance(latestPoseKey);
 
@@ -1368,9 +1371,7 @@ void loopClosureThread()
             clouds = featCloudKeyFrames;
         }
 
-        int readyKey = static_cast<int>(poses3D.size()) - 5;
-        if (sceneEnableFlag)
-            readyKey = std::min(readyKey, sceneKey.load());
+        const int readyKey = static_cast<int>(poses3D.size()) - 1;
 
         if (nextKey > readyKey)
         {
@@ -1380,27 +1381,86 @@ void loopClosureThread()
 
         loopDone.store(false);
 
-        pcl::PointCloud<PointTypeIndex>::Ptr poseCloud(new pcl::PointCloud<PointTypeIndex>());
-        poseCloud->points.insert(
-            poseCloud->points.end(),
-            poses3D.begin(),
-            poses3D.end());
-        poseCloud->width = static_cast<uint32_t>(poseCloud->points.size());
-        poseCloud->height = 1;
-        poseCloud->is_dense = true;
-
-        pcl::KdTreeFLANN<PointTypeIndex> poseTree;
-        poseTree.setInputCloud(poseCloud);
-
         if (loopCurNum <= 0)
         {
             loopDone.store(true);
             continue;
         }
 
-        for (int i = 0; i < loopCurNum && nextKey <= readyKey; ++i, ++nextKey)
+        nextKey = std::max(nextKey, readyKey - loopCurNum + 1);
+        ROS_PRINT_INFO(
+            "[LOOP] range next=%d ready=%d latest=%zu",
+            nextKey,
+            readyKey,
+            poses3D.size() - 1);
+
+        for (int processed = 0; processed < loopCurNum && nextKey <= readyKey; )
         {
-            performLoopClosure(nextKey, poses3D, poses6D, clouds, poseTree);
+            std::vector<FloorRange> floorRanges;
+            if (sceneEnableFlag && !floorMap.getRanges(nextKey, floorRanges))
+            {
+                ++nextKey;
+                ++processed;
+                continue;
+            }
+
+            pcl::PointCloud<PointTypeIndex>::Ptr poseCloud(
+                new pcl::PointCloud<PointTypeIndex>());
+            std::vector<int> poseKeys;
+
+            if (floorRanges.empty())
+            {
+                const int end = std::min(
+                    readyKey,
+                    static_cast<int>(poses3D.size()) - 1);
+
+                for (int key = 0; key <= end; ++key)
+                {
+                    poseCloud->push_back(poses3D[key]);
+                    poseKeys.push_back(key);
+                }
+            }
+            else
+            {
+                for (const auto &range : floorRanges)
+                {
+                    const int begin = std::max(0, range.begin);
+                    const int end = std::min(
+                        range.end < 0 ? readyKey : range.end,
+                        readyKey);
+
+                    for (int key = begin; key <= end; ++key)
+                    {
+                        poseCloud->push_back(poses3D[key]);
+                        poseKeys.push_back(key);
+                    }
+                }
+            }
+
+            if (poseKeys.size() < 6)
+            {
+                ++nextKey;
+                ++processed;
+                continue;
+            }
+
+            poseCloud->width = static_cast<uint32_t>(poseCloud->points.size());
+            poseCloud->height = 1;
+
+            pcl::KdTreeFLANN<PointTypeIndex> poseTree;
+            poseTree.setInputCloud(poseCloud);
+
+            performLoopClosure(
+                nextKey,
+                poses3D,
+                poses6D,
+                clouds,
+                floorRanges,
+                poseKeys,
+                poseTree);
+
+            ++nextKey;
+            ++processed;
         }
 
         loopDone.store(nextKey > readyKey);
