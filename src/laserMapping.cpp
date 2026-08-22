@@ -425,6 +425,7 @@ void SigHandle(int sig)
 {
     flg_exit = true;
     ROS_PRINT_WARN("catch sig %d", sig);
+    sceneCv.notify_all();
     sig_buffer.notify_all();
 }
 
@@ -2002,6 +2003,7 @@ int main(int argc, char** argv)
         }
 
         flg_exit = true;
+        sceneCv.notify_all();
         if (odomhighthread.joinable()) {
             odomhighthread.join();
         }

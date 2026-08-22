@@ -91,17 +91,7 @@ void FloorMap::update(int key,
         ROS_PRINT_INFO("[FLOOR] CREATE id=0 begin=%d", key);
     }
 
-    if (current_floor_id_ < 0 ||
-        current_floor_id_ >= static_cast<int>(floors_.size()))
-    {
-        current_floor_id_ = 0;
-    }
-
     Floor &current_floor = floors_[static_cast<size_t>(current_floor_id_)];
-    if (current_floor.ranges.empty())
-    {
-        current_floor.ranges.push_back(FloorRange{key, -1});
-    }
 
     const double angle = trajectoryAngle();
     const Eigen::Vector3d gravity_up = getGravityUp();
@@ -115,11 +105,7 @@ void FloorMap::update(int key,
         transition_dir_ = angle > 0.0 ? 1 : -1;
         transition_start_z_ = gravity_up.dot(poseTranslation(pose));
 
-        if (!current_floor.ranges.empty() &&
-            current_floor.ranges.back().end < 0)
-        {
-            current_floor.ranges.back().end = key - 1;
-        }
+        current_floor.ranges.back().end = key - 1;
 
         ROS_PRINT_INFO(
             "[FLOOR] START key=%d floor=%d dir=%d angle=%.3f",
@@ -193,8 +179,7 @@ void FloorMap::update(int key,
     }
 
     current_floor_id_ = target_floor;
-    Floor &target_floor_ref = floors_[static_cast<size_t>(current_floor_id_)];
-    target_floor_ref.ranges.push_back(FloorRange{key, -1});
+    floors_[static_cast<size_t>(current_floor_id_)].ranges.push_back(FloorRange{key, -1});
     transition_dir_ = 0;
     transition_start_z_ = 0.0;
     flat_distance_ = 0.0;
@@ -278,11 +263,10 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
 
     const Eigen::Vector3d gravity_up = getGravityUp();
 
-    Ground *best_ground = nullptr;
     double best_xy = std::numeric_limits<double>::infinity();
-    for (size_t i = 0; i < floor.grounds.size(); ++i)
+    Ground *best_ground = nullptr;
+    for (auto &ground : floor.grounds)
     {
-        auto &ground = floor.grounds[i];
         const double dot = clampDot(
             ground.plane.head<3>().dot(candidate.plane.head<3>()));
         const double angle = std::acos(dot);
@@ -302,10 +286,6 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
     const bool is_new_ground = (best_ground == nullptr);
     const int ground_id = is_new_ground ? next_plane_id_ : best_ground->id;
     const int key = keys.back();
-    const int last_added_key = best_ground ? best_ground->last_key : -1;
-
-    if (key <= last_added_key)
-        return false;
 
     const auto it = candidate.obs.find(key);
     if (it == candidate.obs.end())
@@ -319,7 +299,7 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         new_ground.center = candidate.center;
         new_ground.last_key = key;
         floor.grounds.push_back(std::move(new_ground));
-        next_plane_id_ = std::max(next_plane_id_, ground_id + 1);
+        ++next_plane_id_;
     }
     else
     {

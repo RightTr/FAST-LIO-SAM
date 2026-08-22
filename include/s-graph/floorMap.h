@@ -44,7 +44,7 @@ private:
 private:
     mutable std::mutex mutex_;
     std::vector<Floor> floors_;
-    int current_floor_id_ = -1;
+    int current_floor_id_ = 0;
     int next_plane_id_ = 0;
     int transition_dir_ = 0;
     double transition_start_z_ = 0.0;

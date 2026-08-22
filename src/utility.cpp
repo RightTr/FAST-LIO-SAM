@@ -1,5 +1,8 @@
 #include "utility.h"
 #include "ros_utils.h"
+
+#include <algorithm>
+
 using namespace std;
 
 // CPU Params
