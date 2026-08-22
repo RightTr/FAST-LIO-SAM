@@ -31,6 +31,8 @@ extern float historyKeyframeSearchTimeDiff;
 extern int   historyKeyframeSearchNum;
 extern float historyKeyframeFitnessScore;
 extern float loopWeight;
+extern int   loopCurNum;
+extern int   loopPreNum;
 
 // global map visualization radius
 extern float globalMapVisualizationSearchRadius;
@@ -52,7 +54,6 @@ extern bool imu_state_save_en;
 extern bool ikdtree_output_save_en;
 extern bool groundEnableFlag;
 extern bool sceneEnableFlag;
-extern bool &floorEnableFlag;
 
 extern std::string map_frame;
 extern std::string odom_frame;

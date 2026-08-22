@@ -1799,7 +1799,7 @@ int main(int argc, char** argv)
             {
                 loopthread = std::thread(&loopClosureThread);
             }
-            if (groundEnableFlag || floorEnableFlag)
+            if (groundEnableFlag || sceneEnableFlag)
             {
                 scenethread = std::thread(&sceneMatchingThread);
             }
@@ -1992,7 +1992,7 @@ int main(int argc, char** argv)
             if (input_finished)
             {
                 const bool scene_done =
-                    (!groundEnableFlag && !floorEnableFlag) ||
+                    (!groundEnableFlag && !sceneEnableFlag) ||
                     sceneDone.load();
                 const bool loop_done =
                     !loopClosureEnableFlag || loopDone.load();

@@ -101,8 +101,7 @@ std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
 std::mutex mtxGnssFactor;
 std::mutex mtxSceneBatch;
-std::atomic<int> floorKey{-1};
-std::atomic<int> loopKey{-1};
+std::atomic<int> sceneKey{-1};
 std::atomic<bool> sceneDone{false};
 std::atomic<bool> loopDone{false};
 
@@ -216,7 +215,7 @@ void allocateMemory()
 
 void MapOptimizationInit()
 {
-    sceneDone.store(!groundEnableFlag && !floorEnableFlag);
+    sceneDone.store(!groundEnableFlag && !sceneEnableFlag);
     loopDone.store(!loopClosureEnableFlag);
 
     ISAM2Params parameters;
@@ -232,6 +231,7 @@ void MapOptimizationInit()
     floorPlaneNoise = gtsam::noiseModel::Isotropic::Sigma(
         2, (M_PI / 180.0) * 0.5);
     setGravityUp(Eigen::Vector3d::UnitZ());
+    floorMap.setMultiFloor(sceneEnableFlag); // temporary design
 
     init_ros_node();
     
@@ -273,24 +273,18 @@ bool isKeyFrame()
     return true;
 }  
 
-int findLoopKey(const std::vector<PointTypeIndex> &poses3D,
-                const std::vector<PointTypePose> &poses6D,
-                pcl::KdTreeFLANN<PointTypeIndex> &poseTree,
-                int loopKeyCur)
+void performLoopClosure(int loopKeyCur,
+                        const std::vector<PointTypeIndex> &poses3D,
+                        const std::vector<PointTypePose> &poses6D,
+                        const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds,
+                        pcl::KdTreeFLANN<PointTypeIndex> &poseTree)
 {
-    double current_time = 0.0;
-    if (poses3D.empty() ||
-        loopKeyCur < 0)
-        return -1;
+    if (loopKeyCur < 0 ||
+        loopKeyCur >= static_cast<int>(poses3D.size()) ||
+        loopKeyCur >= static_cast<int>(poses6D.size()) ||
+        loopUsedKeys.count(loopKeyCur) != 0)
+        return;
 
-    if (loopKeyCur >= static_cast<int>(poses3D.size()) ||
-        loopKeyCur >= static_cast<int>(poses6D.size()))
-        return -1;
-
-    if (loopUsedKeys.count(loopKeyCur) != 0)
-        return -1;
-
-    current_time = poses6D[loopKeyCur].time;
     std::vector<int> indices;
     std::vector<float> sqDists;
     if (poseTree.radiusSearch(
@@ -298,10 +292,30 @@ int findLoopKey(const std::vector<PointTypeIndex> &poses3D,
             historyKeyframeSearchRadius,
             indices,
             sqDists) == 0)
-        return -1;
+        return;
 
-    int loopKeyPre = -1;
-    float nearestSqDis = std::numeric_limits<float>::max();
+    const pcl::PointCloud<PointTypeIndex>::Ptr &curCloud = clouds[loopKeyCur];
+    if (!curCloud || curCloud->empty())
+        return;
+
+    FloorRange curRange;
+    if (sceneEnableFlag && !floorMap.getRange(loopKeyCur, curRange))
+        return;
+
+    const PointTypePose curPose = poses6D[loopKeyCur];
+    pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloud(
+        new pcl::PointCloud<PointTypeIndex>());
+    *cureKeyframeCloud += *transformPointCloud(curCloud, &curPose);
+
+    pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloudDS(
+        new pcl::PointCloud<PointTypeIndex>());
+    downSizeFilterICP.setInputCloud(cureKeyframeCloud);
+    downSizeFilterICP.filter(*cureKeyframeCloudDS);
+    if (cureKeyframeCloudDS->size() < 300)
+        return;
+
+    const double current_time = poses6D[loopKeyCur].time;
+    int preCount = 0;
     for (size_t i = 0; i < indices.size(); ++i)
     {
         const int id = indices[i];
@@ -314,166 +328,116 @@ int findLoopKey(const std::vector<PointTypeIndex> &poses3D,
         if (current_time - nearTime <= historyKeyframeSearchTimeDiff)
             continue;
 
-        if (floorEnableFlag && !floorMap.sameFloor(loopKeyCur, id))
+        FloorRange preRange;
+        if (sceneEnableFlag)
+        {
+            if (!floorMap.getRange(id, preRange))
+                continue;
+
+            if (curRange.floor != preRange.floor)
+                continue;
+        }
+
+        const int cloudSize = static_cast<int>(std::min(clouds.size(), poses6D.size()));
+        int historyBegin = std::max(0, id - historyKeyframeSearchNum);
+        int historyEnd = std::min(id + historyKeyframeSearchNum, cloudSize - 1);
+
+        if (sceneEnableFlag)
+        {
+            historyBegin = std::max(historyBegin, preRange.begin);
+            if (preRange.end >= 0)
+                historyEnd = std::min(historyEnd, preRange.end);
+        }
+
+        if (historyBegin > historyEnd)
             continue;
 
-        const float sqDis = sqDists[i];
-        if (sqDis < nearestSqDis)
+        pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(
+            new pcl::PointCloud<PointTypeIndex>());
+        for (int keyNear = historyBegin; keyNear <= historyEnd; ++keyNear)
         {
-            nearestSqDis = sqDis;
-            loopKeyPre = id;
+            if (keyNear < 0 || keyNear >= static_cast<int>(clouds.size()) ||
+                keyNear >= static_cast<int>(poses6D.size()) ||
+                !clouds[keyNear] || clouds[keyNear]->empty())
+            {
+                continue;
+            }
+            *prevKeyframeCloud += *transformPointCloud(clouds[keyNear], &poses6D[keyNear]);
         }
-    }
+        pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloudDS(
+            new pcl::PointCloud<PointTypeIndex>());
+        downSizeFilterICP.setInputCloud(prevKeyframeCloud);
+        downSizeFilterICP.filter(*prevKeyframeCloudDS);
 
-    if (loopKeyPre == -1 || loopKeyCur == loopKeyPre)
-        return -1;
+        if (prevKeyframeCloudDS->size() < 1000)
+            continue;
 
-    return loopKeyPre;
-}
+        if (preCount >= loopPreNum)
+            break;
+        ++preCount;
 
-void performLoopClosure(int loopKeyCur,
-                        const std::vector<PointTypeIndex> &poses3D,
-                        const std::vector<PointTypePose> &poses6D,
-                        const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds,
-                        pcl::KdTreeFLANN<PointTypeIndex> &poseTree)
-{
-    if (poses3D.empty())
-        return;
+        ROS_PRINT_INFO(
+            "[LOOP] ICP start cur=%d pre=%d src=%zu target=%zu",
+            loopKeyCur,
+            id,
+            cureKeyframeCloudDS->size(),
+            prevKeyframeCloudDS->size());
 
-    const int loopKeyPre = findLoopKey(poses3D, poses6D, poseTree, loopKeyCur);
-    if (loopKeyPre < 0)
-        return;
+        static pcl::IterativeClosestPoint<PointTypeIndex, PointTypeIndex> icp;
+        icp.setMaxCorrespondenceDistance(2.0);
+        icp.setMaximumIterations(100);
+        icp.setTransformationEpsilon(1e-6);
+        icp.setEuclideanFitnessEpsilon(1e-6);
+        icp.setRANSACIterations(0);
 
-    // extract cloud
-    pcl::PointCloud<PointTypeIndex>::Ptr curCloud;
-    PointTypePose curPose;
-    const int cloudSize = static_cast<int>(std::min(clouds.size(), poses6D.size()));
-    if (loopKeyCur >= cloudSize ||
-        loopKeyPre >= cloudSize)
-        return;
+        icp.setInputSource(cureKeyframeCloudDS);
+        icp.setInputTarget(prevKeyframeCloudDS);
+        pcl::PointCloud<PointTypeIndex>::Ptr unused_result(new pcl::PointCloud<PointTypeIndex>());
+        icp.align(*unused_result);
 
-    curCloud = clouds[loopKeyCur];
-    curPose = poses6D[loopKeyCur];
-
-    FloorRange loopPreRange;
-    int historyBegin = std::max(0, loopKeyPre - historyKeyframeSearchNum);
-    int historyEnd = std::min(loopKeyPre + historyKeyframeSearchNum, cloudSize - 1);
-
-    if (floorEnableFlag)
-    {
-        if (!floorMap.getFloorRange(loopKeyPre, loopPreRange))
+        if (!icp.hasConverged() ||
+            icp.getFitnessScore() > historyKeyframeFitnessScore)
         {
             ROS_PRINT_INFO(
-                "[LOOP] no floor range pre=%d cur=%d",
-                loopKeyPre,
-                loopKeyCur);
-            return;
+                "[LOOP] ICP reject cur=%d pre=%d score=%.3f",
+                loopKeyCur,
+                id,
+                icp.getFitnessScore());
+            continue;
         }
 
-        historyBegin = std::max(loopKeyPre - historyKeyframeSearchNum, loopPreRange.begin);
-        const int rangeEnd = loopPreRange.end >= 0 ? loopPreRange.end : cloudSize - 1;
-        historyEnd = std::min(loopKeyPre + historyKeyframeSearchNum, rangeEnd);
-    }
+        float x, y, z, roll, pitch, yaw;
+        const Eigen::Affine3f correctionLidarFrame(icp.getFinalTransformation());
+        const Eigen::Affine3f tWrong = pclPointToAffine3f(curPose);
+        const Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong;
+        pcl::getTranslationAndEulerAngles(tCorrect, x, y, z, roll, pitch, yaw);
+        const gtsam::Pose3 poseFrom =
+            Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
+        const PointTypePose prevPose = poses6D[id];
+        const gtsam::Pose3 poseTo = pclPointTogtsamPose3(prevPose);
+        gtsam::Vector Vector6(6);
+        const double noiseScore = std::max(
+            static_cast<double>(icp.getFitnessScore()) * loopWeight, 1e-4);
+        Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
+        noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
 
-    if (!curCloud || curCloud->empty())
-        return;
+        {
+            std::lock_guard<std::mutex> lock(mtxLoopFactor);
+            loopIndexQueue.emplace_back(loopKeyCur, id);
+            loopPoseQueue.push_back(poseFrom.between(poseTo));
+            loopNoiseQueue.push_back(constraintNoise);
 
-    pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloud(new pcl::PointCloud<PointTypeIndex>());
-    pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(new pcl::PointCloud<PointTypeIndex>());
-    *cureKeyframeCloud += *transformPointCloud(curCloud, &curPose);
-    for (int keyNear = historyBegin; keyNear <= historyEnd; ++keyNear)
-    {
-        *prevKeyframeCloud += *transformPointCloud(clouds[keyNear], &poses6D[keyNear]);
-    }
+            loopUsedKeys.insert(loopKeyCur);
+            loopUsedKeys.insert(id);
+        }
 
-    pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloudDS(new pcl::PointCloud<PointTypeIndex>());
-    pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloudDS(new pcl::PointCloud<PointTypeIndex>());
-    downSizeFilterICP.setInputCloud(cureKeyframeCloud);
-    downSizeFilterICP.filter(*cureKeyframeCloudDS);
-    downSizeFilterICP.setInputCloud(prevKeyframeCloud);
-    downSizeFilterICP.filter(*prevKeyframeCloudDS);
-
-    if (cureKeyframeCloudDS->size() < 300 ||
-        prevKeyframeCloudDS->size() < 1000)
-        return;
-
-    ROS_PRINT_INFO(
-        "[LOOP] ICP start cur=%d pre=%d src=%zu target=%zu",
-        loopKeyCur,
-        loopKeyPre,
-        cureKeyframeCloudDS->size(),
-        prevKeyframeCloudDS->size());
-
-    // ICP Settings
-    static pcl::IterativeClosestPoint<PointTypeIndex, PointTypeIndex> icp;
-    icp.setMaxCorrespondenceDistance(2.0);
-    icp.setMaximumIterations(100);
-    icp.setTransformationEpsilon(1e-6);
-    icp.setEuclideanFitnessEpsilon(1e-6);
-    icp.setRANSACIterations(0);
-
-    // Align clouds
-    icp.setInputSource(cureKeyframeCloudDS);
-    icp.setInputTarget(prevKeyframeCloudDS);
-    pcl::PointCloud<PointTypeIndex>::Ptr unused_result(new pcl::PointCloud<PointTypeIndex>());
-    icp.align(*unused_result);
-
-    if (icp.hasConverged() == false || icp.getFitnessScore() > historyKeyframeFitnessScore)
-    {
         ROS_PRINT_INFO(
-            "[LOOP] ICP reject cur=%d pre=%d score=%.3f",
+            "[LOOP] ICP pass cur=%d pre=%d score=%.3f",
             loopKeyCur,
-            loopKeyPre,
+            id,
             icp.getFitnessScore());
-        return;
+        break;
     }
-
-    // publish corrected cloud
-    // if (pubIcpKeyFrames.getNumSubscribers() != 0)
-    // {
-    //     pcl::PointCloud<PointTypeIndex>::Ptr closed_cloud(new pcl::PointCloud<PointTypeIndex>());
-    //     pcl::transformPointCloud(*cureKeyframeCloud, *closed_cloud, icp.getFinalTransformation());
-    //     publishCloud(pubIcpKeyFrames, closed_cloud, timeLaserInfoStamp, odometryFrame);
-    // }
-
-    // Get pose transformation
-    float x, y, z, roll, pitch, yaw;
-    Eigen::Affine3f correctionLidarFrame;
-    correctionLidarFrame = icp.getFinalTransformation();
-    // transform from world origin to wrong pose
-    Eigen::Affine3f tWrong = pclPointToAffine3f(curPose);
-    // transform from world origin to corrected pose
-    Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong;// pre-multiplying -> successive rotation about a fixed frame
-    pcl::getTranslationAndEulerAngles (tCorrect, x, y, z, roll, pitch, yaw);
-    gtsam::Pose3 poseFrom = Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
-    PointTypePose prevPose;
-    if (loopKeyPre < 0 ||
-        loopKeyPre >= static_cast<int>(poses6D.size()))
-        return;
-    prevPose = poses6D[loopKeyPre];
-    gtsam::Pose3 poseTo = pclPointTogtsamPose3(prevPose);
-    gtsam::Vector Vector6(6);
-    const double noiseScore = std::max(
-        static_cast<double>(icp.getFitnessScore()) * loopWeight, 1e-4);
-    Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
-    noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
-
-    // Add pose constraint and reserve both endpoints atomically.
-    {
-        std::lock_guard<std::mutex> lock(mtxLoopFactor);
-        loopIndexQueue.emplace_back(loopKeyCur, loopKeyPre);
-        loopPoseQueue.push_back(poseFrom.between(poseTo));
-        loopNoiseQueue.push_back(constraintNoise);
-
-        loopUsedKeys.insert(loopKeyCur);
-        loopUsedKeys.insert(loopKeyPre);
-    }
-
-    ROS_PRINT_INFO(
-        "[LOOP] ICP pass cur=%d pre=%d score=%.3f",
-        loopKeyCur,
-        loopKeyPre,
-        icp.getFitnessScore());
 }
 
 void addOdomFactor()
@@ -576,7 +540,7 @@ void poseGraphUpdate()
 
 void addSceneFactor()
 {
-    if (!groundEnableFlag && !floorEnableFlag)
+    if (!groundEnableFlag && !sceneEnableFlag)
         return;
 
     std::deque<SceneBatch> batches;
@@ -608,7 +572,7 @@ void addSceneFactor()
                     gtsam::OrientedPlane3(plane.plane));
             }
 
-            if (floorEnableFlag)
+            if (sceneEnableFlag)
             {
                 const gtsam::Key fkey = gtsam::Symbol('f', plane.floor);
 
@@ -650,7 +614,7 @@ void addSceneFactor()
 
 void sceneMatchingThread()
 {
-    if (!groundEnableFlag && !floorEnableFlag)
+    if (!groundEnableFlag && !sceneEnableFlag)
         return;
 
     RateType rate(20);
@@ -663,7 +627,7 @@ void sceneMatchingThread()
 
 void performSceneMatching()
 {
-    if (!groundEnableFlag && !floorEnableFlag)
+    if (!groundEnableFlag && !sceneEnableFlag)
         return;
 
     static int nextKey = 0;
@@ -706,10 +670,9 @@ void performSceneMatching()
         plane.extract(planes);
 
     SceneBatch batch;
-    if (floorEnableFlag)
-        floorMap.update(key, pose);
+    floorMap.update(key, pose);
 
-    if (isGroundKey && (groundEnableFlag || floorEnableFlag))
+    if (isGroundKey && (groundEnableFlag || sceneEnableFlag))
     {
         if (floorMap.updateGround(planes, plane.keys(), plane.poses(), batch))
         {
@@ -717,7 +680,8 @@ void performSceneMatching()
             sceneQueue.push_back(std::move(batch));
         }
     }
-    floorKey.store(key);
+    if (sceneEnableFlag)
+        sceneKey.store(key);
     ++nextKey;
     sceneDone.store(nextKey >= static_cast<int>(std::min(
         featCloudKeyFrames.size(),
@@ -1378,7 +1342,6 @@ void loopClosureThread()
     if (!loopClosureEnableFlag)
         return;
 
-    constexpr int kLoopBatchSize = 5;
     RateType rate(loopClosureFrequency);
     int nextKey = 1;
 
@@ -1391,12 +1354,9 @@ void loopClosureThread()
         std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
         {
             std::lock_guard<std::mutex> lock(mtxKeyframe);
-            if (cloudKeyPoses3D == nullptr || cloudKeyPoses6D == nullptr || cloudKeyOdomPoses6D == nullptr)
-            {
-                loopDone.store(true);
-                continue;
-            }
-            if (cloudKeyPoses3D->points.size() < 6 ||
+            if (cloudKeyPoses3D == nullptr ||
+                cloudKeyPoses6D == nullptr ||
+                cloudKeyPoses3D->points.size() < 6 ||
                 cloudKeyPoses6D->points.size() < 6)
             {
                 loopDone.store(true);
@@ -1408,22 +1368,9 @@ void loopClosureThread()
             clouds = featCloudKeyFrames;
         }
 
-        if (poses3D.size() < 6)
-            continue;
-
         int readyKey = static_cast<int>(poses3D.size()) - 5;
-        if (floorEnableFlag)
-            readyKey = std::min(readyKey, floorKey.load());
-
-        if (nextKey % 25 == 0 || nextKey == 1 || nextKey >= readyKey)
-        {
-            ROS_PRINT_INFO(
-                "[LOOP] next=%d ready=%d latest=%d floor=%d",
-                nextKey,
-                readyKey,
-                static_cast<int>(poses3D.size()) - 1,
-                floorKey.load());
-        }
+        if (sceneEnableFlag)
+            readyKey = std::min(readyKey, sceneKey.load());
 
         if (nextKey > readyKey)
         {
@@ -1445,13 +1392,15 @@ void loopClosureThread()
         pcl::KdTreeFLANN<PointTypeIndex> poseTree;
         poseTree.setInputCloud(poseCloud);
 
-        int processedCount = 0;
-        while (nextKey <= readyKey && processedCount < kLoopBatchSize)
+        if (loopCurNum <= 0)
+        {
+            loopDone.store(true);
+            continue;
+        }
+
+        for (int i = 0; i < loopCurNum && nextKey <= readyKey; ++i, ++nextKey)
         {
             performLoopClosure(nextKey, poses3D, poses6D, clouds, poseTree);
-            loopKey.store(nextKey);
-            ++nextKey;
-            ++processedCount;
         }
 
         loopDone.store(nextKey > readyKey);

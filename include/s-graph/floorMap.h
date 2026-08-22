@@ -10,6 +10,7 @@
 
 struct FloorRange
 {
+    int floor = -1;
     int begin = -1;
     int end = -1;
 };
@@ -27,6 +28,8 @@ class FloorMap
 public:
     FloorMap() = default;
 
+    void setMultiFloor(bool enabled);
+
     void update(int key,
                 const PointTypePose &pose);
 
@@ -35,14 +38,11 @@ public:
                       const std::deque<PointTypePose> &poses,
                       SceneBatch &batch);
 
-    bool getFloorRange(int key,
-                       FloorRange &range) const;
-
-    bool sameFloor(int key_a, int key_b) const;
+    bool getRange(int key,
+                   FloorRange &range) const;
 
 private:
     double trajectoryAngle() const;
-    int floorIdForKey(int key) const;
 
 private:
     mutable std::mutex mutex_;
@@ -55,6 +55,7 @@ private:
     double transition_start_z_ = 0.0;
     double flat_distance_ = 0.0;
     std::deque<PointTypePose> recent_poses_;
+    bool multiFloor_ = false;
 };
 
 #endif

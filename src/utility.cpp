@@ -20,6 +20,8 @@ float historyKeyframeSearchTimeDiff;
 int   historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
 float loopWeight;
+int   loopCurNum;
+int   loopPreNum;
 
 // global map visualization radius
 float globalMapVisualizationSearchRadius;
@@ -37,7 +39,6 @@ bool keyframe_export_en = false;
 bool keyframe_global_pcd_en = false;
 bool groundEnableFlag = true;
 bool sceneEnableFlag = false;
-bool &floorEnableFlag = sceneEnableFlag;
 
 std::string map_frame = "map";
 std::string odom_frame = "odom";
@@ -114,6 +115,8 @@ void read_liosam_params() {
     rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
     rosparam_get("lio_sam/loopWeight", loopWeight, 0.2f);
+    rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
+    rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);

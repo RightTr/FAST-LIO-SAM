@@ -69,24 +69,10 @@ double FloorMap::trajectoryAngle() const
     return std::atan(slope);
 }
 
-int FloorMap::floorIdForKey(int key) const
+void FloorMap::setMultiFloor(bool enabled)
 {
-    if (key < 0)
-        return -1;
-
-    for (int i = 0; i < static_cast<int>(floors_.size()); ++i)
-    {
-        for (const auto &range : floors_[static_cast<size_t>(i)].ranges)
-        {
-            if (key < range.begin)
-                continue;
-            if (range.end >= 0 && key > range.end)
-                continue;
-            return i;
-        }
-    }
-
-    return -1;
+    std::lock_guard<std::mutex> lock(mutex_);
+    multiFloor_ = enabled;
 }
 
 void FloorMap::update(int key,
@@ -94,6 +80,8 @@ void FloorMap::update(int key,
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (key < 0)
+        return;
+    if (!multiFloor_)
         return;
 
     if (key <= last_update_key_)
@@ -157,10 +145,12 @@ void FloorMap::update(int key,
         return;
 }
 
-bool FloorMap::getFloorRange(int key,
-                             FloorRange &range) const
+bool FloorMap::getRange(int key,
+                        FloorRange &range) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!multiFloor_)
+        return false;
 
     if (key < 0)
         return false;
@@ -179,22 +169,6 @@ bool FloorMap::getFloorRange(int key,
     }
 
     return false;
-}
-
-bool FloorMap::sameFloor(int key_a, int key_b) const
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (key_a < 0 || key_b < 0)
-        return false;
-    if (key_a == key_b)
-        return true;
-
-    const int floor_a = floorIdForKey(key_a);
-    const int floor_b = floorIdForKey(key_b);
-    if (floor_a < 0 || floor_b < 0)
-        return false;
-    return floor_a == floor_b;
 }
 
 bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
@@ -217,7 +191,7 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
     if (floors_.empty())
     {
         Floor floor;
-        floor.ranges.push_back(FloorRange{keys.back(), -1});
+        floor.ranges.push_back(FloorRange{0, keys.back(), -1});
         floors_.push_back(std::move(floor));
         current_floor_id_ = 0;
         in_transition_ = false;
@@ -289,7 +263,7 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
 
         current_floor_id_ = target_floor;
         floors_[static_cast<size_t>(current_floor_id_)].ranges.push_back(
-            FloorRange{keys.back(), -1});
+            FloorRange{current_floor_id_, keys.back(), -1});
         in_transition_ = false;
         transition_dir_ = 0;
         transition_start_z_ = 0.0;
