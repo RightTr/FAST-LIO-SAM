@@ -55,9 +55,9 @@ Eigen::Vector3d getGravityUp();
 
 extern std::mutex mtxKeyframe;
 extern std::mutex mtxLoopFactor;
-extern std::atomic<int> groundKey;
+extern std::atomic<int> floorKey;
 extern std::atomic<int> loopKey;
-extern std::atomic<bool> groundDone;
+extern std::atomic<bool> sceneDone;
 extern std::atomic<bool> loopDone;
 
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
@@ -78,7 +78,7 @@ void loopClosureThread();
 
 void gnssMatchingThread();
 
-void structureMatchingThread();
+void sceneMatchingThread();
 
 void setLaserCurTime(double lidar_end_time);
 

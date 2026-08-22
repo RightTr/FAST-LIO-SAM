@@ -37,6 +37,7 @@ bool keyframe_export_en = false;
 bool keyframe_global_pcd_en = false;
 bool groundEnableFlag = true;
 bool sceneEnableFlag = false;
+bool &floorEnableFlag = sceneEnableFlag;
 
 std::string map_frame = "map";
 std::string odom_frame = "odom";

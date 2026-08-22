@@ -1791,7 +1791,7 @@ int main(int argc, char** argv)
         std::thread loopthread;
         std::thread globalthread;
         std::thread gnssthread;
-        std::thread structurethread;
+        std::thread scenethread;
         if (sam_enable)
         {
             globalthread = std::thread(&visualizeGlobalMapThread);
@@ -1799,9 +1799,9 @@ int main(int argc, char** argv)
             {
                 loopthread = std::thread(&loopClosureThread);
             }
-            if (groundEnableFlag)
+            if (groundEnableFlag || floorEnableFlag)
             {
-                structurethread = std::thread(&structureMatchingThread);
+                scenethread = std::thread(&sceneMatchingThread);
             }
             if (gnssEnableFlag)
             {
@@ -1991,11 +1991,12 @@ int main(int argc, char** argv)
 
             if (input_finished)
             {
-                const bool ground_done =
-                    !groundEnableFlag || groundDone.load();
+                const bool scene_done =
+                    (!groundEnableFlag && !floorEnableFlag) ||
+                    sceneDone.load();
                 const bool loop_done =
                     !loopClosureEnableFlag || loopDone.load();
-                if (ground_done && loop_done)
+                if (scene_done && loop_done)
                     break;
             }
             rate.sleep();
@@ -2011,8 +2012,8 @@ int main(int argc, char** argv)
         if (globalthread.joinable()) {
             globalthread.join();
         }
-        if (structurethread.joinable()) {
-            structurethread.join();
+        if (scenethread.joinable()) {
+            scenethread.join();
         }
         if (gnssthread.joinable()) {
             gnssthread.join();
