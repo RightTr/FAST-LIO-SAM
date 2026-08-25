@@ -1,7 +1,7 @@
 #ifndef GNSS_PROCESSING_HPP
 #define GNSS_PROCESSING_HPP
 
-#include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -9,10 +9,12 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+#include "utility.h"
 #include "ros_utils.h"
 
 #ifdef USE_ROS1
@@ -135,6 +137,78 @@ class GnssProcess
     return found;
   }
 
+  bool matchPos(double time, PosData &pos)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+
+    if (pos_buf_.empty())
+      return false;
+
+    if (pos_buf_.back().t <= time)
+      return false;
+
+    while (pos_buf_.size() > 1 && pos_buf_[1].t <= time)
+    {
+      pos_buf_.pop_front();
+    }
+
+    if (pos_buf_.size() < 2)
+      return false;
+
+    const PosData &prev = pos_buf_.front();
+    const PosData &next = pos_buf_[1];
+    const double dt_prev = std::abs(time - prev.t);
+    const double dt_next = std::abs(next.t - time);
+
+    if (dt_prev <= dt_next)
+    {
+      pos = prev;
+      pos_buf_.pop_front();
+      return true;
+    }
+
+    pos = next;
+    pos_buf_.pop_front();
+    pos_buf_.pop_front();
+    return true;
+  }
+
+  bool matchYaw(double time, YawData &yaw)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+
+    if (yaw_buf_.empty())
+      return false;
+
+    if (yaw_buf_.back().t <= time)
+      return false;
+
+    while (yaw_buf_.size() > 1 && yaw_buf_[1].t <= time)
+    {
+      yaw_buf_.pop_front();
+    }
+
+    if (yaw_buf_.size() < 2)
+      return false;
+
+    const YawData &prev = yaw_buf_.front();
+    const YawData &next = yaw_buf_[1];
+    const double dt_prev = std::abs(time - prev.t);
+    const double dt_next = std::abs(next.t - time);
+
+    if (dt_prev <= dt_next)
+    {
+      yaw = prev;
+      yaw_buf_.pop_front();
+      return true;
+    }
+
+    yaw = next;
+    yaw_buf_.pop_front();
+    yaw_buf_.pop_front();
+    return true;
+  }
+
   bool pickInitPair(PosData &pos_out, YawData &yaw_out)
   {
     std::lock_guard<std::mutex> lock(mtx_);
@@ -161,6 +235,7 @@ class GnssProcess
     return false;
   }
 
+ public:
   void setLever(const Eigen::Vector3d &lever)
   {
     std::lock_guard<std::mutex> lock(mtx_);

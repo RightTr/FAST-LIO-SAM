@@ -61,6 +61,7 @@ extern std::atomic<bool> loopDone;
 void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
 void addLoopFactor();
 void poseGraphUpdate();
+void gnssMatchingThread();
 
 bool isKeyFrame();
 

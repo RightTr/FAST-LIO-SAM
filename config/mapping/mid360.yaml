@@ -18,6 +18,7 @@ gnss:
     gnssPathVis: true
     gnssEnableFlag: true
     gpsFactorMinDis: 5.0
+    gnss_dt: 0.2
     extrinsic_T: [0.0, 0.165, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0,
                   0.0, 1.0, 0.0,

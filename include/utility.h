@@ -66,6 +66,7 @@ extern std::string gnss_heading_topic;
 extern bool gnssEnableFlag;
 extern bool gnssPathVis;
 extern double gpsFactorMinDis;
+extern double gnss_dt;
 extern std::vector<double> gnss_extrinsic_T_raw;
 extern std::vector<double> gnss_extrinsic_R_raw;
 extern Eigen::Vector3d gnss_extrinsic_T;

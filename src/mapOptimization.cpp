@@ -99,6 +99,7 @@ Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
 
 std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
+std::mutex mtxGnssFactor;
 std::mutex mtxSceneBatch;
 std::atomic<bool> sceneDone{false};
 std::atomic<bool> loopDone{false};
@@ -106,6 +107,9 @@ std::atomic<bool> loopDone{false};
 bool graphUpdate = false;
 bool loopIsClosed = false;
 std::deque<SceneBatch> sceneQueue;
+std::deque<gtsam::NonlinearFactor::shared_ptr> gnssFactorQueue;
+int gnssPosKey = 0;
+int gnssYawKey = 0;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
 vector<pair<int, int>> loopIndexQueue;
@@ -114,10 +118,19 @@ vector<gtsam::noiseModel::Diagonal::shared_ptr> loopNoiseQueue;
 Eigen::Vector3d last_fpos = Eigen::Vector3d::Zero();
 bool has_fpos = false;
 
+static double yawToMap(double yaw)
+{
+    const Eigen::Vector3d heading_enu(std::cos(yaw), std::sin(yaw), 0.0);
+    const Eigen::Vector3d heading_map = R_enu_map.transpose() * heading_enu;
+    return normalizeYaw(std::atan2(heading_map.y(), heading_map.x()));
+}
+
 void correctPoses();
 void addSceneFactor();
-void addGNSSFactor(gtsam::Key key);
+void addGNSSFactor();
+void performGnssMatching();
 void sceneMatchingThread();
+void gnssMatchingThread();
 
 void setGravityUp(const Eigen::Vector3d &gravity_up)
 {
@@ -210,8 +223,16 @@ void MapOptimizationInit()
     sceneDone.store(!groundEnableFlag);
     loopDone.store(!loopClosureEnableFlag);
     gnss_aligned.store(false);
+    R_enu_map = Eigen::Matrix3d::Identity();
+    t_enu_map = Eigen::Vector3d::Zero();
     last_fpos.setZero();
     has_fpos = false;
+    gnssPosKey = 0;
+    gnssYawKey = 0;
+    {
+        std::lock_guard<std::mutex> lock(mtxGnssFactor);
+        gnssFactorQueue.clear();
+    }
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
@@ -526,6 +547,7 @@ void addLoopFactor()
 
 void poseGraphUpdate()
 {
+    addGNSSFactor();
     addSceneFactor();
     addLoopFactor();
     if (gtSAMgraph.empty())
@@ -601,9 +623,7 @@ void addSceneFactor()
                 if (map_plane.head<3>().dot(up) < 0.0)
                     map_plane = -map_plane;
 
-                initialEstimate.insert(
-                    pkey,
-                    gtsam::OrientedPlane3(map_plane));
+                initialEstimate.insert(pkey, gtsam::OrientedPlane3(map_plane));
 
                 const int floor_id = sceneEnableFlag ? batch.planes.front().floor : 0;
                 const gtsam::Key fkey = gtsam::Symbol('f', floor_id);
@@ -613,34 +633,23 @@ void addSceneFactor()
                 {
                     initialEstimate.insert(fkey, floor_up);
                     gtSAMgraph.add(
-                        gtsam::PriorFactor<gtsam::Unit3>(
-                            fkey,
-                            floor_up,
-                            floorNormalPriorNoise));
+                        gtsam::PriorFactor<gtsam::Unit3>(fkey, floor_up, floorNormalPriorNoise));
                 }
 
                 gtSAMgraph.add(
                     boost::shared_ptr<FloorFactor>(
-                        new FloorFactor(
-                            fkey,
-                            pkey,
-                            floorPlaneNoise)));
+                        new FloorFactor(fkey, pkey, floorPlaneNoise)));
 
                 ROS_PRINT_INFO(
                     "[GROUND GRAPH] NEW p%d floor=%d key=%d body=(%.3f %.3f %.3f %.3f) map=(%.3f %.3f %.3f %.3f)",
-                    factor.id,
-                    floor_id,
-                    factor.key,
+                    factor.id, floor_id, factor.key,
                     body_plane[0], body_plane[1], body_plane[2], body_plane[3],
                     map_plane[0], map_plane[1], map_plane[2], map_plane[3]);
             }
 
             gtSAMgraph.add(
                 gtsam::OrientedPlane3Factor(
-                    factor.obs,
-                    planeNoise,
-                    static_cast<gtsam::Key>(factor.key),
-                    pkey));
+                    factor.obs, planeNoise, static_cast<gtsam::Key>(factor.key), pkey));
         }
         graphUpdate = true;
     }
@@ -703,58 +712,130 @@ void sceneMatchingThread()
     sceneDone.store(true);
 }
 
-void addGNSSFactor(gtsam::Key key)
+void performGnssMatching()
 {
-    if (!gnssEnableFlag || !gnss_aligned.load())
+    if (!gnssEnableFlag || !gnss_aligned.load() || !p_gnss)
         return;
 
-    const Pose3 pose = initialEstimate.at<Pose3>(key);
+    std::vector<PointTypePose> keyposes;
 
-    PosData pos;
-    if (p_gnss->syncPos(timeLaserInfoCur, pos))
     {
-        Eigen::Vector3d gnss_pos = pos.p - pose.rotation().matrix() * p_gnss->lever();
+        std::lock_guard<std::mutex> lock(mtxKeyframe);
+        if (!cloudKeyPoses6D || cloudKeyPoses6D->points.empty())
+            return;
+
+        keyposes.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
+    }
+
+    while (gnssPosKey < static_cast<int>(keyposes.size()))
+    {
+        PosData pos;
+        if (!p_gnss->matchPos(keyposes[gnssPosKey].time, pos))
+            break;
+
+        const int key = gnssPosKey++;
+        const PointTypePose &pose = keyposes[key];
+        const Eigen::Matrix3d R = poseRotation(pose);
+        const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (pos.p - t_enu_map);
+        Eigen::Vector3d gnss_pos = p_map_ant - R * p_gnss->lever();
         Eigen::Matrix3d gnss_cov = pos.cov;
         if (!useGnssElevation)
         {
-            gnss_pos.z() = pose.translation().z();
+            gnss_pos.z() = pose.z;
             gnss_cov(2, 2) = 100.0;
         }
 
-        if (has_fpos && (gnss_pos - last_fpos).norm() < gpsFactorMinDis)
-        {
-            // too close to the previous GNSS position factor
-        }
-        else
+        if (!has_fpos || (gnss_pos - last_fpos).norm() >= gpsFactorMinDis)
         {
             gtsam::Vector3 sigma;
             sigma << std::sqrt(gnss_cov(0, 0)),
                      std::sqrt(gnss_cov(1, 1)),
                      std::sqrt(gnss_cov(2, 2));
-
-            gtSAMgraph.add(
-                gtsam::GPSFactor(
+            const gtsam::NonlinearFactor::shared_ptr factor(
+                new gtsam::GPSFactor(
                     key,
                     gtsam::Point3(gnss_pos.x(), gnss_pos.y(), gnss_pos.z()),
                     gtsam::noiseModel::Diagonal::Sigmas(sigma)));
+            {
+                std::lock_guard<std::mutex> lock(mtxGnssFactor);
+                gnssFactorQueue.push_back(factor);
+            }
 
             last_fpos = gnss_pos;
             has_fpos = true;
+            const double dt = std::abs(pose.time - pos.t);
+            ROS_PRINT_INFO(
+                "[GNSS MATCH] POS key=%d key_t=%.6f gnss=%.6f dt=%.3f",
+                key, pose.time, pos.t, dt);
         }
     }
 
-    YawData yaw;
-    if (useGnssYawFactor && p_gnss->syncYaw(timeLaserInfoCur, yaw))
+    if (!useGnssYawFactor)
+        return;
+
+    while (gnssYawKey < static_cast<int>(keyposes.size()))
     {
-        const double yaw_error = std::abs(normalizeYaw(yaw.yaw - pose.rotation().yaw()));
+        YawData yaw;
+        if (!p_gnss->matchYaw(keyposes[gnssYawKey].time, yaw))
+            break;
+
+        const int key = gnssYawKey++;
+        const PointTypePose &pose = keyposes[key];
+        const double yaw_map = yawToMap(yaw.yaw);
+        const double yaw_error = std::abs(normalizeYaw(yaw_map - pose.yaw));
         if (yaw_error <= 60.0 * M_PI / 180.0)
         {
             const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4);
             const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
-            gtSAMgraph.add(
-                boost::shared_ptr<GnssYawFactor>(
-                    new GnssYawFactor(key, yaw.yaw, yawNoise)));
+            const gtsam::NonlinearFactor::shared_ptr factor(
+                new GnssYawFactor(key, yaw_map, yawNoise));
+            {
+                std::lock_guard<std::mutex> lock(mtxGnssFactor);
+                gnssFactorQueue.push_back(factor);
+            }
+
+            const double dt = std::abs(pose.time - yaw.t);
+            ROS_PRINT_INFO(
+                "[GNSS MATCH] YAW key=%d key_t=%.6f gnss=%.6f dt=%.3f",
+                key, pose.time, yaw.t, dt);
         }
+    }
+}
+
+void addGNSSFactor()
+{
+    if (!gnssEnableFlag)
+        return;
+
+    std::deque<gtsam::NonlinearFactor::shared_ptr> factors;
+
+    {
+        std::lock_guard<std::mutex> lock(mtxGnssFactor);
+        if (gnssFactorQueue.empty())
+            return;
+
+        factors.swap(gnssFactorQueue);
+    }
+
+    for (const auto &factor : factors)
+        gtSAMgraph.add(factor);
+}
+
+void gnssMatchingThread()
+{
+    if (!gnssEnableFlag)
+        return;
+
+    RateType rate(10);
+
+    while (ros_ok() && !flg_exit)
+    {
+        rate.sleep();
+
+        if (!gnss_aligned.load())
+            continue;
+
+        performGnssMatching();
     }
 }
 
@@ -778,7 +859,7 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
     // odom factor
     addOdomFactor();
-    addGNSSFactor(latestPoseKey);
+    addGNSSFactor();
     addSceneFactor();
     // loop factor
     addLoopFactor();

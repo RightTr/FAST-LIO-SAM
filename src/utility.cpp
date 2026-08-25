@@ -54,6 +54,7 @@ std::string gnss_heading_topic = "handsfree/rtk/heading";
 bool gnssEnableFlag = false;
 bool gnssPathVis = false;
 double gpsFactorMinDis = 5.0;
+double gnss_dt = 0.2;
 std::vector<double> gnss_extrinsic_T_raw(3, 0.0);
 std::vector<double> gnss_extrinsic_R_raw{1.0, 0.0, 0.0,
                                          0.0, 1.0, 0.0,
@@ -151,6 +152,7 @@ void read_gnss_params() {
     rosparam_get("gnss/gnssPathVis", gnssPathVis, false);
     rosparam_get("gnss/gnssEnableFlag", gnssEnableFlag, false);
     rosparam_get("gnss/gpsFactorMinDis", gpsFactorMinDis, 5.0);
+    rosparam_get("gnss/gnss_dt", gnss_dt, 0.2);
     rosparam_get("gnss/extrinsic_T", gnss_extrinsic_T_raw,
                  std::vector<double>{0.0, 0.0, 0.0});
     rosparam_get("gnss/extrinsic_R", gnss_extrinsic_R_raw,

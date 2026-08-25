@@ -69,6 +69,8 @@ bool   lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 std::atomic<bool> flg_exit(false);
 Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
+Eigen::Matrix3d R_enu_map = Eigen::Matrix3d::Identity();
+Eigen::Vector3d t_enu_map = Eigen::Vector3d::Zero();
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool sam_enable = false;
 bool grav_align = false;
@@ -1001,14 +1003,14 @@ void publishGnssPath(const PosData &pos)
     if (!gnssPathVis) return;
     PoseStampedMsg gnss_pose;
     gnss_pose.header.stamp = get_ros_time(pos.t);
-    gnss_pose.header.frame_id = map_frame;
+    gnss_pose.header.frame_id = "enu";
     gnss_pose.pose.position.x = pos.p.x();
     gnss_pose.pose.position.y = pos.p.y();
     gnss_pose.pose.position.z = pos.p.z();
     gnss_pose.pose.orientation.w = 1.0;
 
     gnssPath.header.stamp = gnss_pose.header.stamp;
-    gnssPath.header.frame_id = map_frame;
+    gnssPath.header.frame_id = "enu";
     gnssPath.poses.push_back(gnss_pose);
     ros_publish(pubGnssPath, gnssPath);
 }
@@ -1027,23 +1029,46 @@ bool initGnssMap(double lidar_stamp_sec)
         return false;
     }
 
-    const Eigen::Matrix3d R_odom = state_point.rot.toRotationMatrix();
-    const double current_yaw = std::atan2(R_odom(1, 0), R_odom(0, 0));
-    const double dyaw = normalizeYaw(heading.yaw - current_yaw);
-    const Eigen::Matrix3d R_init_now = Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    Eigen::Matrix3d R_map_body;
+    Eigen::Vector3d t_map_body;
+    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
 
-    const Eigen::Vector3d p_odom_ant = state_point.pos + R_odom * p_gnss->lever();
-    Eigen::Vector3d t_map_odom_now = gnss_pos.p - R_init_now * p_odom_ant;
-    if (!useGnssElevation)
-    {
-        t_map_odom_now.z() = t_map_odom.z();
-    }
+    const double map_yaw = std::atan2(R_map_body(1, 0), R_map_body(0, 0));
+    const double dyaw = normalizeYaw(heading.yaw - map_yaw);
+    R_enu_map = Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->lever();
+    t_enu_map = gnss_pos.p - R_enu_map * p_map_ant;
 
-    setMapOdom(R_init_now, t_map_odom_now);
-
+    publishEnuToMapTf(get_ros_time(lidar_stamp_sec));
     publishMapToOdomTf(get_ros_time(lidar_stamp_sec));
     gnss_aligned.store(true);
     return true;
+}
+
+void publishEnuToMapTf(const TimeType& stamp)
+{
+    TransformStampedMsg enu_to_map_msg;
+    enu_to_map_msg.header.stamp = stamp;
+    enu_to_map_msg.header.frame_id = "enu";
+    enu_to_map_msg.child_frame_id = map_frame;
+    enu_to_map_msg.transform.translation.x = t_enu_map.x();
+    enu_to_map_msg.transform.translation.y = t_enu_map.y();
+    enu_to_map_msg.transform.translation.z = t_enu_map.z();
+
+    Eigen::Quaterniond q_enu_map(R_enu_map);
+    q_enu_map.normalize();
+    enu_to_map_msg.transform.rotation.x = q_enu_map.x();
+    enu_to_map_msg.transform.rotation.y = q_enu_map.y();
+    enu_to_map_msg.transform.rotation.z = q_enu_map.z();
+    enu_to_map_msg.transform.rotation.w = q_enu_map.w();
+
+#ifdef USE_ROS1
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(enu_to_map_msg);
+#elif defined(USE_ROS2)
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(enu_to_map_msg);
+#endif
 }
 
 void publishMapToOdomTf(const TimeType& stamp)
@@ -1362,6 +1387,7 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
     fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
     ros_publish(pubOdomAftMappedLocal, odomAftMapped);
+    publishEnuToMapTf(stamp);
     publishMapToOdomTf(stamp);
 #ifdef USE_ROS1
     if (laserTfBroadcaster)
@@ -1787,6 +1813,7 @@ int main(int argc, char** argv)
         std::thread loopthread;
         std::thread globalthread;
         std::thread scenethread;
+        std::thread gnssthread;
         if (sam_enable)
         {
             globalthread = std::thread(&visualizeGlobalMapThread);
@@ -1797,6 +1824,10 @@ int main(int argc, char** argv)
             if (groundEnableFlag)
             {
                 scenethread = std::thread(&sceneMatchingThread);
+            }
+            if (gnssEnableFlag)
+            {
+                gnssthread = std::thread(&gnssMatchingThread);
             }
         }
 
@@ -1944,11 +1975,6 @@ int main(int argc, char** argv)
                 keyframe = isKeyFrame();
             }
 
-            // GNSS callbacks are serviced on the same executor as the main loop.
-            // Spin once more here so GNSS messages that arrived during the heavy
-            // LiDAR/IMU processing are visible before factor selection.
-            spin_once();
-
             if (sam_enable) {
                 if (keyframe)
                 {
@@ -2004,6 +2030,9 @@ int main(int argc, char** argv)
         }
         if (scenethread.joinable()) {
             scenethread.join();
+        }
+        if (gnssthread.joinable()) {
+            gnssthread.join();
         }
 
         if (sam_enable)
