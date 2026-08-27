@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 
+#include "ros_utils.h"
 #include "map_optimization.h"
 #include <pcl/common/transforms.h>
 
@@ -46,6 +47,24 @@ inline double normalizeYaw(double yaw, double offset = 0.0)
     while (yaw < -M_PI)
         yaw += 2.0 * M_PI;
     return yaw;
+}
+
+inline Eigen::Vector3d quaternionToRPY(double qw, double qx, double qy, double qz)
+{
+    const double sinr_cosp = 2.0 * (qw * qx + qy * qz);
+    const double cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy);
+    const double roll = std::atan2(sinr_cosp, cosr_cosp);
+
+    const double sinp = 2.0 * (qw * qy - qz * qx);
+    const double pitch = (std::abs(sinp) >= 1.0)
+        ? std::copysign(M_PI / 2.0, sinp)
+        : std::asin(sinp);
+
+    const double siny_cosp = 2.0 * (qw * qz + qx * qy);
+    const double cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz);
+    const double yaw = std::atan2(siny_cosp, cosy_cosp);
+
+    return Eigen::Vector3d(roll, pitch, yaw);
 }
 
 inline bool time_in_window(double source_stamp_sec,

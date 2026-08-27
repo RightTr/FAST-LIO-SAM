@@ -112,9 +112,7 @@ int gnssPosKey = 0;
 int gnssYawKey = 0;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
-vector<pair<int, int>> loopIndexQueue;
-vector<gtsam::Pose3> loopPoseQueue;
-vector<gtsam::noiseModel::Diagonal::shared_ptr> loopNoiseQueue;
+std::deque<LoopFactor> loopQueue;
 Eigen::Vector3d last_fpos = Eigen::Vector3d::Zero();
 bool has_fpos = false;
 
@@ -452,14 +450,16 @@ void performLoopClosure(int loopKeyCur,
         Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
         noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
 
+        loopUsedKeys.insert(loopKeyCur);
+        loopUsedKeys.insert(id);
+
         {
             std::lock_guard<std::mutex> lock(mtxLoopFactor);
-            loopIndexQueue.emplace_back(loopKeyCur, id);
-            loopPoseQueue.push_back(poseFrom.between(poseTo));
-            loopNoiseQueue.push_back(constraintNoise);
-
-            loopUsedKeys.insert(loopKeyCur);
-            loopUsedKeys.insert(id);
+            loopQueue.push_back(LoopFactor{
+                loopKeyCur,
+                id,
+                poseFrom.between(poseTo),
+                constraintNoise});
         }
 
         ROS_PRINT_INFO(
@@ -493,7 +493,7 @@ void addOdomFactor()
         gtSAMgraph.add(PriorFactor<Pose3>(0, poseTo, priorNoise));
         initialEstimate.insert(0, poseTo);
     }else{
-        noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
+        noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6).finished());
         const gtsam::Pose3 poseFromFront = pclPointTogtsamPose3(cloudKeyOdomPoses6D->points.back());
         const gtsam::Pose3 poseToFront = trans2gtsamPose(transformTobeMapped);
         const gtsam::Pose3 odomDelta = poseFromFront.between(poseToFront);
@@ -509,33 +509,28 @@ void addLoopFactor()
     if (!loopClosureEnableFlag)
         return;
 
-    std::vector<std::pair<int, int>> indexQueue;
-    std::vector<gtsam::Pose3> poseQueue;
-    std::vector<gtsam::noiseModel::Diagonal::shared_ptr> noiseQueue;
+    std::deque<LoopFactor> factors;
 
     {
         std::lock_guard<std::mutex> lock(mtxLoopFactor);
-        if (loopIndexQueue.empty())
+        if (loopQueue.empty())
             return;
 
-        indexQueue.swap(loopIndexQueue);
-        poseQueue.swap(loopPoseQueue);
-        noiseQueue.swap(loopNoiseQueue);
+        factors.swap(loopQueue);
     }
 
-    for (int i = 0; i < (int)indexQueue.size(); ++i)
-    {
-        const int indexFrom = indexQueue[i].first;
-        const int indexTo = indexQueue[i].second;
+    std::vector<std::pair<int, int>> addedEdges;
+    addedEdges.reserve(factors.size());
 
-        const gtsam::Pose3 poseBetween = poseQueue[i];
-        const gtsam::noiseModel::Diagonal::shared_ptr noiseBetween = noiseQueue[i];
-        gtSAMgraph.add(BetweenFactor<Pose3>(indexFrom, indexTo, poseBetween, noiseBetween));
+    for (const auto &factor : factors)
+    {
+        gtSAMgraph.add(BetweenFactor<Pose3>(factor.from, factor.to, factor.pose, factor.noise));
+        addedEdges.emplace_back(factor.from, factor.to);
     }
 
     {
         std::lock_guard<std::mutex> lock(mtxLoopFactor);
-        for (const auto &edge : indexQueue)
+        for (const auto &edge : addedEdges)
         {
             loopEdges.emplace_back(edge.first, edge.second);
         }
@@ -669,10 +664,12 @@ void sceneMatchingThread()
 
         pcl::PointCloud<PointTypeIndex>::Ptr cloud;
         PointTypePose pose;
+        int readyKeyNum = 0;
 
         {
             std::lock_guard<std::mutex> lock(mtxKeyframe);
-            if (nextKey >= static_cast<int>(featCloudKeyFrames.size()))
+            readyKeyNum = static_cast<int>(featCloudKeyFrames.size());
+            if (nextKey >= readyKeyNum)
             {
                 sceneDone.store(true);
                 continue;
@@ -704,9 +701,7 @@ void sceneMatchingThread()
         }
 
         ++nextKey;
-        std::lock_guard<std::mutex> lock(mtxKeyframe);
-        sceneDone.store(
-            nextKey >= static_cast<int>(featCloudKeyFrames.size()));
+        sceneDone.store(nextKey >= readyKeyNum);
     }
 
     sceneDone.store(true);

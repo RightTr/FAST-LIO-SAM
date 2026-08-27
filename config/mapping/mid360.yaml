@@ -24,7 +24,7 @@ gnss:
                   0.0, 1.0, 0.0,
                   0.0, 0.0, 1.0]
     heading_offset_deg: 90.0
-    useYawFactor: true
+    useYawFactor: false
     yawFactorSigma: 0.1 # rad, softened to avoid over-constraining pose graph
     useGnssElevation: false
 
@@ -51,7 +51,7 @@ mapping:
 
 s-graph:
     groundEnableFlag: true
-    sceneEnableFlag: true
+    sceneEnableFlag: false
     groundInterval: 3
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0

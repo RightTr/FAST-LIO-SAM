@@ -14,6 +14,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+#include "common_utils.h"
 #include "utility.h"
 #include "ros_utils.h"
 
@@ -65,7 +66,15 @@ class GnssProcess
       return false;
     }
 
+    const double t = get_ros_time_sec(fix.header.stamp);
+    if (!std::isfinite(t)) {
+      return false;
+    }
+
     std::lock_guard<std::mutex> lock(mtx_);
+    if (last_pos_time_ >= 0.0 && t <= last_pos_time_) {
+      return false;
+    }
 
     if (!origin_ready_) {
       origin_ecef_ = GeodeticToECEF(fix.latitude, fix.longitude, fix.altitude);
@@ -74,7 +83,7 @@ class GnssProcess
     }
 
     const Eigen::Vector3d ecef = GeodeticToECEF(fix.latitude, fix.longitude, fix.altitude);
-    data.t = get_ros_time_sec(fix.header.stamp);
+    data.t = t;
     data.p = origin_rot_ * (ecef - origin_ecef_);
     data.cov = covarianceFromMsg(fix);
 
@@ -86,27 +95,59 @@ class GnssProcess
     }
 
     pos_buf_.push_back(data);
+    latest_pos_ = data;
+    has_latest_pos_ = true;
+    last_pos_time_ = t;
     return true;
   }
 
-  void pushYaw(const GnssOdomMsgConstPtr &msg)
+  bool pushYaw(const GnssOdomMsgConstPtr &msg)
   {
     if (!msg) {
-      return;
+      return false;
     }
 
     const auto &q = msg->pose.pose.orientation;
-    const double raw = std::atan2(
-        2.0 * (q.w * q.z + q.x * q.y),
-        1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    if (!std::isfinite(q.w) ||
+        !std::isfinite(q.x) ||
+        !std::isfinite(q.y) ||
+        !std::isfinite(q.z))
+    {
+      return false;
+    }
+
+    const double t = get_ros_time_sec(msg->header.stamp);
+    if (!std::isfinite(t)) {
+      return false;
+    }
+
+    const double raw = quaternionToRPY(q.w, q.x, q.y, q.z).z();
 
     YawData data;
-    data.t = get_ros_time_sec(msg->header.stamp);
-    const double yaw = M_PI * 0.5 - raw - off_;
-    data.yaw = std::atan2(std::sin(yaw), std::cos(yaw));
+    data.t = t;
+    data.yaw = normalizeYaw(M_PI * 0.5 - raw - off_);
 
     std::lock_guard<std::mutex> lock(mtx_);
+    if (last_yaw_time_ >= 0.0 && t <= last_yaw_time_) {
+      return false;
+    }
     yaw_buf_.push_back(data);
+    latest_yaw_ = data;
+    has_latest_yaw_ = true;
+    last_yaw_time_ = t;
+    return true;
+  }
+
+  bool latest(PosData &pos, YawData &yaw) const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!has_latest_pos_ || !has_latest_yaw_) {
+      return false;
+    }
+
+    pos = latest_pos_;
+    yaw = latest_yaw_;
+    return true;
   }
 
   bool syncPos(double time, PosData &out)
@@ -325,6 +366,13 @@ class GnssProcess
 
   std::deque<PosData> pos_buf_;
   std::deque<YawData> yaw_buf_;
+
+  PosData latest_pos_;
+  YawData latest_yaw_;
+  bool has_latest_pos_ = false;
+  bool has_latest_yaw_ = false;
+  double last_pos_time_ = -1.0;
+  double last_yaw_time_ = -1.0;
 
   Eigen::Vector3d lever_ = Eigen::Vector3d::Zero();
   double off_ = 0.0;

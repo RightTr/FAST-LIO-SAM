@@ -119,6 +119,7 @@ void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
 }
 
 void publishGnssPath(const PosData &pos);
+void publishGnssLinkTf();
 bool initGnssMap(double lidar_stamp_sec);
 
 vector<BoxPointType> cub_needrm;
@@ -736,63 +737,41 @@ void reloc_cbk(const PoseStampedMsgConstPtr &msg_in)
     reloc_state = Pose(x, y, z,
                     q.x(), q.y(), q.z(), q.w(), timestamp);
     relocalize_flag.store(true); 
-    ROS_PRINT_INFO("Reloc received: (%.3f, %.3f, %.3f), quat=(%.3f, %.3f, %.3f, %.3f)",
-        x, y, z, q.x(), q.y(), q.z(), q.w());
 }
 
 void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
 {
-    static double last_gnss_timestamp = -1.0;
-
     if (!p_gnss) {
         return;
     }
 
-    const double t = get_ros_time_sec(msg_in->header.stamp);
-    if (!std::isfinite(t))
-    {
-        return;
-    }
-
-    if (last_gnss_timestamp >= 0.0 && t <= last_gnss_timestamp)
-    {
-        ROS_PRINT_WARN("GNSS fix time rollback: cur=%.9f last=%.9f", t, last_gnss_timestamp);
-        return;
-    }
-
-    last_gnss_timestamp = t;
-
     PosData pos;
-    if (p_gnss->pushFix(msg_in, pos) &&
-        gnssPathVis &&
+    if (!p_gnss->pushFix(msg_in, pos))
+    {
+        return;
+    }
+
+    if (gnssPathVis &&
         gnss_aligned.load())
     {
         publishGnssPath(pos);
     }
+
+    publishGnssLinkTf();
 }
 
 void gnss_heading_cbk(const OdometryMsgConstPtr &msg_in)
 {
-    static double last_heading_timestamp = -1.0;
-
     if (!p_gnss) {
         return;
     }
 
-    const double t = get_ros_time_sec(msg_in->header.stamp);
-    if (!std::isfinite(t))
+    if (!p_gnss->pushYaw(msg_in))
     {
         return;
     }
 
-    if (last_heading_timestamp >= 0.0 && t <= last_heading_timestamp)
-    {
-        ROS_PRINT_WARN("GNSS yaw time rollback: cur=%.9f last=%.9f", t, last_heading_timestamp);
-        return;
-    }
-
-    last_heading_timestamp = t;
-    p_gnss->pushYaw(msg_in);
+    publishGnssLinkTf();
 }
 
 double lidar_mean_scantime = 0.0;
@@ -943,20 +922,6 @@ void getCurrOffset(const state_ikfom& curr_state) {
     rotationLidarToIMU = curr_state.offset_R_L_I.toRotationMatrix();
 }
 
-template<typename T>
-void fillPoseMsg(T& pose_msg, const Eigen::Matrix3d& R, const Eigen::Vector3d& t)
-{
-    Eigen::Quaterniond q(R);
-    q.normalize();
-    pose_msg.position.x = t.x();
-    pose_msg.position.y = t.y();
-    pose_msg.position.z = t.z();
-    pose_msg.orientation.x = q.x();
-    pose_msg.orientation.y = q.y();
-    pose_msg.orientation.z = q.z();
-    pose_msg.orientation.w = q.w();
-}
-
 void fillTransformMsg(TransformStampedMsg& tf_msg, const Eigen::Matrix3d& R, const Eigen::Vector3d& t)
 {
     Eigen::Quaterniond q(R);
@@ -968,19 +933,6 @@ void fillTransformMsg(TransformStampedMsg& tf_msg, const Eigen::Matrix3d& R, con
     tf_msg.transform.rotation.y = q.y();
     tf_msg.transform.rotation.z = q.z();
     tf_msg.transform.rotation.w = q.w();
-}
-
-void fillOdometryMsg(OdomMsg& odom_msg,
-                     const std::string& parent_frame,
-                     const std::string& child_frame,
-                     const TimeType& stamp,
-                     const Eigen::Matrix3d& R,
-                     const Eigen::Vector3d& t)
-{
-    odom_msg.header.stamp = stamp;
-    odom_msg.header.frame_id = parent_frame;
-    odom_msg.child_frame_id = child_frame;
-    fillPoseMsg(odom_msg.pose.pose, R, t);
 }
 
 template<typename CovT>
@@ -1000,7 +952,7 @@ void fillOdometryCovariance(OdomMsg& odom_msg, const CovT& P)
 
 void publishGnssPath(const PosData &pos)
 {
-    if (!gnssPathVis) return;
+    if (!gnssPathVis || !gnss_aligned.load()) return;
     PoseStampedMsg gnss_pose;
     gnss_pose.header.stamp = get_ros_time(pos.t);
     gnss_pose.header.frame_id = "enu";
@@ -1013,6 +965,33 @@ void publishGnssPath(const PosData &pos)
     gnssPath.header.frame_id = "enu";
     gnssPath.poses.push_back(gnss_pose);
     ros_publish(pubGnssPath, gnssPath);
+}
+
+void publishGnssLinkTf()
+{
+    PosData pos;
+    YawData yaw;
+    if (!p_gnss || !p_gnss->latest(pos, yaw))
+    {
+        return;
+    }
+
+    TransformStampedMsg tf_msg;
+    tf_msg.header.stamp = get_ros_time(std::max(pos.t, yaw.t));
+    tf_msg.header.frame_id = "enu";
+    tf_msg.child_frame_id = "gnss_link";
+
+    const Eigen::Matrix3d R_enu_gnss =
+        Eigen::AngleAxisd(yaw.yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    fillTransformMsg(tf_msg, R_enu_gnss, pos.p);
+
+#ifdef USE_ROS1
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(tf_msg);
+#elif defined(USE_ROS2)
+    if (laserTfBroadcaster)
+        laserTfBroadcaster->sendTransform(tf_msg);
+#endif
 }
 
 bool initGnssMap(double lidar_stamp_sec)
@@ -1039,14 +1018,17 @@ bool initGnssMap(double lidar_stamp_sec)
     const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->lever();
     t_enu_map = gnss_pos.p - R_enu_map * p_map_ant;
 
+    gnss_aligned.store(true);
     publishEnuToMapTf(get_ros_time(lidar_stamp_sec));
     publishMapToOdomTf(get_ros_time(lidar_stamp_sec));
-    gnss_aligned.store(true);
     return true;
 }
 
 void publishEnuToMapTf(const TimeType& stamp)
 {
+    if (!gnss_aligned.load())
+        return;
+
     TransformStampedMsg enu_to_map_msg;
     enu_to_map_msg.header.stamp = stamp;
     enu_to_map_msg.header.frame_id = "enu";
@@ -1317,7 +1299,20 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
 
         const Eigen::Matrix3d R_odom_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
         const Eigen::Vector3d t_odom_base(pose._x, pose._y, pose._z);
-        fillOdometryMsg(msg_local, odom_frame, high_freq_base_frame, stamp, R_odom_base, t_odom_base);
+        msg_local.header.stamp = stamp;
+        msg_local.header.frame_id = odom_frame;
+        msg_local.child_frame_id = high_freq_base_frame;
+        {
+            Eigen::Quaterniond q(R_odom_base);
+            q.normalize();
+            msg_local.pose.pose.position.x = t_odom_base.x();
+            msg_local.pose.pose.position.y = t_odom_base.y();
+            msg_local.pose.pose.position.z = t_odom_base.z();
+            msg_local.pose.pose.orientation.x = q.x();
+            msg_local.pose.pose.orientation.y = q.y();
+            msg_local.pose.pose.orientation.z = q.z();
+            msg_local.pose.pose.orientation.w = q.w();
+        }
 
         TransformStampedMsg tf_msg;
         tf_msg.header.stamp = stamp;
@@ -1375,7 +1370,20 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
 
     const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
     const Eigen::Vector3d t_odom_base = state_point.pos;
-    fillOdometryMsg(odomAftMapped, odom_frame, base_frame, stamp, R_odom_base, t_odom_base);
+    odomAftMapped.header.stamp = stamp;
+    odomAftMapped.header.frame_id = odom_frame;
+    odomAftMapped.child_frame_id = base_frame;
+    {
+        Eigen::Quaterniond q(R_odom_base);
+        q.normalize();
+        odomAftMapped.pose.pose.position.x = t_odom_base.x();
+        odomAftMapped.pose.pose.position.y = t_odom_base.y();
+        odomAftMapped.pose.pose.position.z = t_odom_base.z();
+        odomAftMapped.pose.pose.orientation.x = q.x();
+        odomAftMapped.pose.pose.orientation.y = q.y();
+        odomAftMapped.pose.pose.orientation.z = q.z();
+        odomAftMapped.pose.pose.orientation.w = q.w();
+    }
 
     const auto& P = kf.get_P();
     fillOdometryCovariance(odomAftMapped, P);

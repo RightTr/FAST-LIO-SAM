@@ -7,6 +7,9 @@
 #include <Eigen/Core>
 #include <pcl/common/transforms.h>
 
+#include <gtsam/geometry/Pose3.h>
+#include <gtsam/nonlinear/NonlinearFactor.h>
+
 /*
     * A point cloud type that has 6D pose info ([x,y,z,roll,pitch,yaw] intensity is time stamp)
     */
@@ -30,6 +33,14 @@ POINT_CLOUD_REGISTER_POINT_STRUCT (PointXYZIRPYT,
 typedef PointXYZIRPYT  PointTypePose;
 
 typedef pcl::PointXYZI PointTypeIndex;
+
+struct LoopFactor
+{
+    int from = -1;
+    int to = -1;
+    gtsam::Pose3 pose;
+    gtsam::noiseModel::Diagonal::shared_ptr noise;
+};
 
 inline Eigen::Vector3d poseTranslation(const PointTypePose &pose)
 {
