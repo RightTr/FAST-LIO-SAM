@@ -22,7 +22,7 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
 
 <p align="center">
 <em>
-Comparison of multi-floor trajectory and mapping results (): 
+Comparison of multi-floor trajectory and mapping results: 
 <strong>our method</strong> enhanced with 
 <strong>hierarchical scene representation</strong>, 
 <strong>ground-normal constraints</strong>, and 
