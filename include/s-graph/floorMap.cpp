@@ -217,45 +217,47 @@ bool FloorMap::getRanges(int key,
     return false;
 }
 
+int FloorMap::floorId(int key) const
+{
+    for (size_t i = 0; i < floors_.size(); ++i)
+    {
+        for (const auto &floor_range : floors_[i].ranges)
+        {
+            if (key >= floor_range.begin &&
+                (floor_range.end < 0 || key <= floor_range.end))
+            {
+                return static_cast<int>(i);
+            }
+        }
+    }
+
+    return -1;
+}
+
 bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
-                            const std::deque<int> &keys,
-                            const std::deque<PointTypePose> &poses,
+                            int key,
+                            const PointTypePose &pose,
                             SceneBatch &batch)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     batch = SceneBatch();
 
-    if (keys.empty() || poses.empty() || planes.empty())
+    if (key < 0 || planes.empty())
         return false;
 
     PlaneObs candidate;
-    if (!buildGroundCandidate(planes, keys, poses, candidate))
+    if (!buildGroundCandidate(planes, pose, candidate))
         return false;
 
     if (floors_.empty())
     {
         floors_.push_back(Floor{});
-        floors_.back().ranges.push_back(FloorRange{keys.back(), -1});
+        floors_.back().ranges.push_back(FloorRange{key, -1});
         current_floor_id_ = 0;
-        ROS_PRINT_INFO("[FLOOR] CREATE id=0 begin=%d", keys.back());
+        ROS_PRINT_INFO("[FLOOR] CREATE id=0 begin=%d", key);
     }
 
-    int floor_id = -1;
-    for (size_t i = 0; i < floors_.size(); ++i)
-    {
-        for (const auto &floor_range : floors_[i].ranges)
-        {
-            if (keys.back() >= floor_range.begin &&
-                (floor_range.end < 0 || keys.back() <= floor_range.end))
-            {
-                floor_id = static_cast<int>(i);
-                break;
-            }
-        }
-        if (floor_id >= 0)
-            break;
-    }
-
+    const int floor_id = floorId(key);
     if (floor_id < 0)
         return false;
 
@@ -285,11 +287,6 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
 
     const bool is_new_ground = (best_ground == nullptr);
     const int ground_id = is_new_ground ? next_plane_id_ : best_ground->id;
-    const int key = keys.back();
-
-    const auto it = candidate.obs.find(key);
-    if (it == candidate.obs.end())
-        return false;
 
     if (is_new_ground)
     {
@@ -308,7 +305,20 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         best_ground->last_key = key;
     }
 
-    batch.factors.emplace_back(key, ground_id, it->second);
+    ROS_PRINT_INFO(
+        "[GROUND OBS] key=%d ground=%d body=(%.3f %.3f %.3f %.3f) map=(%.3f %.3f %.3f %.3f) n=%d",
+        key, ground_id,
+        candidate.body_plane[0],
+        candidate.body_plane[1],
+        candidate.body_plane[2],
+        candidate.body_plane[3],
+        candidate.plane[0],
+        candidate.plane[1],
+        candidate.plane[2],
+        candidate.plane[3],
+        candidate.n);
+
+    batch.factors.emplace_back(key, ground_id, candidate.body_plane);
 
     if (is_new_ground)
     {

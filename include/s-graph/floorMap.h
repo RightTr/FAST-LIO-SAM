@@ -31,8 +31,8 @@ public:
                 const PointTypePose &pose);
 
     bool updateGround(const std::vector<PlaneObs> &planes,
-                      const std::deque<int> &keys,
-                      const std::deque<PointTypePose> &poses,
+                      int key,
+                      const PointTypePose &pose,
                       SceneBatch &batch);
 
     bool getRanges(int key,
@@ -40,6 +40,7 @@ public:
 
 private:
     double trajectoryAngle() const;
+    int floorId(int key) const;
 
 private:
     mutable std::mutex mutex_;

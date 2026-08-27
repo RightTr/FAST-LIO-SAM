@@ -187,12 +187,23 @@ void setLaserCurTime(double lidar_end_time)
 
 pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, const PointTypePose *transformIn)
 {
+    return transformPointCloud(
+        cloudIn,
+        pcl::getTransformation(
+            transformIn->x,
+            transformIn->y,
+            transformIn->z,
+            transformIn->roll,
+            transformIn->pitch,
+            transformIn->yaw));
+}
+
+pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, const Eigen::Affine3f &transCur)
+{
     pcl::PointCloud<PointTypeIndex>::Ptr cloudOut(new pcl::PointCloud<PointTypeIndex>());
 
-    int cloudSize = cloudIn->size();
+    const int cloudSize = cloudIn->size();
     cloudOut->resize(cloudSize);
-
-    Eigen::Affine3f transCur = pcl::getTransformation(transformIn->x, transformIn->y, transformIn->z, transformIn->roll, transformIn->pitch, transformIn->yaw);
     
     for (int i = 0; i < cloudSize; ++i)
     {
@@ -289,6 +300,7 @@ bool isKeyFrame()
 
 void performLoopClosure(int loopKeyCur,
                         const std::vector<PointTypePose> &poses6D,
+                        const std::vector<PointTypePose> &odomPoses6D,
                         const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds)
 {
     if (loopUsedKeys.count(loopKeyCur) != 0)
@@ -340,10 +352,10 @@ void performLoopClosure(int loopKeyCur,
     if (!curCloud || curCloud->empty())
         return;
 
-    const PointTypePose curPose = poses6D[loopKeyCur];
+    const PointTypePose &curOdomPose = odomPoses6D[loopKeyCur];
     pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloud(
         new pcl::PointCloud<PointTypeIndex>());
-    *cureKeyframeCloud += *transformPointCloud(curCloud, &curPose);
+    *cureKeyframeCloud = *curCloud;
 
     pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloudDS(
         new pcl::PointCloud<PointTypeIndex>());
@@ -386,11 +398,15 @@ void performLoopClosure(int loopKeyCur,
 
         pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(
             new pcl::PointCloud<PointTypeIndex>());
+        const Eigen::Affine3f T_odom_pre = pclPointToAffine3f(odomPoses6D[id]);
+        const Eigen::Affine3f T_pre_odom = T_odom_pre.inverse();
         for (int keyNear = historyBegin; keyNear <= historyEnd; ++keyNear)
         {
             if (!clouds[keyNear] || clouds[keyNear]->empty())
                 continue;
-            *prevKeyframeCloud += *transformPointCloud(clouds[keyNear], &poses6D[keyNear]);
+            const Eigen::Affine3f T_odom_k = pclPointToAffine3f(odomPoses6D[keyNear]);
+            const Eigen::Affine3f T_pre_k = T_pre_odom * T_odom_k;
+            *prevKeyframeCloud += *transformPointCloud(clouds[keyNear], T_pre_k);
         }
         pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloudDS(
             new pcl::PointCloud<PointTypeIndex>());
@@ -417,11 +433,9 @@ void performLoopClosure(int loopKeyCur,
         icp.setInputSource(cureKeyframeCloudDS);
         icp.setInputTarget(prevKeyframeCloudDS);
         pcl::PointCloud<PointTypeIndex> aligned;
-        Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
-        initial_guess(0, 3) = static_cast<float>(poses6D[id].x - curPose.x);
-        initial_guess(1, 3) = static_cast<float>(poses6D[id].y - curPose.y);
-        initial_guess(2, 3) = static_cast<float>(poses6D[id].z - curPose.z);
-        icp.align(aligned, initial_guess);
+        const Eigen::Affine3f T_odom_cur = pclPointToAffine3f(curOdomPose);
+        const Eigen::Affine3f T_pre_cur_guess = T_pre_odom * T_odom_cur;
+        icp.align(aligned, T_pre_cur_guess.matrix());
 
         const double score = icp.getFitnessScore();
         if (!icp.hasConverged() ||
@@ -435,15 +449,13 @@ void performLoopClosure(int loopKeyCur,
             continue;
         }
 
-        float x, y, z, roll, pitch, yaw;
-        const Eigen::Affine3f correctionLidarFrame(icp.getFinalTransformation());
-        const Eigen::Affine3f tWrong = pclPointToAffine3f(curPose);
-        const Eigen::Affine3f tCorrect = correctionLidarFrame * tWrong;
-        pcl::getTranslationAndEulerAngles(tCorrect, x, y, z, roll, pitch, yaw);
-        const gtsam::Pose3 poseFrom =
-            Pose3(Rot3::RzRyRx(roll, pitch, yaw), Point3(x, y, z));
-        const PointTypePose prevPose = poses6D[id];
-        const gtsam::Pose3 poseTo = pclPointTogtsamPose3(prevPose);
+        const Eigen::Affine3f T_pre_cur(icp.getFinalTransformation());
+        const Eigen::Affine3f T_cur_pre = T_pre_cur.inverse();
+        float pre_x, pre_y, pre_z, pre_roll, pre_pitch, pre_yaw;
+        pcl::getTranslationAndEulerAngles(T_pre_cur, pre_x, pre_y, pre_z, pre_roll, pre_pitch, pre_yaw);
+
+        float cur_x, cur_y, cur_z, cur_roll, cur_pitch, cur_yaw;
+        pcl::getTranslationAndEulerAngles(T_cur_pre, cur_x, cur_y, cur_z, cur_roll, cur_pitch, cur_yaw);
         gtsam::Vector Vector6(6);
         const double noiseScore = std::max(
             static_cast<double>(score) * loopWeight, 1e-4);
@@ -458,7 +470,9 @@ void performLoopClosure(int loopKeyCur,
             loopQueue.push_back(LoopFactor{
                 loopKeyCur,
                 id,
-                poseFrom.between(poseTo),
+                Pose3(
+                    Rot3::RzRyRx(cur_roll, cur_pitch, cur_yaw),
+                    Point3(cur_x, cur_y, cur_z)),
                 constraintNoise});
         }
 
@@ -691,8 +705,8 @@ void sceneMatchingThread()
             SceneBatch batch;
             if (floorMap.updateGround(
                     planes,
-                    plane.keys(),
-                    plane.poses(),
+                    nextKey,
+                    pose,
                     batch))
             {
                 std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
@@ -1098,7 +1112,7 @@ void publishSamMsg()
     {
         pcl::PointCloud<PointTypeIndex>::Ptr cloudOut(new pcl::PointCloud<PointTypeIndex>());
         PointTypePose thisPose6D = poses6D.back();
-        *cloudOut += *transformPointCloud(clouds.back(),  &thisPose6D);
+        *cloudOut += *transformPointCloud(clouds.back(), &thisPose6D);
         publishCloud(pubRecentKeyFrame, cloudOut, timeLaserInfoStamp, map_frame);
     }
 }
@@ -1184,11 +1198,14 @@ void loopClosureThread()
         rate.sleep();
 
         std::vector<PointTypePose> poses6D;
+        std::vector<PointTypePose> odomPoses6D;
         std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
         {
             std::lock_guard<std::mutex> lock(mtxKeyframe);
             if (cloudKeyPoses6D == nullptr ||
+                cloudKeyOdomPoses6D == nullptr ||
                 cloudKeyPoses6D->points.size() < 6 ||
+                cloudKeyOdomPoses6D->points.size() < 6 ||
                 featCloudKeyFrames.size() < 6)
             {
                 loopDone.store(true);
@@ -1196,6 +1213,7 @@ void loopClosureThread()
             }
 
             poses6D.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
+            odomPoses6D.assign(cloudKeyOdomPoses6D->points.begin(), cloudKeyOdomPoses6D->points.end());
             clouds = featCloudKeyFrames;
         }
 
@@ -1224,10 +1242,7 @@ void loopClosureThread()
 
         for (int processed = 0; processed < loopCurNum && nextKey <= readyKey; )
         {
-            performLoopClosure(
-                nextKey,
-                poses6D,
-                clouds);
+            performLoopClosure(nextKey, poses6D, odomPoses6D, clouds);
 
             ++nextKey;
             ++processed;

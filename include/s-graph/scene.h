@@ -4,7 +4,6 @@
 #include <Eigen/Core>
 #include <Eigen/StdVector>
 
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -13,9 +12,9 @@ struct PlaneObs
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
     Eigen::Vector4d plane = Eigen::Vector4d::Zero();
+    Eigen::Vector4d body_plane = Eigen::Vector4d::Zero();
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
     int n = 0;
-    std::unordered_map<int, Eigen::Vector4d> obs;
 };
 
 struct PlaneInit

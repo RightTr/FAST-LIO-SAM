@@ -5,8 +5,6 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <iterator>
-#include <unordered_map>
 
 namespace
 {
@@ -27,8 +25,7 @@ inline bool normalizePlane(Eigen::Vector4d &plane)
 }
 
 inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
-                            const std::deque<int> &keys,
-                            const std::deque<PointTypePose> &poses,
+                            const PointTypePose &pose,
                             const Eigen::Vector3d &seed_n,
                             PlaneObs &out)
 {
@@ -37,9 +34,7 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
 
     Eigen::Vector3d sum_n = Eigen::Vector3d::Zero();
     Eigen::Vector3d sum_center = Eigen::Vector3d::Zero();
-    double weight_sum = 0.0;
-    std::unordered_map<int, Eigen::Vector4d> body_sum;
-    std::unordered_map<int, double> body_weight;
+    double map_weight_sum = 0.0;
 
     for (const auto *plane : members)
     {
@@ -53,46 +48,22 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
             n = -n;
         }
 
-        const double w = static_cast<double>(std::max(1, plane->n));
-        sum_n += w * n;
-        sum_center += w * plane->center;
-        weight_sum += w;
-        for (const auto &kv : plane->obs)
-        {
-            const int key = kv.first;
-            const auto key_it = std::find(keys.begin(), keys.end(), key);
-            if (key_it == keys.end())
-                continue;
-            const int local_id = static_cast<int>(std::distance(keys.begin(), key_it));
-
-            Eigen::Vector4d obs = kv.second;
-            if (!normalizePlane(obs))
-                continue;
-
-            const Eigen::Vector3d expected_body_n =
-                poseRotation(poses[static_cast<size_t>(local_id)]).transpose() * seed_n;
-            if (expected_body_n.dot(obs.head<3>()) < 0.0)
-                obs = -obs;
-
-            auto &sum_slot = body_sum[key];
-            auto &weight_slot = body_weight[key];
-            if (weight_slot == 0.0)
-                sum_slot = Eigen::Vector4d::Zero();
-            sum_slot += w * obs;
-            weight_slot += w;
-        }
+        const double map_w = static_cast<double>(std::max(1, plane->n));
+        sum_n += map_w * n;
+        sum_center += map_w * plane->center;
+        map_weight_sum += map_w;
     }
 
-    if (weight_sum <= 0.0)
+    if (map_weight_sum <= 0.0)
         return false;
 
-    Eigen::Vector3d n = sum_n / weight_sum;
+    Eigen::Vector3d n = sum_n / map_weight_sum;
     if (!n.allFinite() || n.norm() <= kEps)
         return false;
     n.normalize();
 
     out = PlaneObs();
-    out.center = sum_center / weight_sum;
+    out.center = sum_center / map_weight_sum;
     if (!out.center.allFinite())
         return false;
 
@@ -101,39 +72,27 @@ inline bool fitMergedGround(const std::vector<const PlaneObs *> &members,
     if (out.plane.head<3>().dot(up) < 0.0)
         out.plane = -out.plane;
     out.plane.head<3>().normalize();
-    out.n = static_cast<int>(std::llround(weight_sum));
+    out.n = static_cast<int>(std::llround(map_weight_sum));
 
-    for (const auto &kv : body_sum)
-    {
-        const int key = kv.first;
-        const double w = body_weight[key];
-        if (w <= 0.0)
-            continue;
+    const Eigen::Matrix3d R = poseRotation(pose);
+    const Eigen::Vector3d t = poseTranslation(pose);
+    const Eigen::Vector3d body_n = R.transpose() * out.plane.head<3>();
+    const double body_d = out.plane.head<3>().dot(t) + out.plane[3];
+    out.body_plane << body_n.x(), body_n.y(), body_n.z(), body_d;
 
-        Eigen::Vector4d body = kv.second / w;
-        if (!normalizePlane(body))
-            continue;
-
-        if (body.head<3>().norm() <= kEps)
-            continue;
-
-        out.obs[key] = body;
-    }
-
-    return !out.obs.empty();
+    return true;
 }
 } // namespace
 
 bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
-                          const std::deque<int> &keys,
-                          const std::deque<PointTypePose> &poses,
+                          const PointTypePose &pose,
                           PlaneObs &candidate)
 {
     candidate = PlaneObs();
-    if (planes.empty() || poses.empty())
+    if (planes.empty())
         return false;
 
-    const Eigen::Vector3d cur_pos = poseTranslation(poses.back());
+    const Eigen::Vector3d cur_pos = poseTranslation(pose);
     const Eigen::Vector3d up = getGravityUp();
 
     std::vector<const PlaneObs *> seeds;
@@ -210,5 +169,5 @@ bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
         members.push_back(cand);
     }
 
-    return fitMergedGround(members, keys, poses, seed_n, candidate);
+    return fitMergedGround(members, pose, seed_n, candidate);
 }

@@ -19,8 +19,7 @@ struct Ground
 };
 
 bool buildGroundCandidate(const std::vector<PlaneObs> &planes,
-                          const std::deque<int> &keys,
-                          const std::deque<PointTypePose> &poses,
+                          const PointTypePose &pose,
                           PlaneObs &candidate);
 
 #endif

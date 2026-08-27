@@ -9,15 +9,12 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <unordered_map>
 
 #include <Eigen/Eigenvalues>
 
 namespace
 {
 constexpr int kMinPts = 100;
-constexpr double kGroundNzThreshold = 0.9396926207859084;
-constexpr double kEps = 1e-12;
 
 inline bool fitPlane(const PointCluster &s,
                      Eigen::Vector3d &n,
@@ -53,18 +50,21 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
         return false;
 
     const int active_count = static_cast<int>(keys.size());
+    if (active_count <= 0 || static_cast<int>(poses.size()) < active_count)
+        return false;
+
     PointCluster map_sum;
     obs = PlaneObs();
 
+    // Use all active frames to estimate one stable plane in odom/map frame.
     for (int slot = 0; slot < active_count; ++slot)
     {
         const PointCluster &sig_tran = node->sig_tran[slot];
-        const PointCluster &sig_orig = node->sig_orig[slot];
-        if (sig_tran.N <= 0.0 || sig_orig.N <= 0.0)
+        if (sig_tran.N <= 0.0)
             continue;
 
         map_sum += sig_tran;
-        obs.n += static_cast<int>(sig_orig.N);
+        obs.n += static_cast<int>(sig_tran.N);
     }
 
     if (obs.n < kMinPts)
@@ -77,10 +77,7 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
         return false;
 
     const Eigen::Vector3d up = getGravityUp();
-    const double nz = map_n.dot(up);
-    if (std::abs(nz) < kGroundNzThreshold)
-        return false;
-    if (nz < 0.0)
+    if (map_n.dot(up) < 0.0)
     {
         map_n = -map_n;
         map_d = -map_d;
@@ -89,33 +86,17 @@ inline bool buildPlaneObs(const OCTO_TREE_NODE *node,
     obs.plane << map_n.x(), map_n.y(), map_n.z(), map_d;
     obs.center = map_c;
 
-    for (int slot = 0; slot < active_count; ++slot)
-    {
-        const int key = keys[static_cast<size_t>(slot)];
-        const PointCluster &sig_orig = node->sig_orig[slot];
-        if (sig_orig.N <= 0.0)
-            continue;
+    // Transform the same plane into the latest keyframe body frame.
+    const PointTypePose &latest_pose = poses.back();
+    const Eigen::Matrix3d R = poseRotation(latest_pose);
+    const Eigen::Vector3d t = poseTranslation(latest_pose);
 
-        Eigen::Vector3d n;
-        Eigen::Vector3d c;
-        double d = 0.0;
-        if (!fitPlane(sig_orig, n, c, d))
-            continue;
+    Eigen::Vector3d body_n = R.transpose() * map_n;
+    const double body_d = map_n.dot(t) + map_d;
+    body_n.normalize();
 
-        const Eigen::Vector3d expected_body_n =
-            poseRotation(poses[static_cast<size_t>(slot)]).transpose() * map_n;
-        if (n.dot(expected_body_n) < 0.0)
-        {
-            n = -n;
-            d = -d;
-        }
-
-        Eigen::Vector4d plane;
-        plane << n.x(), n.y(), n.z(), d;
-        obs.obs[key] = plane;
-    }
-
-    return !obs.obs.empty();
+    obs.body_plane << body_n.x(), body_n.y(), body_n.z(), body_d;
+    return true;
 }
 
 inline void collectPlanes(const OCTO_TREE_NODE *node,

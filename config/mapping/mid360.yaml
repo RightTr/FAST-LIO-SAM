@@ -52,7 +52,7 @@ mapping:
 s-graph:
     groundEnableFlag: true
     sceneEnableFlag: false
-    groundInterval: 3
+    groundInterval: 1
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0
     floorHeight: 1.5
