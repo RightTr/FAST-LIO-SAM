@@ -772,10 +772,6 @@ void performGnssMatching()
 
             last_fpos = gnss_pos;
             has_fpos = true;
-            const double dt = std::abs(pose.time - pos.t);
-            ROS_PRINT_INFO(
-                "[GNSS MATCH] POS key=%d key_t=%.6f gnss=%.6f dt=%.3f",
-                key, pose.time, pos.t, dt);
         }
     }
 
@@ -802,11 +798,6 @@ void performGnssMatching()
                 std::lock_guard<std::mutex> lock(mtxGnssFactor);
                 gnssFactorQueue.push_back(factor);
             }
-
-            const double dt = std::abs(pose.time - yaw.t);
-            ROS_PRINT_INFO(
-                "[GNSS MATCH] YAW key=%d key_t=%.6f gnss=%.6f dt=%.3f",
-                key, pose.time, yaw.t, dt);
         }
     }
 }

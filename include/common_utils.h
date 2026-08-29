@@ -133,6 +133,8 @@ inline Eigen::Vector3d transformPoint(const Eigen::Vector3d &p_old,
 
 extern Eigen::Matrix3d R_map_odom;
 extern Eigen::Vector3d t_map_odom;
+extern Eigen::Matrix3d R_prior_odom;
+extern Eigen::Vector3d t_prior_odom;
 extern Eigen::Matrix3d R_enu_map;
 extern Eigen::Vector3d t_enu_map;
 
@@ -157,6 +159,8 @@ inline void composeOdomPose(const Eigen::Matrix3d &R_map_body,
 
 void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
                 const Eigen::Vector3d &t_map_odom_);
+void setPriorOdom(const Eigen::Matrix3d &R_prior_odom_,
+                  const Eigen::Vector3d &t_prior_odom_);
 void publishEnuToMapTf(const TimeType& stamp);
 void publishMapToOdomTf(const TimeType& stamp);
 

@@ -69,6 +69,8 @@ bool   lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 std::atomic<bool> flg_exit(false);
 Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
+Eigen::Matrix3d R_prior_odom = Eigen::Matrix3d::Identity();
+Eigen::Vector3d t_prior_odom = Eigen::Vector3d::Zero();
 Eigen::Matrix3d R_enu_map = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_enu_map = Eigen::Vector3d::Zero();
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
@@ -116,6 +118,13 @@ void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
 {
     R_map_odom = R_map_odom_;
     t_map_odom = t_map_odom_;
+}
+
+void setPriorOdom(const Eigen::Matrix3d &R_prior_odom_,
+                  const Eigen::Vector3d &t_prior_odom_)
+{
+    R_prior_odom = R_prior_odom_;
+    t_prior_odom = t_prior_odom_;
 }
 
 void publishGnssPath(const PosData &pos);
@@ -1165,6 +1174,7 @@ bool priorInitAlign()
     if (!refinePriorPointToPlane(R_map_odom_refined, t_map_odom_refined))
         return false;
 
+    setPriorOdom(R_map_odom_refined, t_map_odom_refined);
     setMapOdom(R_map_odom_refined, t_map_odom_refined);
     publishMapToOdomTf(get_ros_time(lidar_end_time));
     prior_init_done = true;
@@ -1438,7 +1448,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         return;
     }
 
-    const bool use_prior = use_prior_map;
+    const bool use_prior = use_prior_map && prior_init_done;
     const double prior_scale =
         std::sqrt(LASER_POINT_COV / std::max(prior_lidar_cov, 1e-9));
     if (use_prior)
@@ -1501,9 +1511,17 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         if (use_prior)
         {
+            const Eigen::Vector3d p_world(point_world.x, point_world.y, point_world.z);
+            const Eigen::Vector3d p_prior = R_prior_odom * p_world + t_prior_odom;
+            PointType point_prior;
+            point_prior.x = p_prior.x();
+            point_prior.y = p_prior.y();
+            point_prior.z = p_prior.z();
+            point_prior.intensity = point_world.intensity;
+
             if (ekfom_data.converge)
             {
-                if (build_point_observation(&prior_ikdtree, nullptr, point_body, point_world,
+                if (build_point_observation(&prior_ikdtree, nullptr, point_body, point_prior,
                                             prior_scale, true, &Prior_Nearest_Points[i], prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
@@ -1517,7 +1535,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             else if (i < static_cast<int>(prior_point_selected.size()) && prior_point_selected[i])
             {
                 if (build_point_observation(nullptr, &Prior_Nearest_Points[i],
-                                            point_body, point_world,
+                                            point_body, point_prior,
                                             prior_scale, false, nullptr, prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
