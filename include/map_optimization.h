@@ -69,7 +69,9 @@ extern std::mutex mtxLoopFactor;
 extern std::atomic<bool> sceneDone;
 extern std::atomic<bool> loopDone;
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
+void saveKeyFramesAndFactor(
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
+    const Eigen::Matrix<double, 6, 1> &odomPoseVar);
 void addLoopFactor();
 void poseGraphUpdate();
 void gnssMatchingThread();

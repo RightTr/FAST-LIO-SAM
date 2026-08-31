@@ -2004,7 +2004,11 @@ int main(int argc, char** argv)
             if (sam_enable) {
                 if (keyframe)
                 {
-                    saveKeyFramesAndFactor(feats_undistort);
+                    const auto &P = kf.get_P();
+                    Eigen::Matrix<double, 6, 1> odomPoseVar;
+                    odomPoseVar << P(3, 3), P(4, 4), P(5, 5),
+                                   P(0, 0), P(1, 1), P(2, 2);
+                    saveKeyFramesAndFactor(feats_undistort, odomPoseVar);
                     correctPoses();
                     publishSamMsg();
                 }

@@ -34,6 +34,7 @@ extern float icpMaxCorrDistance;
 extern float loopWeight;
 extern int   loopCurNum;
 extern int   loopPreNum;
+extern double odomRollPitchScale;
 
 // global map visualization radius
 extern float globalMapVisualizationSearchRadius;

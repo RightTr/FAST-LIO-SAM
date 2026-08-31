@@ -3,7 +3,7 @@
 #include "utility.h"
 #include "common_utils.h"
 #include "GNSS_Processing.hpp"
-#include "gnssYaw_factor.h"
+#include "factor/gnssYaw_factor.h"
 #include "s-graph/factor/floor_factor.h"
 #include "s-graph/plane.h"
 #include "s-graph/floorMap.h"
@@ -398,14 +398,14 @@ void performLoopClosure(int loopKeyCur,
 
         pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(
             new pcl::PointCloud<PointTypeIndex>());
-        const Eigen::Affine3f T_odom_pre = pclPointToAffine3f(odomPoses6D[id]);
-        const Eigen::Affine3f T_pre_odom = T_odom_pre.inverse();
+        const Eigen::Affine3f T_map_pre = pclPointToAffine3f(poses6D[id]);
+        const Eigen::Affine3f T_pre_map = T_map_pre.inverse();
         for (int keyNear = historyBegin; keyNear <= historyEnd; ++keyNear)
         {
             if (!clouds[keyNear] || clouds[keyNear]->empty())
                 continue;
-            const Eigen::Affine3f T_odom_k = pclPointToAffine3f(odomPoses6D[keyNear]);
-            const Eigen::Affine3f T_pre_k = T_pre_odom * T_odom_k;
+            const Eigen::Affine3f T_map_k = pclPointToAffine3f(poses6D[keyNear]);
+            const Eigen::Affine3f T_pre_k = T_pre_map * T_map_k;
             *prevKeyframeCloud += *transformPointCloud(clouds[keyNear], T_pre_k);
         }
         pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloudDS(
@@ -433,8 +433,8 @@ void performLoopClosure(int loopKeyCur,
         icp.setInputSource(cureKeyframeCloudDS);
         icp.setInputTarget(prevKeyframeCloudDS);
         pcl::PointCloud<PointTypeIndex> aligned;
-        const Eigen::Affine3f T_odom_cur = pclPointToAffine3f(curOdomPose);
-        const Eigen::Affine3f T_pre_cur_guess = T_pre_odom * T_odom_cur;
+        const Eigen::Affine3f T_map_cur = pclPointToAffine3f(poses6D[loopKeyCur]);
+        const Eigen::Affine3f T_pre_cur_guess = T_pre_map * T_map_cur;
         icp.align(aligned, T_pre_cur_guess.matrix());
 
         const double score = icp.getFitnessScore();
@@ -485,7 +485,7 @@ void performLoopClosure(int loopKeyCur,
     }
 }
 
-void addOdomFactor()
+void addOdomFactor(const Eigen::Matrix<double, 6, 1> &odomPoseVar)
 {
     if (cloudKeyPoses3D->points.empty())
     {
@@ -507,13 +507,21 @@ void addOdomFactor()
         gtSAMgraph.add(PriorFactor<Pose3>(0, poseTo, priorNoise));
         initialEstimate.insert(0, poseTo);
     }else{
-        noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-4, 1e-4, 1e-4, 1e-6, 1e-6, 1e-6).finished());
         const gtsam::Pose3 poseFromFront = pclPointTogtsamPose3(cloudKeyOdomPoses6D->points.back());
         const gtsam::Pose3 poseToFront = trans2gtsamPose(transformTobeMapped);
         const gtsam::Pose3 odomDelta = poseFromFront.between(poseToFront);
         const gtsam::Pose3 poseFromOpt = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
         const gtsam::Pose3 poseToOpt = poseFromOpt.compose(odomDelta);
-        gtSAMgraph.add(BetweenFactor<Pose3>(cloudKeyPoses3D->size()-1, cloudKeyPoses3D->size(), odomDelta, odometryNoise));
+        gtsam::Vector odomVar(6);
+        odomVar << odomPoseVar(0) * odomRollPitchScale,
+                   odomPoseVar(1) * odomRollPitchScale,
+                   odomPoseVar(2), odomPoseVar(3), odomPoseVar(4), odomPoseVar(5);
+        const auto odometryNoise = noiseModel::Diagonal::Variances(odomVar);
+        gtSAMgraph.add(BetweenFactor<Pose3>(
+            cloudKeyPoses3D->size()-1,
+            cloudKeyPoses3D->size(),
+            odomDelta,
+            odometryNoise));
         initialEstimate.insert(cloudKeyPoses3D->size(), poseToOpt);
     }
 }
@@ -852,13 +860,14 @@ void updatePath(const PointTypePose& pose_in)
     globalPath.poses.push_back(pose_stamped);
 }
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort)
+void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
+                            const Eigen::Matrix<double, 6, 1> &odomPoseVar)
 {
     const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
     const gtsam::Key latestPoseKey = static_cast<gtsam::Key>(cloudKeyPoses3D->size());
 
     // odom factor
-    addOdomFactor();
+    addOdomFactor(odomPoseVar);
     addGNSSFactor();
     addSceneFactor();
     // loop factor

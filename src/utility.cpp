@@ -26,6 +26,7 @@ float icpMaxCorrDistance;
 float loopWeight;
 int   loopCurNum;
 int   loopPreNum;
+double odomRollPitchScale = 1.0;
 
 // global map visualization radius
 float globalMapVisualizationSearchRadius;
@@ -124,6 +125,7 @@ void read_liosam_params() {
     rosparam_get("lio_sam/loopWeight", loopWeight, 0.2f);
     rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
     rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
+    rosparam_get("lio_sam/odomRollPitchScale", odomRollPitchScale, 100.0);
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);

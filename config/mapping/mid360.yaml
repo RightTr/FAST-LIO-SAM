@@ -80,6 +80,7 @@ lio_sam:
     loopWeight: 0.02                               # loop factor variance scale, smaller is stronger
     loopCurNum: 3                                  # max current keyframes processed per loop tick
     loopPreNum: 2                                  # max ICP attempts per current keyframe
+    odomRollPitchScale: 1.0                               # odom roll/pitch variance multiplier
     mappingICPSize: 0.1                            # meters, loop-closure ICP voxel size
 
     # Visualization
