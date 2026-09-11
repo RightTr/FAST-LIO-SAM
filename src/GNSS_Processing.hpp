@@ -1,6 +1,7 @@
 #ifndef GNSS_PROCESSING_HPP
 #define GNSS_PROCESSING_HPP
 
+#include <algorithm>
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
@@ -58,24 +59,12 @@ class GnssProcess
     }
 
     const GnssFixMsg &fix = *msg;
-    if (fix.status.status < 0 ||
-        !std::isfinite(fix.latitude) ||
-        !std::isfinite(fix.longitude) ||
-        !std::isfinite(fix.altitude))
-    {
+    if (fix.status.status < 0) {
       return false;
     }
-
     const double t = get_ros_time_sec(fix.header.stamp);
-    if (!std::isfinite(t)) {
-      return false;
-    }
 
     std::lock_guard<std::mutex> lock(mtx_);
-    if (last_pos_time_ >= 0.0 && t <= last_pos_time_) {
-      return false;
-    }
-
     if (!origin_ready_) {
       origin_ecef_ = GeodeticToECEF(fix.latitude, fix.longitude, fix.altitude);
       origin_rot_ = EnuRotation(fix.latitude, fix.longitude);
@@ -87,17 +76,19 @@ class GnssProcess
     data.p = origin_rot_ * (ecef - origin_ecef_);
     data.cov = covarianceFromMsg(fix);
 
-    if (!data.p.allFinite() ||
-        !data.cov.allFinite() ||
-        (data.cov.diagonal().array() <= 0.0).any())
+    if ((data.cov.diagonal().array() <= 0.0).any())
     {
       return false;
     }
 
-    pos_buf_.push_back(data);
-    latest_pos_ = data;
-    has_latest_pos_ = true;
-    last_pos_time_ = t;
+    const auto pos_it = std::lower_bound(
+        pos_buf_.begin(), pos_buf_.end(), t,
+        [](const PosData &item, double stamp) { return item.t < stamp; });
+    pos_buf_.insert(pos_it, data);
+    if (!has_latest_pos_ || t > latest_pos_.t) {
+      latest_pos_ = data;
+      has_latest_pos_ = true;
+    }
     return true;
   }
 
@@ -108,19 +99,7 @@ class GnssProcess
     }
 
     const auto &q = msg->pose.pose.orientation;
-    if (!std::isfinite(q.w) ||
-        !std::isfinite(q.x) ||
-        !std::isfinite(q.y) ||
-        !std::isfinite(q.z))
-    {
-      return false;
-    }
-
     const double t = get_ros_time_sec(msg->header.stamp);
-    if (!std::isfinite(t)) {
-      return false;
-    }
-
     const double raw = quaternionToRPY(q.w, q.x, q.y, q.z).z();
 
     YawData data;
@@ -128,13 +107,14 @@ class GnssProcess
     data.yaw = normalizeYaw(M_PI * 0.5 - raw - off_);
 
     std::lock_guard<std::mutex> lock(mtx_);
-    if (last_yaw_time_ >= 0.0 && t <= last_yaw_time_) {
-      return false;
+    const auto yaw_it = std::lower_bound(
+        yaw_buf_.begin(), yaw_buf_.end(), t,
+        [](const YawData &item, double stamp) { return item.t < stamp; });
+    yaw_buf_.insert(yaw_it, data);
+    if (!has_latest_yaw_ || t > latest_yaw_.t) {
+      latest_yaw_ = data;
+      has_latest_yaw_ = true;
     }
-    yaw_buf_.push_back(data);
-    latest_yaw_ = data;
-    has_latest_yaw_ = true;
-    last_yaw_time_ = t;
     return true;
   }
 
@@ -178,98 +158,68 @@ class GnssProcess
     return found;
   }
 
-  bool matchPos(double time, PosData &pos)
+  bool frontPos(PosData &pos) const
   {
     std::lock_guard<std::mutex> lock(mtx_);
-
-    if (pos_buf_.empty())
+    if (pos_buf_.empty()) {
       return false;
-
-    if (pos_buf_.back().t <= time)
-      return false;
-
-    while (pos_buf_.size() > 1 && pos_buf_[1].t <= time)
-    {
-      pos_buf_.pop_front();
     }
-
-    if (pos_buf_.size() < 2)
-      return false;
-
-    const PosData &prev = pos_buf_.front();
-    const PosData &next = pos_buf_[1];
-    const double dt_prev = std::abs(time - prev.t);
-    const double dt_next = std::abs(next.t - time);
-
-    if (dt_prev <= dt_next)
-    {
-      pos = prev;
-      pos_buf_.pop_front();
-      return true;
-    }
-
-    pos = next;
-    pos_buf_.pop_front();
-    pos_buf_.pop_front();
+    pos = pos_buf_.front();
     return true;
   }
 
-  bool matchYaw(double time, YawData &yaw)
+  bool popPos(double expected_stamp)
   {
     std::lock_guard<std::mutex> lock(mtx_);
-
-    if (yaw_buf_.empty())
-      return false;
-
-    if (yaw_buf_.back().t <= time)
-      return false;
-
-    while (yaw_buf_.size() > 1 && yaw_buf_[1].t <= time)
-    {
-      yaw_buf_.pop_front();
+    if (!pos_buf_.empty() && pos_buf_.front().t == expected_stamp) {
+      pos_buf_.pop_front();
+      return true;
     }
+    return false;
+  }
 
-    if (yaw_buf_.size() < 2)
+  bool frontYaw(YawData &yaw) const
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (yaw_buf_.empty()) {
       return false;
+    }
+    yaw = yaw_buf_.front();
+    return true;
+  }
 
-    const YawData &prev = yaw_buf_.front();
-    const YawData &next = yaw_buf_[1];
-    const double dt_prev = std::abs(time - prev.t);
-    const double dt_next = std::abs(next.t - time);
-
-    if (dt_prev <= dt_next)
-    {
-      yaw = prev;
+  bool popYaw(double expected_stamp)
+  {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!yaw_buf_.empty() && yaw_buf_.front().t == expected_stamp) {
       yaw_buf_.pop_front();
       return true;
     }
-
-    yaw = next;
-    yaw_buf_.pop_front();
-    yaw_buf_.pop_front();
-    return true;
+    return false;
   }
 
   bool pickInitPair(PosData &pos_out, YawData &yaw_out)
   {
     std::lock_guard<std::mutex> lock(mtx_);
 
-    while (!pos_buf_.empty() && !yaw_buf_.empty()) {
-      const double pos_t = pos_buf_.front().t;
-      const double yaw_t = yaw_buf_.front().t;
+    std::size_t pos_idx = 0;
+    std::size_t yaw_idx = 0;
+    while (pos_idx < pos_buf_.size() && yaw_idx < yaw_buf_.size()) {
+      const double pos_t = pos_buf_[pos_idx].t;
+      const double yaw_t = yaw_buf_[yaw_idx].t;
 
       if (std::abs(pos_t - yaw_t) <= 0.1) {
-        pos_out = pos_buf_.front();
-        yaw_out = yaw_buf_.front();
-        pos_buf_.pop_front();
-        yaw_buf_.pop_front();
+        pos_out = pos_buf_[pos_idx];
+        yaw_out = yaw_buf_[yaw_idx];
+        pos_buf_.erase(pos_buf_.begin() + static_cast<std::ptrdiff_t>(pos_idx));
+        yaw_buf_.erase(yaw_buf_.begin() + static_cast<std::ptrdiff_t>(yaw_idx));
         return true;
       }
 
       if (pos_t < yaw_t) {
-        pos_buf_.pop_front();
+        ++pos_idx;
       } else {
-        yaw_buf_.pop_front();
+        ++yaw_idx;
       }
     }
 
@@ -371,8 +321,6 @@ class GnssProcess
   YawData latest_yaw_;
   bool has_latest_pos_ = false;
   bool has_latest_yaw_ = false;
-  double last_pos_time_ = -1.0;
-  double last_yaw_time_ = -1.0;
 
   Eigen::Vector3d lever_ = Eigen::Vector3d::Zero();
   double off_ = 0.0;

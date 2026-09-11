@@ -108,8 +108,6 @@ bool graphUpdate = false;
 bool loopIsClosed = false;
 std::deque<SceneBatch> sceneQueue;
 std::deque<gtsam::NonlinearFactor::shared_ptr> gnssFactorQueue;
-int gnssPosKey = 0;
-int gnssYawKey = 0;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
 std::deque<LoopFactor> loopQueue;
@@ -236,8 +234,6 @@ void MapOptimizationInit()
     t_enu_map = Eigen::Vector3d::Zero();
     last_fpos.setZero();
     has_fpos = false;
-    gnssPosKey = 0;
-    gnssYawKey = 0;
     {
         std::lock_guard<std::mutex> lock(mtxGnssFactor);
         gnssFactorQueue.clear();
@@ -744,13 +740,18 @@ void performGnssMatching()
         keyposes.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
     }
 
-    while (gnssPosKey < static_cast<int>(keyposes.size()))
+    while (true)
     {
         PosData pos;
-        if (!p_gnss->matchPos(keyposes[gnssPosKey].time, pos))
-            break;
+        if (!p_gnss->frontPos(pos)) break;
 
-        const int key = gnssPosKey++;
+        const int key = findGnssKey(keyposes, pos.t);
+        if (key == -2) break;
+
+        if (!p_gnss->popPos(pos.t)) continue;
+
+        if (key < 0) continue;
+
         const PointTypePose &pose = keyposes[key];
         const Eigen::Matrix3d R = poseRotation(pose);
         const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (pos.p - t_enu_map);
@@ -786,13 +787,18 @@ void performGnssMatching()
     if (!useGnssYawFactor)
         return;
 
-    while (gnssYawKey < static_cast<int>(keyposes.size()))
+    while (true)
     {
         YawData yaw;
-        if (!p_gnss->matchYaw(keyposes[gnssYawKey].time, yaw))
-            break;
+        if (!p_gnss->frontYaw(yaw)) break;
 
-        const int key = gnssYawKey++;
+        const int key = findGnssKey(keyposes, yaw.t);
+        if (key == -2) break;
+
+        if (!p_gnss->popYaw(yaw.t)) continue;
+
+        if (key < 0) continue;
+
         const PointTypePose &pose = keyposes[key];
         const double yaw_map = yawToMap(yaw.yaw);
         const double yaw_error = std::abs(normalizeYaw(yaw_map - pose.yaw));
