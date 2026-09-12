@@ -48,23 +48,34 @@ struct YawData
   double yaw = 0.0;
 };
 
+template <typename Allocator>
+inline int find_gnss_key(const std::vector<PointTypePose, Allocator> &keyposes,
+                         double stamp)
+{
+  if (keyposes.empty() || stamp > keyposes.back().time)
+    return -2;
+
+  int key = -1;
+  double dt = 0.0;
+  findNearestByTime(
+      keyposes, stamp, key, dt,
+      [](const PointTypePose &pose) { return pose.time; });
+  return dt <= gnss_dt ? key : -1;
+}
+
 class GnssProcess
 {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  bool pushFix(const GnssFixMsgConstPtr &msg, PosData &data)
+  bool gnss_fix_cbk(const GnssFixMsgConstPtr &msg, PosData &data)
   {
-    if (!msg) {
-      return false;
-    }
-
     const GnssFixMsg &fix = *msg;
     if (fix.status.status < 0) {
       return false;
     }
     const double t = get_ros_time_sec(fix.header.stamp);
 
-    std::lock_guard<std::mutex> lock(mtx_);
+    std::lock_guard<std::mutex> lock(mtx_gnss);
     if (!origin_ready_) {
       origin_ecef_ = GeodeticToECEF(fix.latitude, fix.longitude, fix.altitude);
       origin_rot_ = EnuRotation(fix.latitude, fix.longitude);
@@ -82,168 +93,70 @@ class GnssProcess
     }
 
     const auto pos_it = std::lower_bound(
-        pos_buf_.begin(), pos_buf_.end(), t,
+        pos_buf.begin(), pos_buf.end(), t,
         [](const PosData &item, double stamp) { return item.t < stamp; });
-    pos_buf_.insert(pos_it, data);
-    if (!has_latest_pos_ || t > latest_pos_.t) {
-      latest_pos_ = data;
-      has_latest_pos_ = true;
+    pos_buf.insert(pos_it, data);
+    if (t > latest_pos.t) {
+      latest_pos = data;
     }
     return true;
   }
 
-  bool pushYaw(const GnssOdomMsgConstPtr &msg)
+  bool gnss_yaw_cbk(const GnssOdomMsgConstPtr &msg)
   {
-    if (!msg) {
-      return false;
-    }
-
     const auto &q = msg->pose.pose.orientation;
     const double t = get_ros_time_sec(msg->header.stamp);
     const double raw = quaternionToRPY(q.w, q.x, q.y, q.z).z();
 
     YawData data;
     data.t = t;
-    data.yaw = normalizeYaw(M_PI * 0.5 - raw - off_);
+    data.yaw = normalizeYaw(M_PI * 0.5 - raw - heading_offset);
 
-    std::lock_guard<std::mutex> lock(mtx_);
+    std::lock_guard<std::mutex> lock(mtx_gnss);
     const auto yaw_it = std::lower_bound(
-        yaw_buf_.begin(), yaw_buf_.end(), t,
+        yaw_buf.begin(), yaw_buf.end(), t,
         [](const YawData &item, double stamp) { return item.t < stamp; });
-    yaw_buf_.insert(yaw_it, data);
-    if (!has_latest_yaw_ || t > latest_yaw_.t) {
-      latest_yaw_ = data;
-      has_latest_yaw_ = true;
+    yaw_buf.insert(yaw_it, data);
+    if (t > latest_yaw.t) {
+      latest_yaw = data;
     }
     return true;
   }
 
-  bool latest(PosData &pos, YawData &yaw) const
+  bool sync_gnss_init(PosData &pos_out, YawData &yaw_out)
   {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (!has_latest_pos_ || !has_latest_yaw_) {
-      return false;
-    }
+    std::lock_guard<std::mutex> lock(mtx_gnss);
 
-    pos = latest_pos_;
-    yaw = latest_yaw_;
-    return true;
-  }
+    while (!pos_buf.empty() && !yaw_buf.empty()) {
+      const double dt = pos_buf.front().t - yaw_buf.front().t;
 
-  bool syncPos(double time, PosData &out)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-
-    bool found = false;
-    while (!pos_buf_.empty() && pos_buf_.front().t <= time) {
-      out = pos_buf_.front();
-      pos_buf_.pop_front();
-      found = true;
-    }
-
-    return found;
-  }
-
-  bool syncYaw(double time, YawData &out)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-
-    bool found = false;
-    while (!yaw_buf_.empty() && yaw_buf_.front().t <= time) {
-      out = yaw_buf_.front();
-      yaw_buf_.pop_front();
-      found = true;
-    }
-
-    return found;
-  }
-
-  bool frontPos(PosData &pos) const
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (pos_buf_.empty()) {
-      return false;
-    }
-    pos = pos_buf_.front();
-    return true;
-  }
-
-  bool popPos(double expected_stamp)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (!pos_buf_.empty() && pos_buf_.front().t == expected_stamp) {
-      pos_buf_.pop_front();
-      return true;
-    }
-    return false;
-  }
-
-  bool frontYaw(YawData &yaw) const
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (yaw_buf_.empty()) {
-      return false;
-    }
-    yaw = yaw_buf_.front();
-    return true;
-  }
-
-  bool popYaw(double expected_stamp)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    if (!yaw_buf_.empty() && yaw_buf_.front().t == expected_stamp) {
-      yaw_buf_.pop_front();
-      return true;
-    }
-    return false;
-  }
-
-  bool pickInitPair(PosData &pos_out, YawData &yaw_out)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-
-    std::size_t pos_idx = 0;
-    std::size_t yaw_idx = 0;
-    while (pos_idx < pos_buf_.size() && yaw_idx < yaw_buf_.size()) {
-      const double pos_t = pos_buf_[pos_idx].t;
-      const double yaw_t = yaw_buf_[yaw_idx].t;
-
-      if (std::abs(pos_t - yaw_t) <= 0.1) {
-        pos_out = pos_buf_[pos_idx];
-        yaw_out = yaw_buf_[yaw_idx];
-        pos_buf_.erase(pos_buf_.begin() + static_cast<std::ptrdiff_t>(pos_idx));
-        yaw_buf_.erase(yaw_buf_.begin() + static_cast<std::ptrdiff_t>(yaw_idx));
+      if (std::abs(dt) <= 0.1) {
+        pos_out = pos_buf.front();
+        yaw_out = yaw_buf.front();
+        pos_buf.pop_front();
+        yaw_buf.pop_front();
         return true;
       }
 
-      if (pos_t < yaw_t) {
-        ++pos_idx;
+      if (dt < 0.0) {
+        pos_buf.pop_front();
       } else {
-        ++yaw_idx;
+        yaw_buf.pop_front();
       }
     }
 
     return false;
   }
 
- public:
-  void setLever(const Eigen::Vector3d &lever)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    lever_ = lever;
-  }
+  std::deque<PosData> pos_buf;
+  std::deque<YawData> yaw_buf;
+  std::mutex mtx_gnss;
 
-  void setOffset(double off)
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    off_ = off;
-  }
+  PosData latest_pos;
+  YawData latest_yaw;
 
-  Eigen::Vector3d lever() const
-  {
-    std::lock_guard<std::mutex> lock(mtx_);
-    return lever_;
-  }
+  Eigen::Vector3d lever = Eigen::Vector3d::Zero();
+  double heading_offset = 0.0;
 
  private:
   static constexpr double kWgs84A = 6378137.0;
@@ -285,11 +198,6 @@ class GnssProcess
     return ecef;
   }
 
-  Eigen::Vector3d ECEFToENU(const Eigen::Vector3d &ecef) const
-  {
-    return origin_rot_ * (ecef - origin_ecef_);
-  }
-
   static Eigen::Matrix3d covarianceFromMsg(const GnssFixMsg &fix)
   {
     Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
@@ -311,19 +219,6 @@ class GnssProcess
     }
     return cov;
   }
-
-  mutable std::mutex mtx_;
-
-  std::deque<PosData> pos_buf_;
-  std::deque<YawData> yaw_buf_;
-
-  PosData latest_pos_;
-  YawData latest_yaw_;
-  bool has_latest_pos_ = false;
-  bool has_latest_yaw_ = false;
-
-  Eigen::Vector3d lever_ = Eigen::Vector3d::Zero();
-  double off_ = 0.0;
 
   bool origin_ready_ = false;
   Eigen::Vector3d origin_ecef_ = Eigen::Vector3d::Zero();

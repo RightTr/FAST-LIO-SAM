@@ -750,36 +750,18 @@ void reloc_cbk(const PoseStampedMsgConstPtr &msg_in)
 
 void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
 {
-    if (!p_gnss) {
-        return;
-    }
-
     PosData pos;
-    if (!p_gnss->pushFix(msg_in, pos))
-    {
-        return;
-    }
+    if (!p_gnss->gnss_fix_cbk(msg_in, pos)) return;
 
-    if (gnssPathVis &&
-        gnss_aligned.load())
-    {
+    if (gnssPathVis && gnss_aligned.load())
         publishGnssPath(pos);
-    }
 
     publishGnssLinkTf();
 }
 
 void gnss_heading_cbk(const OdometryMsgConstPtr &msg_in)
 {
-    if (!p_gnss) {
-        return;
-    }
-
-    if (!p_gnss->pushYaw(msg_in))
-    {
-        return;
-    }
-
+    if (!p_gnss->gnss_yaw_cbk(msg_in)) return;
     publishGnssLinkTf();
 }
 
@@ -980,9 +962,13 @@ void publishGnssLinkTf()
 {
     PosData pos;
     YawData yaw;
-    if (!p_gnss || !p_gnss->latest(pos, yaw))
     {
-        return;
+        std::lock_guard<std::mutex> lock(p_gnss->mtx_gnss);
+        if (p_gnss->latest_pos.t < 0.0 || p_gnss->latest_yaw.t < 0.0)
+            return;
+
+        pos = p_gnss->latest_pos;
+        yaw = p_gnss->latest_yaw;
     }
 
     TransformStampedMsg tf_msg;
@@ -1005,14 +991,9 @@ void publishGnssLinkTf()
 
 bool initGnssMap(double lidar_stamp_sec)
 {
-    if (!p_gnss)
-    {
-        return false;
-    }
-
     PosData gnss_pos;
     YawData heading;
-    if (!p_gnss->pickInitPair(gnss_pos, heading))
+    if (!p_gnss->sync_gnss_init(gnss_pos, heading))
     {
         return false;
     }
@@ -1024,7 +1005,7 @@ bool initGnssMap(double lidar_stamp_sec)
     const double map_yaw = std::atan2(R_map_body(1, 0), R_map_body(0, 0));
     const double dyaw = normalizeYaw(heading.yaw - map_yaw);
     R_enu_map = Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-    const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->lever();
+    const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->lever;
     t_enu_map = gnss_pos.p - R_enu_map * p_map_ant;
 
     gnss_aligned.store(true);
@@ -1717,10 +1698,7 @@ int main(int argc, char** argv)
         read_sgraph_params();
     }
     read_gnss_params();
-    if (p_gnss)
-    {
-        p_gnss->setOffset(heading_offset);
-    }
+    p_gnss->heading_offset = heading_offset;
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
 
@@ -1756,12 +1734,8 @@ int main(int argc, char** argv)
                                      zupt_inflate_pos, zupt_inflate_rot, zupt_inflate_start);
     p_imu->lidar_type = lidar_type;
 
-    if (p_gnss)
-    {
-        const Eigen::Vector3d lever_imu =
-            Lidar_T_wrt_IMU + Lidar_R_wrt_IMU * gnss_extrinsic_T;
-        p_gnss->setLever(lever_imu);
-    }
+    p_gnss->lever =
+        Lidar_T_wrt_IMU + Lidar_R_wrt_IMU * gnss_extrinsic_T;
 
     double epsi[23] = {0.001};
     fill(epsi, epsi+23, 0.001);
@@ -1839,7 +1813,6 @@ int main(int argc, char** argv)
         std::thread loopthread;
         std::thread globalthread;
         std::thread scenethread;
-        std::thread gnssthread;
         if (sam_enable)
         {
             globalthread = std::thread(&visualizeGlobalMapThread);
@@ -1851,10 +1824,6 @@ int main(int argc, char** argv)
             {
                 scenethread = std::thread(&sceneMatchingThread);
             }
-            if (gnssEnableFlag)
-            {
-                gnssthread = std::thread(&gnssMatchingThread);
-            }
         }
 
 //------------------------------------------------------------------------------------------------------
@@ -1864,6 +1833,7 @@ int main(int argc, char** argv)
         while (ros_ok() && !flg_exit)
         {
             spin_once();
+            performGnssMatching();
 
         // relocalization trigger
         if(relocalize_flag.load())
@@ -2061,10 +2031,6 @@ int main(int argc, char** argv)
         if (scenethread.joinable()) {
             scenethread.join();
         }
-        if (gnssthread.joinable()) {
-            gnssthread.join();
-        }
-
         if (sam_enable)
         {
             poseGraphUpdate();

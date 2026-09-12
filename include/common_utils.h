@@ -77,50 +77,36 @@ inline bool time_in_window(double source_stamp_sec,
            source_stamp_sec <= target_stamp_sec + window_sec / 2;
 }
 
-inline bool findNearestKeyframe(const std::vector<PointTypePose> &keyposes,
-                                double stamp,
-                                int &key,
-                                double &dt)
+template <typename Container, typename TimeOf>
+inline bool findNearestByTime(const Container &items,
+                              double stamp,
+                              int &index,
+                              double &dt,
+                              TimeOf time_of)
 {
-    if (keyposes.empty())
+    if (items.empty())
         return false;
 
-    const auto next = std::lower_bound(
-        keyposes.begin(), keyposes.end(), stamp,
-        [](const PointTypePose &pose, double time) { return pose.time < time; });
+    auto next = std::lower_bound(
+        items.begin(), items.end(), stamp,
+        [&time_of](const auto &item, double t) {
+            return time_of(item) < t;
+        });
 
-    if (next == keyposes.begin())
+    if (next == items.end())
+        --next;
+
+    auto nearest = next;
+    if (next != items.begin())
     {
-        key = 0;
-        dt = std::abs(stamp - next->time);
-        return true;
+        auto prev = std::prev(next);
+        if (std::abs(stamp - time_of(*prev)) <= std::abs(stamp - time_of(*next)))
+            nearest = prev;
     }
 
-    if (next == keyposes.end())
-    {
-        key = static_cast<int>(keyposes.size() - 1);
-        dt = std::abs(stamp - keyposes.back().time);
-        return true;
-    }
-
-    const auto prev = std::prev(next);
-    const double prev_dt = std::abs(stamp - prev->time);
-    const double next_dt = std::abs(next->time - stamp);
-    const auto nearest = prev_dt <= next_dt ? prev : next;
-    key = static_cast<int>(std::distance(keyposes.begin(), nearest));
-    dt = std::min(prev_dt, next_dt);
+    index = std::distance(items.begin(), nearest);
+    dt = std::abs(stamp - time_of(*nearest));
     return true;
-}
-
-inline int findGnssKey(const std::vector<PointTypePose> &keyposes, double stamp)
-{
-    if (keyposes.empty() || stamp > keyposes.back().time)
-        return -2;
-
-    int key = -1;
-    double dt = 0.0;
-    findNearestKeyframe(keyposes, stamp, key, dt);
-    return dt <= gnss_dt ? key : -1;
 }
 
 inline double rad(double deg)

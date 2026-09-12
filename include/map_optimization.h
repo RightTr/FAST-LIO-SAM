@@ -74,7 +74,7 @@ void saveKeyFramesAndFactor(
     const Eigen::Matrix<double, 6, 1> &odomPoseVar);
 void addLoopFactor();
 void poseGraphUpdate();
-void gnssMatchingThread();
+void performGnssMatching();
 
 bool isKeyFrame();
 

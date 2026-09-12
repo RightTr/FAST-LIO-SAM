@@ -99,7 +99,6 @@ Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
 
 std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
-std::mutex mtxGnssFactor;
 std::mutex mtxSceneBatch;
 std::atomic<bool> sceneDone{false};
 std::atomic<bool> loopDone{false};
@@ -107,7 +106,6 @@ std::atomic<bool> loopDone{false};
 bool graphUpdate = false;
 bool loopIsClosed = false;
 std::deque<SceneBatch> sceneQueue;
-std::deque<gtsam::NonlinearFactor::shared_ptr> gnssFactorQueue;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
 std::deque<LoopFactor> loopQueue;
@@ -123,10 +121,7 @@ static double yawToMap(double yaw)
 
 void correctPoses();
 void addSceneFactor();
-void addGNSSFactor();
-void performGnssMatching();
 void sceneMatchingThread();
-void gnssMatchingThread();
 
 void setGravityUp(const Eigen::Vector3d &gravity_up)
 {
@@ -234,10 +229,6 @@ void MapOptimizationInit()
     t_enu_map = Eigen::Vector3d::Zero();
     last_fpos.setZero();
     has_fpos = false;
-    {
-        std::lock_guard<std::mutex> lock(mtxGnssFactor);
-        gnssFactorQueue.clear();
-    }
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
@@ -560,7 +551,6 @@ void addLoopFactor()
 
 void poseGraphUpdate()
 {
-    addGNSSFactor();
     addSceneFactor();
     addLoopFactor();
     if (gtSAMgraph.empty())
@@ -727,35 +717,35 @@ void sceneMatchingThread()
 
 void performGnssMatching()
 {
-    if (!gnssEnableFlag || !gnss_aligned.load() || !p_gnss)
+    if (!gnssEnableFlag || !gnss_aligned.load())
         return;
 
-    std::vector<PointTypePose> keyposes;
+    if (!cloudKeyPoses6D || cloudKeyPoses6D->empty())
+        return;
 
-    {
-        std::lock_guard<std::mutex> lock(mtxKeyframe);
-        if (!cloudKeyPoses6D || cloudKeyPoses6D->points.empty())
-            return;
-
-        keyposes.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
-    }
+    const auto &keyposes = cloudKeyPoses6D->points;
 
     while (true)
     {
         PosData pos;
-        if (!p_gnss->frontPos(pos)) break;
+        int key = -1;
+        {
+            std::lock_guard<std::mutex> lock(p_gnss->mtx_gnss);
+            if (p_gnss->pos_buf.empty()) break;
 
-        const int key = findGnssKey(keyposes, pos.t);
-        if (key == -2) break;
+            pos = p_gnss->pos_buf.front();
+            key = find_gnss_key(keyposes, pos.t);
+            if (key == -2) break;
 
-        if (!p_gnss->popPos(pos.t)) continue;
+            p_gnss->pos_buf.pop_front();
+        }
 
         if (key < 0) continue;
 
         const PointTypePose &pose = keyposes[key];
         const Eigen::Matrix3d R = poseRotation(pose);
         const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (pos.p - t_enu_map);
-        Eigen::Vector3d gnss_pos = p_map_ant - R * p_gnss->lever();
+        Eigen::Vector3d gnss_pos = p_map_ant - R * p_gnss->lever;
         Eigen::Matrix3d gnss_cov = pos.cov;
         if (!useGnssElevation)
         {
@@ -769,15 +759,11 @@ void performGnssMatching()
             sigma << std::sqrt(gnss_cov(0, 0)),
                      std::sqrt(gnss_cov(1, 1)),
                      std::sqrt(gnss_cov(2, 2));
-            const gtsam::NonlinearFactor::shared_ptr factor(
-                new gtsam::GPSFactor(
+            gtSAMgraph.add(
+                gtsam::GPSFactor(
                     key,
                     gtsam::Point3(gnss_pos.x(), gnss_pos.y(), gnss_pos.z()),
                     gtsam::noiseModel::Diagonal::Sigmas(sigma)));
-            {
-                std::lock_guard<std::mutex> lock(mtxGnssFactor);
-                gnssFactorQueue.push_back(factor);
-            }
 
             last_fpos = gnss_pos;
             has_fpos = true;
@@ -790,12 +776,17 @@ void performGnssMatching()
     while (true)
     {
         YawData yaw;
-        if (!p_gnss->frontYaw(yaw)) break;
+        int key = -1;
+        {
+            std::lock_guard<std::mutex> lock(p_gnss->mtx_gnss);
+            if (p_gnss->yaw_buf.empty()) break;
 
-        const int key = findGnssKey(keyposes, yaw.t);
-        if (key == -2) break;
+            yaw = p_gnss->yaw_buf.front();
+            key = find_gnss_key(keyposes, yaw.t);
+            if (key == -2) break;
 
-        if (!p_gnss->popYaw(yaw.t)) continue;
+            p_gnss->yaw_buf.pop_front();
+        }
 
         if (key < 0) continue;
 
@@ -806,50 +797,10 @@ void performGnssMatching()
         {
             const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4);
             const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
-            const gtsam::NonlinearFactor::shared_ptr factor(
-                new GnssYawFactor(key, yaw_map, yawNoise));
-            {
-                std::lock_guard<std::mutex> lock(mtxGnssFactor);
-                gnssFactorQueue.push_back(factor);
-            }
+            gtSAMgraph.add(
+                boost::shared_ptr<GnssYawFactor>(
+                    new GnssYawFactor(key, yaw_map, yawNoise)));
         }
-    }
-}
-
-void addGNSSFactor()
-{
-    if (!gnssEnableFlag)
-        return;
-
-    std::deque<gtsam::NonlinearFactor::shared_ptr> factors;
-
-    {
-        std::lock_guard<std::mutex> lock(mtxGnssFactor);
-        if (gnssFactorQueue.empty())
-            return;
-
-        factors.swap(gnssFactorQueue);
-    }
-
-    for (const auto &factor : factors)
-        gtSAMgraph.add(factor);
-}
-
-void gnssMatchingThread()
-{
-    if (!gnssEnableFlag)
-        return;
-
-    RateType rate(10);
-
-    while (ros_ok() && !flg_exit)
-    {
-        rate.sleep();
-
-        if (!gnss_aligned.load())
-            continue;
-
-        performGnssMatching();
     }
 }
 
@@ -874,7 +825,6 @@ void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_und
 
     // odom factor
     addOdomFactor(odomPoseVar);
-    addGNSSFactor();
     addSceneFactor();
     // loop factor
     addLoopFactor();
