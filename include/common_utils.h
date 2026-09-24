@@ -13,6 +13,7 @@
 
 #include "ros_utils.h"
 #include "map_optimization.h"
+#include "posebuffer.h"
 #include <pcl/common/transforms.h>
 
 #include "utility.h"
@@ -196,7 +197,6 @@ void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
 void setPriorOdom(const Eigen::Matrix3d &R_prior_odom_,
                   const Eigen::Vector3d &t_prior_odom_);
 void publishEnuToMapTf(const TimeType& stamp);
-void publishMapToOdomTf(const TimeType& stamp);
 
 inline void transformPoseStamped(PoseStampedMsg &pose,
                                  const Eigen::Matrix3d &R_new_old,
@@ -249,6 +249,23 @@ inline std::string ikdtree_output_dir = result_dir + "/TREE_CLOUDS/";
 extern std::ofstream scan_frame_pose_file;
 extern std::ofstream imu_pose_file;
 extern std::ofstream keyframe_pose_file;
+
+inline void saveImuPose(const Pose &pose)
+{
+    if (!imu_state_save_en || !imu_pose_file.is_open())
+        return;
+
+    imu_pose_file << pose._timestamp << " "
+        << pose._x << " " << pose._y << " " << pose._z << " "
+        << pose._qx << " " << pose._qy << " " << pose._qz << " " << pose._qw << " "
+        << pose._vx << " " << pose._vy << " " << pose._vz << " "
+        << pose._bgx << " " << pose._bgy << " " << pose._bgz << " "
+        << pose._bax << " " << pose._bay << " " << pose._baz << " "
+        << pose._gravx << " " << pose._gravy << " " << pose._gravz << " "
+        << pose._exqx << " " << pose._exqy << " " << pose._exqz << " " << pose._exqw << " "
+        << pose._extx << " " << pose._exty << " " << pose._extz << "\n";
+    imu_pose_file.flush();
+}
 
 inline void prepareResultDirs()
 {

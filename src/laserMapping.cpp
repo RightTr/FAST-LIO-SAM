@@ -69,6 +69,8 @@ bool   lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 std::atomic<bool> flg_exit(false);
 Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
+std::mutex mtx_map_odom;
+std::atomic<bool> map_odom_updated{true};
 Eigen::Matrix3d R_prior_odom = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_prior_odom = Eigen::Vector3d::Zero();
 Eigen::Matrix3d R_enu_map = Eigen::Matrix3d::Identity();
@@ -109,15 +111,23 @@ static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
                           const Eigen::Matrix3d &R_odom_body,
                           const Eigen::Vector3d &t_odom_body)
 {
+    std::lock_guard<std::mutex> lock(mtx_map_odom);
+
     R_map_odom = R_map_body * R_odom_body.transpose();
     t_map_odom = t_map_body - R_map_odom * t_odom_body;
+
+    map_odom_updated.store(true, std::memory_order_release);
 }
 
 void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
                 const Eigen::Vector3d &t_map_odom_)
 {
+    std::lock_guard<std::mutex> lock(mtx_map_odom);
+
     R_map_odom = R_map_odom_;
     t_map_odom = t_map_odom_;
+
+    map_odom_updated.store(true, std::memory_order_release);
 }
 
 void setPriorOdom(const Eigen::Matrix3d &R_prior_odom_,
@@ -993,10 +1003,7 @@ bool initGnssMap(double lidar_stamp_sec)
 {
     PosData gnss_pos;
     YawData heading;
-    if (!p_gnss->sync_gnss_init(gnss_pos, heading))
-    {
-        return false;
-    }
+    if (!p_gnss->sync_gnss_init(gnss_pos, heading)) return false;
 
     Eigen::Matrix3d R_map_body;
     Eigen::Vector3d t_map_body;
@@ -1010,7 +1017,6 @@ bool initGnssMap(double lidar_stamp_sec)
 
     gnss_aligned.store(true);
     publishEnuToMapTf(get_ros_time(lidar_stamp_sec));
-    publishMapToOdomTf(get_ros_time(lidar_stamp_sec));
     return true;
 }
 
@@ -1040,32 +1046,6 @@ void publishEnuToMapTf(const TimeType& stamp)
 #elif defined(USE_ROS2)
     if (laserTfBroadcaster)
         laserTfBroadcaster->sendTransform(enu_to_map_msg);
-#endif
-}
-
-void publishMapToOdomTf(const TimeType& stamp)
-{
-    TransformStampedMsg map_to_odom_msg;
-    map_to_odom_msg.header.stamp = stamp;
-    map_to_odom_msg.header.frame_id = map_frame;
-    map_to_odom_msg.child_frame_id = odom_frame;
-    map_to_odom_msg.transform.translation.x = t_map_odom.x();
-    map_to_odom_msg.transform.translation.y = t_map_odom.y();
-    map_to_odom_msg.transform.translation.z = t_map_odom.z();
-
-    Eigen::Quaterniond q_map_odom(R_map_odom);
-    q_map_odom.normalize();
-    map_to_odom_msg.transform.rotation.x = q_map_odom.x();
-    map_to_odom_msg.transform.rotation.y = q_map_odom.y();
-    map_to_odom_msg.transform.rotation.z = q_map_odom.z();
-    map_to_odom_msg.transform.rotation.w = q_map_odom.w();
-
-#ifdef USE_ROS1
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(map_to_odom_msg);
-#elif defined(USE_ROS2)
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(map_to_odom_msg);
 #endif
 }
 
@@ -1157,10 +1137,8 @@ bool priorInitAlign()
 
     setPriorOdom(R_map_odom_refined, t_map_odom_refined);
     setMapOdom(R_map_odom_refined, t_map_odom_refined);
-    publishMapToOdomTf(get_ros_time(lidar_end_time));
     prior_init_done = true;
 
-    ROS_PRINT_INFO("prior init done: ICP fitness=%.6f", fitness_score);
     return true;
 }
 
@@ -1278,6 +1256,9 @@ void publish_prior_map(const Pcl2Publisher & pubLaserCloudPriorMap)
 void publish_odometryhighfreq(PoseBuffer& pbuffer,
                               const OdomPublisher& pubOdomHighFreqLocal)
 {
+    Eigen::Matrix3d R_map_odom_hf = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d t_map_odom_hf = Eigen::Vector3d::Zero();
+
     while (ros_ok() && !flg_exit){
         Pose pose;
         if (!pbuffer.TryPop(pose))
@@ -1287,6 +1268,31 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
         }
         OdomMsg msg_local;
         const auto stamp = get_ros_time(pose._timestamp);
+
+        if (map_odom_updated.load(std::memory_order_acquire))
+        {
+            std::unique_lock<std::mutex> lock(mtx_map_odom, std::try_to_lock);
+            if (lock.owns_lock())
+            {
+                R_map_odom_hf = R_map_odom;
+                t_map_odom_hf = t_map_odom;
+                map_odom_updated.store(false, std::memory_order_release);
+            }
+        }
+
+        TransformStampedMsg map_to_odom_msg;
+        map_to_odom_msg.header.stamp = stamp;
+        map_to_odom_msg.header.frame_id = map_frame;
+        map_to_odom_msg.child_frame_id = odom_frame;
+        fillTransformMsg(map_to_odom_msg, R_map_odom_hf, t_map_odom_hf);
+
+#ifdef USE_ROS1
+        if (laserTfBroadcaster)
+            laserTfBroadcaster->sendTransform(map_to_odom_msg);
+#elif defined(USE_ROS2)
+        if (laserTfBroadcaster)
+            laserTfBroadcaster->sendTransform(map_to_odom_msg);
+#endif
 
         const Eigen::Matrix3d R_odom_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
         const Eigen::Vector3d t_odom_base(pose._x, pose._y, pose._z);
@@ -1321,19 +1327,7 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
             laserTfBroadcaster->sendTransform(tf_msg);
 #endif
 
-        if (imu_state_save_en && imu_pose_file.is_open())
-        {
-            imu_pose_file << pose._timestamp << " "
-                << pose._x << " " << pose._y << " " << pose._z << " "
-                << pose._qx << " " << pose._qy << " " << pose._qz << " " << pose._qw << " "
-                << pose._vx << " " << pose._vy << " " << pose._vz << " "
-                << pose._bgx << " " << pose._bgy << " " << pose._bgz << " "
-                << pose._bax << " " << pose._bay << " " << pose._baz << " "
-                << pose._gravx << " " << pose._gravy << " " << pose._gravz << " "
-                << pose._exqx << " " << pose._exqy << " " << pose._exqz << " " << pose._exqw << " "
-                << pose._extx << " " << pose._exty << " " << pose._extz << "\n";
-            imu_pose_file.flush();
-        }
+        saveImuPose(pose);
     }
 }
 
@@ -1387,7 +1381,6 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
 
     ros_publish(pubOdomAftMappedLocal, odomAftMapped);
     publishEnuToMapTf(stamp);
-    publishMapToOdomTf(stamp);
 #ifdef USE_ROS1
     if (laserTfBroadcaster)
         laserTfBroadcaster->sendTransform(tf_msg);
@@ -1851,11 +1844,7 @@ int main(int argc, char** argv)
             const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
             const Eigen::Vector3d t_odom_base = state_point.pos;
             updateMapOdom(R_map_base, reloc_pos, R_odom_base, t_odom_base);
-            publishMapToOdomTf(get_ros_time(reloc_pose._timestamp));
 
-            ROS_PRINT_INFO("Reloc: pos=(%.2f %.2f %.2f), quat=(%.2f %.2f %.2f %.2f)",
-                reloc_pos.x(), reloc_pos.y(), reloc_pos.z(),
-                reloc_rot.x(), reloc_rot.y(), reloc_rot.z(), reloc_rot.w());
             relocalize_flag.store(false);
         }
 

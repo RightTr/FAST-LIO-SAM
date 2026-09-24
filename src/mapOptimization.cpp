@@ -979,7 +979,6 @@ void correctPoses()
                                              pose_odom_ref.translation().y(),
                                              pose_odom_ref.translation().z());
         setMapOdom(R_map_odom, t_map_odom);
-        publishMapToOdomTf(get_ros_time(timeLaserInfoCur));
     }
 
     graphUpdate = false;
