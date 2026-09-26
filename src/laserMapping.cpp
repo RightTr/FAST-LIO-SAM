@@ -283,6 +283,25 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
     return true;
 }
 
+bool coveredByPrior(const PointType &point_odom)
+{
+    if (!use_prior_map || !prior_init_done || prior_ikdtree.Root_Node == nullptr)
+        return false;
+
+    const Eigen::Vector3d p_prior = R_prior_odom * Eigen::Vector3d(point_odom.x, point_odom.y, point_odom.z) + t_prior_odom;
+
+    PointType point_prior;
+    point_prior.x = p_prior.x();
+    point_prior.y = p_prior.y();
+    point_prior.z = p_prior.z();
+
+    PointVector points_near;
+    vector<float> sq_dis;
+    prior_ikdtree.Nearest_Search(point_prior, 1, points_near, sq_dis);
+
+    return !sq_dis.empty() && sq_dis[0] < filter_size_map_min * filter_size_map_min;
+}
+
 bool loadPriorTreeMap()
 {
 
@@ -862,6 +881,7 @@ void map_incremental()
     PointVector PointNoNeedDownsample;
     PointToAdd.reserve(feats_down_size);
     PointNoNeedDownsample.reserve(feats_down_size);
+
     for (int i = 0; i < feats_down_size; i++)
     {
         /* transform to world frame */
@@ -871,14 +891,14 @@ void map_incremental()
         {
             const PointVector &points_near = Nearest_Points[i];
             bool need_add = true;
-            BoxPointType Box_of_Point;
-            PointType downsample_result, mid_point; 
+            PointType mid_point;
             mid_point.x = floor(feats_down_world->points[i].x/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
             mid_point.y = floor(feats_down_world->points[i].y/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
             mid_point.z = floor(feats_down_world->points[i].z/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
             float dist  = calc_dist(feats_down_world->points[i],mid_point);
             if (fabs(points_near[0].x - mid_point.x) > 0.5 * filter_size_map_min && fabs(points_near[0].y - mid_point.y) > 0.5 * filter_size_map_min && fabs(points_near[0].z - mid_point.z) > 0.5 * filter_size_map_min){
-                PointNoNeedDownsample.push_back(feats_down_world->points[i]);
+                if (!coveredByPrior(feats_down_world->points[i]))
+                    PointNoNeedDownsample.push_back(feats_down_world->points[i]);
                 continue;
             }
             for (int readd_i = 0; readd_i < NUM_MATCH_POINTS; readd_i ++)
@@ -890,11 +910,13 @@ void map_incremental()
                     break;
                 }
             }
-            if (need_add) PointToAdd.push_back(feats_down_world->points[i]);
+            if (need_add && !coveredByPrior(feats_down_world->points[i]))
+                PointToAdd.push_back(feats_down_world->points[i]);
         }
         else
         {
-            PointToAdd.push_back(feats_down_world->points[i]);
+            if (!coveredByPrior(feats_down_world->points[i]))
+                PointToAdd.push_back(feats_down_world->points[i]);
         }
     }
 
@@ -1456,7 +1478,9 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         if (ekfom_data.converge)
         {
             if (use_online_map &&
-                build_point_observation(&ikdtree, nullptr, point_body, point_world, 1.0, true, &Nearest_Points[i], online_candidates[i]))
+                build_point_observation(&ikdtree, nullptr, point_body, point_world,
+                                        1.0, true, &Nearest_Points[i],
+                                        online_candidates[i]))
             {
                 online_valid[i] = 1;
                 point_selected_surf[i] = true;
@@ -1470,8 +1494,9 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         }
         else if (use_online_map && point_selected_surf[i])
         {
-            if (build_point_observation(nullptr, &Nearest_Points[i],
-                                        point_body, point_world, 1.0, false, nullptr, online_candidates[i]))
+            if (build_point_observation(nullptr, &Nearest_Points[i], point_body,
+                                        point_world, 1.0, false, nullptr,
+                                        online_candidates[i]))
             {
                 online_valid[i] = 1;
                 normvec->points[i] = online_candidates[i].normal;
@@ -1495,8 +1520,10 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
             if (ekfom_data.converge)
             {
-                if (build_point_observation(&prior_ikdtree, nullptr, point_body, point_prior,
-                                            prior_scale, true, &Prior_Nearest_Points[i], prior_candidates[i]))
+                if (build_point_observation(&prior_ikdtree, nullptr, point_body,
+                                            point_prior, prior_scale, true,
+                                            &Prior_Nearest_Points[i],
+                                            prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
                     prior_point_selected[i] = 1;
@@ -1509,8 +1536,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             else if (i < static_cast<int>(prior_point_selected.size()) && prior_point_selected[i])
             {
                 if (build_point_observation(nullptr, &Prior_Nearest_Points[i],
-                                            point_body, point_prior,
-                                            prior_scale, false, nullptr, prior_candidates[i]))
+                                            point_body, point_prior, prior_scale,
+                                            false, nullptr, prior_candidates[i]))
                 {
                     prior_valid[i] = 1;
                 }
@@ -1518,6 +1545,17 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
                 {
                     prior_point_selected[i] = 0;
                 }
+            }
+
+            if (prior_valid[i])
+            {
+                const Eigen::Vector3d n_prior(prior_candidates[i].normal.x,
+                                              prior_candidates[i].normal.y,
+                                              prior_candidates[i].normal.z);
+                const Eigen::Vector3d n_odom = R_prior_odom.transpose() * n_prior;
+                prior_candidates[i].normal.x = n_odom.x();
+                prior_candidates[i].normal.y = n_odom.y();
+                prior_candidates[i].normal.z = n_odom.z();
             }
         }
     }
