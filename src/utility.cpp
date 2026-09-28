@@ -16,6 +16,7 @@ float surroundingKeyframeSearchRadius;
 
 // Loop closure
 bool  loopClosureEnableFlag;
+bool  scanContextEnableFlag;
 float loopClosureFrequency;
 int   surroundingKeyframeSize;
 float historyKeyframeSearchRadius;
@@ -115,6 +116,7 @@ void read_liosam_params() {
 
     // Loop closure parameters
     rosparam_get("lio_sam/loopClosureEnableFlag", loopClosureEnableFlag, false);
+    rosparam_get("lio_sam/scanContextEnableFlag", scanContextEnableFlag, false);
     rosparam_get("lio_sam/loopClosureFrequency", loopClosureFrequency, 1.0f);
     rosparam_get("lio_sam/surroundingKeyframeSize", surroundingKeyframeSize, 50);
     rosparam_get("lio_sam/historyKeyframeSearchRadius", historyKeyframeSearchRadius, 10.0f);

@@ -24,6 +24,7 @@ extern float surroundingKeyframeSearchRadius;
 
 // Loop closure
 extern bool  loopClosureEnableFlag;
+extern bool  scanContextEnableFlag;
 extern float loopClosureFrequency;
 extern int   surroundingKeyframeSize;
 extern float historyKeyframeSearchRadius;

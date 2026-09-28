@@ -1,5 +1,5 @@
-#ifndef FAST_LIO_SAM_ROS_UTILS_H
-#define FAST_LIO_SAM_ROS_UTILS_H
+#ifndef ROS_UTILS_H
+#define ROS_UTILS_H
 
 #include <cmath>
 #include <cstddef>

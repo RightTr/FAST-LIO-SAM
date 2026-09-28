@@ -88,7 +88,6 @@ void FloorMap::update(int key,
         transition_dir_ = 0;
         transition_start_z_ = 0.0;
         flat_distance_ = 0.0;
-        ROS_PRINT_INFO("[FLOOR] CREATE id=0 begin=%d", key);
     }
 
     Floor &current_floor = floors_[static_cast<size_t>(current_floor_id_)];
@@ -106,13 +105,6 @@ void FloorMap::update(int key,
         transition_start_z_ = gravity_up.dot(poseTranslation(pose));
 
         current_floor.ranges.back().end = key - 1;
-
-        ROS_PRINT_INFO(
-            "[FLOOR] START key=%d floor=%d dir=%d angle=%.3f",
-            key,
-            current_floor_id_,
-            transition_dir_,
-            angle);
         return;
     }
 
@@ -162,19 +154,6 @@ void FloorMap::update(int key,
                 floors_[static_cast<size_t>(old_floor)].down = target_floor;
                 floors_[static_cast<size_t>(target_floor)].up = old_floor;
             }
-            ROS_PRINT_INFO(
-                "[FLOOR] CREATE id=%d from=%d dir=%d",
-                target_floor,
-                old_floor,
-                transition_dir_);
-        }
-        else
-        {
-            ROS_PRINT_INFO(
-                "[FLOOR] REUSE old=%d target=%d dir=%d",
-                old_floor,
-                target_floor,
-                transition_dir_);
         }
     }
 
@@ -183,13 +162,6 @@ void FloorMap::update(int key,
     transition_dir_ = 0;
     transition_start_z_ = 0.0;
     flat_distance_ = 0.0;
-
-    ROS_PRINT_INFO(
-        "[FLOOR] END key=%d old=%d new=%d dz=%.2f",
-        key,
-        old_floor,
-        target_floor,
-        dz);
 }
 
 bool FloorMap::getRanges(int key,
@@ -254,7 +226,6 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         floors_.push_back(Floor{});
         floors_.back().ranges.push_back(FloorRange{key, -1});
         current_floor_id_ = 0;
-        ROS_PRINT_INFO("[FLOOR] CREATE id=0 begin=%d", key);
     }
 
     const int floor_id = floorId(key);
@@ -305,19 +276,6 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         best_ground->last_key = key;
     }
 
-    ROS_PRINT_INFO(
-        "[GROUND OBS] key=%d ground=%d body=(%.3f %.3f %.3f %.3f) map=(%.3f %.3f %.3f %.3f) n=%d",
-        key, ground_id,
-        candidate.body_plane[0],
-        candidate.body_plane[1],
-        candidate.body_plane[2],
-        candidate.body_plane[3],
-        candidate.plane[0],
-        candidate.plane[1],
-        candidate.plane[2],
-        candidate.plane[3],
-        candidate.n);
-
     batch.factors.emplace_back(key, ground_id, candidate.body_plane);
 
     if (is_new_ground)
@@ -325,11 +283,5 @@ bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
         batch.planes.emplace_back(floor_id, ground_id, candidate.plane);
     }
 
-    ROS_PRINT_INFO(
-        "[GROUND] READY floor=%d ground=%d key=%d new=%d",
-        floor_id,
-        ground_id,
-        key,
-        is_new_ground ? 1 : 0);
     return true;
 }

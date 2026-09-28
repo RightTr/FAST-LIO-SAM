@@ -15,7 +15,6 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
-#include "nanoflann.hpp"
 #include "KDTreeVectorOfVectorsAdaptor.h"
 
 #include "tictoc.h"
@@ -63,7 +62,9 @@ public:
 
     // User-side API
     void makeAndSaveScancontextAndKeys( pcl::PointCloud<SCPointType> & _scan_down );
-    std::pair<int, float> detectLoopClosureID( void ); // int: nearest node index, float: relative yaw  
+    std::pair<int, float> detectLoopClosureID(
+        int query_id,
+        const std::vector<std::pair<int, int>> &search_ranges); // int: nearest node index, float: relative yaw
 
 public:
     // hyper parameters ()
@@ -96,6 +97,8 @@ public:
 
     KeyMat polarcontext_invkeys_mat_;
     KeyMat polarcontext_invkeys_to_search_;
+    std::vector<int> polarcontext_search_ids_;
+    std::vector<std::pair<int, int>> polarcontext_search_ranges_;
     std::unique_ptr<InvKeyTree> polarcontext_tree_;
 
 }; // SCManager
