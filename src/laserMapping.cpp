@@ -10,6 +10,7 @@
 #include <limits>
 #include <Python.h>
 #include <so3_math.h>
+#include "simple_EKF/simple_ekf.hpp"
 #include <Eigen/Core>
 #include "IMU_Processing.hpp"
 #include "GNSS_Processing.hpp"
@@ -35,7 +36,7 @@
 double kdtree_incremental_time = 0.0, kdtree_delete_time = 0.0;
 double match_time = 0, solve_time = 0;
 int    kdtree_size_st = 0, add_point_size = 0, kdtree_delete_counter = 0;
-bool   feat_accum_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
+bool   feat_accum_save_en = false, time_sync_en = false, path_en = true;
 bool   imu_state_save_en = false, scan_frame_save_en = false, ikdtree_output_save_en = false;
 
 bool feature_pub_en = false, effect_pub_en = false;
@@ -180,9 +181,9 @@ M3D Lidar_R_wrt_IMU(Eye3d);
 
 /*** EKF inputs and output ***/
 MeasureGroup Measures;
-esekfom::esekf<state_ikfom, 12, input_ikfom> kf;
-state_ikfom state_point;
-vect3 pos_lid;
+SimpleEKF kf;
+SimpleEKF::State state_point;
+V3D pos_lid;
 
 PathMsg path;
 PathMsg gnssPath;
@@ -368,11 +369,11 @@ bool coarsePriorIcpAlign(Eigen::Matrix3d &R_map_lidar,
 
     Eigen::Matrix3d R_map_base_guess;
     Eigen::Vector3d t_map_base_guess;
-    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos,
+    composeMapPose(state_point.rot, state_point.pos,
                    R_map_base_guess, t_map_base_guess);
 
-    const Eigen::Matrix3d R_base_lidar = state_point.offset_R_L_I.toRotationMatrix();
-    const Eigen::Vector3d t_base_lidar = state_point.offset_T_L_I;
+    const Eigen::Matrix3d R_base_lidar = Lidar_R_wrt_IMU;
+    const Eigen::Vector3d t_base_lidar = Lidar_T_wrt_IMU;
     const Eigen::Matrix3d R_map_lidar_guess = R_map_base_guess * R_base_lidar;
     const Eigen::Vector3d t_map_lidar_guess = t_map_base_guess +
                                               R_map_base_guess * t_base_lidar;
@@ -432,8 +433,8 @@ void save_scan_frame(const string& scan_frames_dir)
     pcd_writer.writeBinary(scan_frames_dir + "scans_tstamp/" + stamp_str + ".pcd", scan_xyz_tstamp);
 
     // Save LiDAR pose in world frame, TUM format: timestamp tx ty tz qx qy qz qw
-    V3D p_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-    auto q_lid = state_point.rot * state_point.offset_R_L_I;
+    V3D p_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+    const Eigen::Quaterniond q_lid(state_point.rot * Lidar_R_wrt_IMU);
     scan_frame_pose_file << lidar_end_time << " "
               << p_lid.x() << " " << p_lid.y() << " " << p_lid.z() << " "
               << q_lid.coeffs()[0] << " " << q_lid.coeffs()[1] << " "
@@ -472,13 +473,13 @@ void SigHandle(int sig)
 static inline V3D transformBodyPointToGlobal(const V3D &p_body,
                                              const Eigen::Matrix3d &R_world_body,
                                              const Eigen::Vector3d &t_world_body,
-                                             const state_ikfom &state);
+                                             const SimpleEKF::State &state);
 
-void pointBodyToWorld_ikfom(PointType const * const pi, PointType * const po, state_ikfom &s)
+void pointBodyToWorldState(PointType const * const pi, PointType * const po, SimpleEKF::State &s)
 {
     const V3D p_body(pi->x, pi->y, pi->z);
     const V3D p_global = transformBodyPointToGlobal(
-        p_body, s.rot.toRotationMatrix(), s.pos, s);
+        p_body, s.rot, s.pos, s);
 
     po->x = p_global(0);
     po->y = p_global(1);
@@ -489,16 +490,16 @@ void pointBodyToWorld_ikfom(PointType const * const pi, PointType * const po, st
 static inline V3D transformBodyPointToGlobal(const V3D &p_body,
                                              const Eigen::Matrix3d &R_world_body,
                                              const Eigen::Vector3d &t_world_body,
-                                             const state_ikfom &state)
+                                             const SimpleEKF::State &state)
 {
-    return R_world_body * (state.offset_R_L_I * p_body + state.offset_T_L_I) + t_world_body;
+    return R_world_body * (Lidar_R_wrt_IMU * p_body + Lidar_T_wrt_IMU) + t_world_body;
 }
 
 void pointBodyToWorld(PointType const * const pi, PointType * const po)
 {
     const V3D p_body(pi->x, pi->y, pi->z);
     const V3D p_global = transformBodyPointToGlobal(
-        p_body, state_point.rot.toRotationMatrix(), state_point.pos, state_point);
+        p_body, state_point.rot, state_point.pos, state_point);
     po->x = p_global(0);
     po->y = p_global(1);
     po->z = p_global(2);
@@ -510,7 +511,7 @@ void pointBodyToMap(PointType const * const pi, PointType * const po)
     const V3D p_body(pi->x, pi->y, pi->z);
     Eigen::Matrix3d R_map_body;
     Eigen::Vector3d t_map_body;
-    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
+    composeMapPose(state_point.rot, state_point.pos, R_map_body, t_map_body);
     const V3D p_global = transformBodyPointToGlobal(p_body, R_map_body, t_map_body, state_point);
     po->x = p_global(0);
     po->y = p_global(1);
@@ -523,7 +524,7 @@ void pointBodyToWorld(const Matrix<T, 3, 1> &pi, Matrix<T, 3, 1> &po)
 {
     const V3D p_body(pi[0], pi[1], pi[2]);
     const V3D p_global = transformBodyPointToGlobal(
-        p_body, state_point.rot.toRotationMatrix(), state_point.pos, state_point);
+        p_body, state_point.rot, state_point.pos, state_point);
 
     po[0] = p_global(0);
     po[1] = p_global(1);
@@ -536,7 +537,7 @@ void pointBodyToMap(const Matrix<T, 3, 1> &pi, Matrix<T, 3, 1> &po)
     const V3D p_body(pi[0], pi[1], pi[2]);
     Eigen::Matrix3d R_map_body;
     Eigen::Vector3d t_map_body;
-    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
+    composeMapPose(state_point.rot, state_point.pos, R_map_body, t_map_body);
     const V3D p_global = transformBodyPointToGlobal(p_body, R_map_body, t_map_body, state_point);
 
     po[0] = p_global(0);
@@ -548,7 +549,7 @@ void RGBpointBodyToWorld(PointType const * const pi, PointType * const po)
 {
     const V3D p_body(pi->x, pi->y, pi->z);
     const V3D p_global = transformBodyPointToGlobal(
-        p_body, state_point.rot.toRotationMatrix(), state_point.pos, state_point);
+        p_body, state_point.rot, state_point.pos, state_point);
     po->x = p_global(0);
     po->y = p_global(1);
     po->z = p_global(2);
@@ -560,7 +561,7 @@ void RGBpointBodyToMap(PointType const * const pi, PointType * const po)
     const V3D p_body(pi->x, pi->y, pi->z);
     Eigen::Matrix3d R_map_body;
     Eigen::Vector3d t_map_body;
-    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
+    composeMapPose(state_point.rot, state_point.pos, R_map_body, t_map_body);
     const V3D p_global = transformBodyPointToGlobal(p_body, R_map_body, t_map_body, state_point);
     po->x = p_global(0);
     po->y = p_global(1);
@@ -571,7 +572,7 @@ void RGBpointBodyToMap(PointType const * const pi, PointType * const po)
 void RGBpointBodyLidarToIMU(PointType const * const pi, PointType * const po)
 {
     V3D p_body_lidar(pi->x, pi->y, pi->z);
-    V3D p_body_imu(state_point.offset_R_L_I*p_body_lidar + state_point.offset_T_L_I);
+    V3D p_body_imu(Lidar_R_wrt_IMU * p_body_lidar + Lidar_T_wrt_IMU);
 
     po->x = p_body_imu(0);
     po->y = p_body_imu(1);
@@ -929,8 +930,8 @@ void map_incremental()
 
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
 
-void getCurrPose(const state_ikfom& curr_state) {
-    Eigen::Vector3d eulerAngle = curr_state.rot.matrix().eulerAngles(2,1,0); 
+void getCurrPose(const SimpleEKF::State& curr_state) {
+    Eigen::Vector3d eulerAngle = curr_state.rot.eulerAngles(2,1,0);
     
     transformTobeMapped[0] = eulerAngle(2);             
     transformTobeMapped[1] = eulerAngle(1);          
@@ -938,11 +939,6 @@ void getCurrPose(const state_ikfom& curr_state) {
     transformTobeMapped[3] = curr_state.pos(0);
     transformTobeMapped[4] = curr_state.pos(1);
     transformTobeMapped[5] = curr_state.pos(2);
-}
-
-void getCurrOffset(const state_ikfom& curr_state) {
-    translationLidarToIMU = curr_state.offset_T_L_I;
-    rotationLidarToIMU = curr_state.offset_R_L_I.toRotationMatrix();
 }
 
 void fillTransformMsg(TransformStampedMsg& tf_msg, const Eigen::Matrix3d& R, const Eigen::Vector3d& t)
@@ -961,15 +957,18 @@ void fillTransformMsg(TransformStampedMsg& tf_msg, const Eigen::Matrix3d& R, con
 template<typename CovT>
 void fillOdometryCovariance(OdomMsg& odom_msg, const CovT& P)
 {
-    for (int i = 0; i < 6; i ++)
+    static constexpr int idx[6] = {
+        3, 4, 5,
+        0, 1, 2
+    };
+
+    for (int i = 0; i < 6; ++i)
     {
-        const int k = i < 3 ? i + 3 : i - 3;
-        odom_msg.pose.covariance[i*6 + 0] = P(k, 3);
-        odom_msg.pose.covariance[i*6 + 1] = P(k, 4);
-        odom_msg.pose.covariance[i*6 + 2] = P(k, 5);
-        odom_msg.pose.covariance[i*6 + 3] = P(k, 0);
-        odom_msg.pose.covariance[i*6 + 4] = P(k, 1);
-        odom_msg.pose.covariance[i*6 + 5] = P(k, 2);
+        for (int j = 0; j < 6; ++j)
+        {
+            odom_msg.pose.covariance[i * 6 + j] =
+                P(idx[i], idx[j]);
+        }
     }
 }
 
@@ -1029,7 +1028,7 @@ bool initGnssMap(double lidar_stamp_sec)
 
     Eigen::Matrix3d R_map_body;
     Eigen::Vector3d t_map_body;
-    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_body, t_map_body);
+    composeMapPose(state_point.rot, state_point.pos, R_map_body, t_map_body);
 
     const double map_yaw = std::atan2(R_map_body(1, 0), R_map_body(0, 0));
     const double dyaw = normalizeYaw(heading.yaw - map_yaw);
@@ -1087,8 +1086,8 @@ bool refinePriorPointToPlane(Eigen::Matrix3d &R_map_odom_,
         for (const PointType &point_body : feats_down_body->points)
         {
             const Eigen::Vector3d p_lidar(point_body.x, point_body.y, point_body.z);
-            const Eigen::Vector3d p_base = state_point.offset_R_L_I * p_lidar +
-                                           state_point.offset_T_L_I;
+            const Eigen::Vector3d p_base = Lidar_R_wrt_IMU * p_lidar +
+                                           Lidar_T_wrt_IMU;
             const Eigen::Vector3d p_odom = state_point.rot * p_base + state_point.pos;
             const Eigen::Vector3d Rp = R_map_odom_ * p_odom;
             const Eigen::Vector3d p_map = Rp + t_map_odom_;
@@ -1144,12 +1143,12 @@ bool priorInitAlign()
     if (!coarsePriorIcpAlign(R_map_lidar, t_map_lidar, fitness_score))
         return false;
 
-    const Eigen::Matrix3d R_base_lidar = state_point.offset_R_L_I.toRotationMatrix();
-    const Eigen::Vector3d t_base_lidar = state_point.offset_T_L_I;
+    const Eigen::Matrix3d R_base_lidar = Lidar_R_wrt_IMU;
+    const Eigen::Vector3d t_base_lidar = Lidar_T_wrt_IMU;
     const Eigen::Matrix3d R_map_base = R_map_lidar * R_base_lidar.transpose();
     const Eigen::Vector3d t_map_base = t_map_lidar - R_map_base * t_base_lidar;
 
-    const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
+    const Eigen::Matrix3d R_odom_base = state_point.rot;
     const Eigen::Vector3d t_odom_base = state_point.pos;
     Eigen::Matrix3d R_map_odom_refined = R_map_base * R_odom_base.transpose();
     Eigen::Vector3d t_map_odom_refined = t_map_base - R_map_odom_refined * t_odom_base;
@@ -1358,7 +1357,7 @@ void set_posestamp(T & out)
 {
     Eigen::Matrix3d R_map_base;
     Eigen::Vector3d t_map_base;
-    composeMapPose(state_point.rot.toRotationMatrix(), state_point.pos, R_map_base, t_map_base);
+    composeMapPose(state_point.rot, state_point.pos, R_map_base, t_map_base);
     const Eigen::Quaterniond q_map_base(R_map_base);
 
     out.pose.position.x = t_map_base(0);
@@ -1375,7 +1374,7 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
 {
     const auto stamp = get_ros_time(lidar_end_time);
 
-    const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
+    const Eigen::Matrix3d R_odom_base = state_point.rot;
     const Eigen::Vector3d t_odom_base = state_point.pos;
     odomAftMapped.header.stamp = stamp;
     odomAftMapped.header.frame_id = odom_frame;
@@ -1392,7 +1391,7 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
         odomAftMapped.pose.pose.orientation.w = q.w();
     }
 
-    const auto& P = kf.get_P();
+    const auto& P = kf.covariance();
     fillOdometryCovariance(odomAftMapped, P);
 
     TransformStampedMsg tf_msg;
@@ -1431,7 +1430,10 @@ void publish_path(const PathPublisher pubPath)
     }
 }
 
-void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_data)
+bool buildLidarMeasurement(const SimpleEKF::State &s,
+                           bool rematch,
+                           Eigen::MatrixXd &H,
+                           Eigen::VectorXd &residual)
 {
     double match_start = omp_get_wtime();
     laserCloudOri->clear(); 
@@ -1440,8 +1442,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
     if (feats_down_size < 1)
     {
-        ekfom_data.valid = false;
-        return;
+        return false;
     }
 
     const bool use_prior = use_prior_map && prior_init_done;
@@ -1469,13 +1470,13 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
 
         /* transform to world frame */
         V3D p_body(point_body.x, point_body.y, point_body.z);
-        V3D p_global(s.rot * (s.offset_R_L_I*p_body + s.offset_T_L_I) + s.pos);
+        V3D p_global(s.rot * (Lidar_R_wrt_IMU * p_body + Lidar_T_wrt_IMU) + s.pos);
         point_world.x = p_global(0);
         point_world.y = p_global(1);
         point_world.z = p_global(2);
         point_world.intensity = point_body.intensity;
 
-        if (ekfom_data.converge)
+        if (rematch)
         {
             if (use_online_map &&
                 build_point_observation(&ikdtree, nullptr, point_body, point_world,
@@ -1518,7 +1519,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             point_prior.z = p_prior.z();
             point_prior.intensity = point_world.intensity;
 
-            if (ekfom_data.converge)
+            if (rematch)
             {
                 if (build_point_observation(&prior_ikdtree, nullptr, point_body,
                                             point_prior, prior_scale, true,
@@ -1580,11 +1581,7 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     }
 
     effct_feat_num = matches.size();
-    if (effct_feat_num < 1)
-    {
-        ekfom_data.valid = false;
-        return;
-    }
+    if (effct_feat_num < 1) return false;
 
     laserCloudOri->points.resize(effct_feat_num);
     corr_normvect->points.resize(effct_feat_num);
@@ -1605,17 +1602,15 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     match_time  += omp_get_wtime() - match_start;
     double solve_start_  = omp_get_wtime();
     
-    /*** Computation of Measuremnt Jacobian matrix H and measurents vector ***/
-    ekfom_data.h_x = MatrixXd::Zero(effct_feat_num, 12); //23
-    ekfom_data.h.resize(effct_feat_num);
+    /*** Computation of measurement Jacobian and residual vector. ***/
+    H = MatrixXd::Zero(effct_feat_num, 6);
+    residual.resize(effct_feat_num);
 
     for (int i = 0; i < effct_feat_num; i++)
     {
         const PointType &laser_p  = laserCloudOri->points[i];
         V3D point_this_be(laser_p.x, laser_p.y, laser_p.z);
-        M3D point_be_crossmat;
-        point_be_crossmat << SKEW_SYM_MATRX(point_this_be);
-        V3D point_this = s.offset_R_L_I * point_this_be + s.offset_T_L_I;
+        V3D point_this = Lidar_R_wrt_IMU * point_this_be + Lidar_T_wrt_IMU;
         M3D point_crossmat;
         point_crossmat<<SKEW_SYM_MATRX(point_this);
 
@@ -1624,25 +1619,17 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         V3D norm_vec(norm_p.x, norm_p.y, norm_p.z);
 
         /*** calculate the Measuremnt Jacobian matrix H ***/
-        V3D C(s.rot.conjugate() *norm_vec);
+        V3D C(s.rot.transpose() * norm_vec);
         V3D A(point_crossmat * C);
         const double row_scale = matches[i].row_scale;
-        if (extrinsic_est_en)
-        {
-            V3D B(point_be_crossmat * s.offset_R_L_I.conjugate() * C); //s.rot.conjugate()*norm_vec);
-            ekfom_data.h_x.block<1, 12>(i,0) << row_scale * norm_p.x, row_scale * norm_p.y, row_scale * norm_p.z,
-                                                row_scale * VEC_FROM_ARRAY(A), row_scale * VEC_FROM_ARRAY(B), row_scale * VEC_FROM_ARRAY(C);
-        }
-        else
-        {
-            ekfom_data.h_x.block<1, 12>(i,0) << row_scale * norm_p.x, row_scale * norm_p.y, row_scale * norm_p.z,
-                                                row_scale * VEC_FROM_ARRAY(A), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
-        }
+        H.block<1, 3>(i, 0) = row_scale * A.transpose();
+        H.block<1, 3>(i, 3) = row_scale * norm_vec.transpose();
 
         /*** Measuremnt: distance to the closest surface/corner ***/
-        ekfom_data.h(i) = -row_scale * norm_p.intensity;
+        residual(i) = -row_scale * norm_p.intensity;
     }
     solve_time += omp_get_wtime() - solve_start_;
+    return true;
 }
 
 int main(int argc, char** argv)
@@ -1704,7 +1691,6 @@ int main(int argc, char** argv)
     rosparam_get("result_save/imu_state_save_en", imu_state_save_en, false);
     rosparam_get("result_save/scan_frame_save_en", scan_frame_save_en, false);
     rosparam_get("result_save/ikdtree_output_save_en", ikdtree_output_save_en, false);
-    rosparam_get("mapping/extrinsic_est_en", extrinsic_est_en, true);
     rosparam_get("result_save/feat_accum_save_en", feat_accum_save_en, false);
     rosparam_get("result_save/interval", res_save_interval, -1);
     rosparam_get("mapping/extrinsic_T", extrinT, std::vector<double>());
@@ -1765,12 +1751,10 @@ int main(int argc, char** argv)
                                      zupt_inflate_pos, zupt_inflate_rot, zupt_inflate_start);
     p_imu->lidar_type = lidar_type;
 
+    kf.setMaxIterations(NUM_MAX_ITERATIONS);
+
     p_gnss->lever =
         Lidar_T_wrt_IMU + Lidar_R_wrt_IMU * gnss_extrinsic_T;
-
-    double epsi[23] = {0.001};
-    fill(epsi, epsi+23, 0.001);
-    kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
     if (use_prior_map)
     {
@@ -1879,7 +1863,7 @@ int main(int argc, char** argv)
             const Eigen::Vector3d reloc_pos(reloc_pose._x, reloc_pose._y, reloc_pose._z);
 
             const Eigen::Matrix3d R_map_base = reloc_rot.toRotationMatrix();
-            const Eigen::Matrix3d R_odom_base = state_point.rot.toRotationMatrix();
+            const Eigen::Matrix3d R_odom_base = state_point.rot;
             const Eigen::Vector3d t_odom_base = state_point.pos;
             updateMapOdom(R_map_base, reloc_pos, R_odom_base, t_odom_base);
 
@@ -1900,8 +1884,8 @@ int main(int argc, char** argv)
             solve_time = 0;
 
             p_imu->Process(Measures, kf, feats_undistort);
-            state_point = kf.get_x();
-            pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I; // LiDAR position in the world coordinate frame
+            state_point = kf.state();
+            pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU; // LiDAR position in the world coordinate frame
 
             if (feats_undistort->empty() || (feats_undistort == NULL))
             {
@@ -1980,31 +1964,29 @@ int main(int argc, char** argv)
             }
             else
             {
-                kf.update_iterated_dyn_share_modified(adaptive_lidar_cov, solve_H_time);
-                state_point = kf.get_x();
-                euler_cur = SO3ToEuler(state_point.rot);
-                pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
-                geoQuat.x = state_point.rot.coeffs()[0];
-                geoQuat.y = state_point.rot.coeffs()[1];
-                geoQuat.z = state_point.rot.coeffs()[2];
-                geoQuat.w = state_point.rot.coeffs()[3];
+                kf.updateLidar(buildLidarMeasurement, adaptive_lidar_cov);
+                state_point = kf.state();
+                euler_cur = state_point.rot.eulerAngles(0, 1, 2);
+                pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+                const Eigen::Quaterniond q_state(state_point.rot);
+                geoQuat.x = q_state.x();
+                geoQuat.y = q_state.y();
+                geoQuat.z = q_state.z();
+                geoQuat.w = q_state.w();
             }
 
             bool keyframe = false;
             if (sam_enable)
             {
                 getCurrPose(state_point);
-                getCurrOffset(state_point);
                 keyframe = isKeyFrame();
             }
 
             if (sam_enable) {
                 if (keyframe)
                 {
-                    const auto &P = kf.get_P();
-                    Eigen::Matrix<double, 6, 1> odomPoseVar;
-                    odomPoseVar << P(3, 3), P(4, 4), P(5, 5),
-                                   P(0, 0), P(1, 1), P(2, 2);
+                    const Eigen::Matrix<double, 6, 1> odomPoseVar =
+                        kf.covariance().diagonal().head<6>();
                     saveKeyFramesAndFactor(feats_undistort, odomPoseVar);
                     correctPoses();
                     publishSamMsg();

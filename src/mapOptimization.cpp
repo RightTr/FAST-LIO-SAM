@@ -676,10 +676,7 @@ void addSceneFactor()
 
                 Eigen::Vector4d body_plane = factor.obs;
                 const double body_norm = body_plane.head<3>().norm();
-                if (!body_plane.allFinite() || body_norm <= 1e-6)
-                {
-                    continue;
-                }
+                if (body_norm <= 1e-6) continue;
                 body_plane /= body_norm;
 
                 const gtsam::Pose3 pose_map =

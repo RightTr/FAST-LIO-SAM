@@ -19,7 +19,7 @@
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl_conversions/pcl_conversions.h>
 
-#include "use-ikfom.hpp"
+#include "simple_EKF/simple_ekf.hpp"
 #include "preprocess.h"
 #include "posebuffer.h"
 #include "map_optimization.h"
@@ -56,8 +56,7 @@ class ImuProcess
   double compute_static_confidence(const MeasureGroup &meas);
   double get_static_confidence() const { return static_confidence_; }
 
-  Eigen::Matrix<double, 12, 12> Q;
-  void Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr pcl_un_);
+  void Process(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI::Ptr pcl_un_);
 
   void PBufferPop(Pose &pose);
 
@@ -74,9 +73,9 @@ class ImuProcess
 
  private:
   double gap_handler(double dt);
-  void IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N);
-  void UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_in_out);
-  void zupt_update(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state, double confidence);
+  void IMU_init(const MeasureGroup &meas, SimpleEKF &kf_state, int &N);
+  void UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI &pcl_in_out);
+  void zupt_update(SimpleEKF &kf_state, double confidence);
 
   bool   use_zupt = false;
   bool   grav_align_ = false;
@@ -116,7 +115,6 @@ ImuProcess::ImuProcess()
     : b_first_frame_(true), imu_need_init_(true), start_timestamp_(-1)
 {
   init_iter_num = 1;
-  Q = process_noise_cov();
   cov_acc       = V3D(0.1, 0.1, 0.1);
   cov_gyr       = V3D(0.1, 0.1, 0.1);
   cov_bias_gyr  = V3D(0.0001, 0.0001, 0.0001);
@@ -272,7 +270,7 @@ void ImuProcess::PBufferPop(Pose &pose)
   pose = pbuffer.Pop();
 }
 
-void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, int &N)
+void ImuProcess::IMU_init(const MeasureGroup &meas, SimpleEKF &kf_state, int &N)
 {
   /** 1. initializing the gravity, gyro bias, acc and gyro covariance
    ** 2. normalize the acceleration measurenments to unit gravity **/
@@ -308,8 +306,9 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
 
     N ++;
   }
-  state_ikfom init_state = kf_state.get_x();
+  SimpleEKF::State init_state = kf_state.state();
   const double mean_acc_norm = mean_acc.norm();
+  V3D init_gravity;
   if (grav_align_ )
   {
     // Use the averaged gravity direction to initialize roll/pitch; yaw remains unconstrained.
@@ -317,34 +316,27 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 
     const Eigen::Quaterniond q_init = Eigen::Quaterniond::FromTwoVectors(gravity_meas,
                                                                          Eigen::Vector3d::UnitZ());
     init_state.rot = q_init;
-    init_state.grav = S2(Eigen::Vector3d(0.0, 0.0, -G_m_s2));
+    init_gravity = Eigen::Vector3d(0.0, 0.0, -G_m_s2);
   }
-  else init_state.grav = S2(- mean_acc / mean_acc.norm() * G_m_s2);
+  else init_gravity = -mean_acc / mean_acc.norm() * G_m_s2;
 
-  const Eigen::Vector3d init_gravity(init_state.grav[0], init_state.grav[1], init_state.grav[2]);
   setGravityUp((-init_gravity).normalized());
   
   //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   init_state.bg  = mean_gyr;
-  init_state.offset_T_L_I = Lidar_T_wrt_IMU;
-  init_state.offset_R_L_I = Lidar_R_wrt_IMU;
-  kf_state.change_x(init_state);
-
-  esekfom::esekf<state_ikfom, 12, input_ikfom>::cov init_P = kf_state.get_P();
-  init_P.setIdentity();
-  init_P(6,6) = init_P(7,7) = init_P(8,8) = 0.00001;
-  init_P(9,9) = init_P(10,10) = init_P(11,11) = 0.00001;
-  init_P(15,15) = init_P(16,16) = init_P(17,17) = 0.0001;
-  init_P(18,18) = init_P(19,19) = init_P(20,20) = 0.001;
-  init_P(21,21) = init_P(22,22) = 0.00001; 
-  kf_state.change_P(init_P);
+  SimpleEKF::Covariance init_P = SimpleEKF::Covariance::Identity();
+  init_P.block<3, 3>(9, 9) =
+      Eigen::Matrix3d::Identity() * 1e-5;
+  init_P.block<3, 3>(12, 12) =
+      Eigen::Matrix3d::Identity() * 1e-5;
+  kf_state.initialize(init_state, init_P, init_gravity);
   last_imu_ = meas.imu.back();
 
 }
 
-void ImuProcess::zupt_update(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_state, double confidence)
+void ImuProcess::zupt_update(SimpleEKF &kf_state, double confidence)
 {
-  const state_ikfom& s = kf_state.get_x();
+  const SimpleEKF::State &s = kf_state.state();
 
   // Residual adaptation: EMA of velocity norm attenuates confidence when
   // the system moves slowly but continuously (low IMU variance, nonzero vel)
@@ -357,41 +349,18 @@ void ImuProcess::zupt_update(esekfom::esekf<state_ikfom, 12, input_ikfom>& kf_st
   // Dynamic ZUPT weight: R = zupt_r_min / eff_conf, capped at zupt_r_max
   const double r_scalar    = std::min(zupt_r_min_ / std::max(eff_conf, 1e-4), zupt_r_max_);
 
-  esekfom::dyn_share_datastruct<double> ekfom_data;
-  ekfom_data.h_x = MatrixXd::Zero(3, state_ikfom::DOF);
-  ekfom_data.h.resize(3);
-  ekfom_data.h_x.block<3, 3>(0, 12) = Eigen::Matrix3d::Identity();
-  ekfom_data.h.block<3, 1>(0, 0)    = -s.vel;
-  ekfom_data.R = MatrixXd::Identity(3, 3) * r_scalar;
-
-  auto P = kf_state.get_P();
-
-  // Covariance inflation: prevent lock-in after long static periods
-  static_step_count_++;
+  ++static_step_count_;
   if (static_step_count_ > static_inflation_start_)
   {
-    P.block<3, 3>(0, 0) += Eigen::Matrix3d::Identity() * cov_inflate_pos_;
-    P.block<3, 3>(3, 3) += Eigen::Matrix3d::Identity() * cov_inflate_rot_;
-    kf_state.change_P(P);
+    auto &P = kf_state.covariance();
+    P.block<3, 3>(3, 3).diagonal().array() += cov_inflate_pos_;
+    P.block<3, 3>(0, 0).diagonal().array() += cov_inflate_rot_;
   }
 
-  // EKF update with pseudo-measurement: vel = 0
-  const MatrixXd K = P * ekfom_data.h_x.transpose() *
-                     (ekfom_data.h_x * P * ekfom_data.h_x.transpose() + ekfom_data.R).inverse();
-  const Matrix<double, state_ikfom::DOF, state_ikfom::DOF> I =
-    Matrix<double, state_ikfom::DOF, state_ikfom::DOF>::Identity();
-
-  state_ikfom x = kf_state.get_x();
-  x.boxplus(Matrix<double, state_ikfom::DOF, 1>(K * ekfom_data.h));
-  kf_state.change_x(x);
-
-  const Matrix<double, state_ikfom::DOF, state_ikfom::DOF> KH = K * ekfom_data.h_x;
-  Matrix<double, state_ikfom::DOF, state_ikfom::DOF> P_new =
-    (I - KH) * P * (I - KH).transpose() + K * ekfom_data.R * K.transpose();
-  kf_state.change_P(P_new);
+  kf_state.updateZeroVelocity(r_scalar);
 }
 
-void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI &pcl_out)
+void ImuProcess::UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI &pcl_out)
 {
   /*** Compute static confidence for this LiDAR frame (caches result in static_confidence_) ***/
   const double frame_confidence = use_zupt ? compute_static_confidence(meas) : 0.0;
@@ -419,9 +388,9 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   //          <<meas.imu.size()<<" imu msgs from "<<imu_beg_time<<" to "<<imu_end_time<<endl;
 
   /*** Initialize IMU state ***/
-  state_ikfom imu_state = kf_state.get_x();
+  SimpleEKF::State imu_state = kf_state.state();
   IMUpose.clear();
-  IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot.toRotationMatrix()));
+  IMUpose.push_back(set_pose6d(0.0, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot));
 
   /*** forward propagation at each imu point ***/
   V3D angvel_avr, acc_avr, acc_imu, vel_imu, pos_imu;
@@ -429,7 +398,6 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
 
   double dt = 0;
 
-  input_ikfom in;
   for (auto it_imu = v_imu.begin(); it_imu < (v_imu.end() - 1); it_imu++)
   {
     auto &&head = *(it_imu);
@@ -466,21 +434,20 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
       continue;
     }
 
-    in.acc = acc_avr;
-    in.gyro = angvel_avr;
-    Q.block<3, 3>(0, 0).diagonal() = cov_gyr;
-    Q.block<3, 3>(3, 3).diagonal() = cov_acc;
-    Q.block<3, 3>(6, 6).diagonal() = cov_bias_gyr;
-    Q.block<3, 3>(9, 9).diagonal() = cov_bias_acc;
-    kf_state.predict(dt, Q, in);
+    SimpleEKF::Noise noise;
+    noise.gyr = cov_gyr;
+    noise.acc = cov_acc;
+    noise.bg = cov_bias_gyr;
+    noise.ba = cov_bias_acc;
+    kf_state.predict(dt, acc_avr, angvel_avr, noise);
     if (is_frame_static) zupt_update(kf_state, frame_confidence);
 
     /* save the poses at each IMU measurements */
-    imu_state = kf_state.get_x();
-    const V3D grav_vec(imu_state.grav[0], imu_state.grav[1], imu_state.grav[2]);
+    imu_state = kf_state.state();
+    const V3D grav_vec = kf_state.gravity();
+    const Eigen::Quaterniond imu_q(imu_state.rot);
     Pose pose(imu_state.pos.x(), imu_state.pos.y(), imu_state.pos.z(),
-              imu_state.rot.x(), imu_state.rot.y(), imu_state.rot.z(), imu_state.rot.w(),
-              tail_time);
+              imu_q.x(), imu_q.y(), imu_q.z(), imu_q.w(), tail_time);
     pose._vx = imu_state.vel.x();
     pose._vy = imu_state.vel.y();
     pose._vz = imu_state.vel.z();
@@ -493,13 +460,14 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     pose._gravx = grav_vec[0];
     pose._gravy = grav_vec[1];
     pose._gravz = grav_vec[2];
-    pose._exqx = imu_state.offset_R_L_I.x();
-    pose._exqy = imu_state.offset_R_L_I.y();
-    pose._exqz = imu_state.offset_R_L_I.z();
-    pose._exqw = imu_state.offset_R_L_I.w();
-    pose._extx = imu_state.offset_T_L_I.x();
-    pose._exty = imu_state.offset_T_L_I.y();
-    pose._extz = imu_state.offset_T_L_I.z();
+    const Eigen::Quaterniond extrinsic_q(Lidar_R_wrt_IMU);
+    pose._exqx = extrinsic_q.x();
+    pose._exqy = extrinsic_q.y();
+    pose._exqz = extrinsic_q.z();
+    pose._exqw = extrinsic_q.w();
+    pose._extx = Lidar_T_wrt_IMU.x();
+    pose._exty = Lidar_T_wrt_IMU.y();
+    pose._extz = Lidar_T_wrt_IMU.z();
     pbuffer.Push(pose);
     angvel_last = angvel_avr - imu_state.bg;
     acc_s_last  = imu_state.rot * (acc_avr - imu_state.ba);
@@ -508,7 +476,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
       acc_s_last[i] += grav_vec[i];
     }
     const double offs_t = tail_time - last_lidar_end_time_;
-    IMUpose.push_back(set_pose6d(offs_t, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot.toRotationMatrix()));
+    IMUpose.push_back(set_pose6d(offs_t, acc_s_last, angvel_last, imu_state.vel, imu_state.pos, imu_state.rot));
   }
 
   /*** calculated the pos and attitude prediction at the frame-end ***/
@@ -521,11 +489,16 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
     last_lidar_end_time_ = pcl_end_time;
     return;
   }
-  kf_state.predict(dt, Q, in);
+  SimpleEKF::Noise noise;
+  noise.gyr = cov_gyr;
+  noise.acc = cov_acc;
+  noise.bg = cov_bias_gyr;
+  noise.ba = cov_bias_acc;
+  kf_state.predict(dt, acc_avr, angvel_avr, noise);
   if (is_frame_static) zupt_update(kf_state, frame_confidence);
 
-  imu_state = kf_state.get_x();
-  const V3D grav_vec(imu_state.grav[0], imu_state.grav[1], imu_state.grav[2]);
+  imu_state = kf_state.state();
+  const V3D grav_vec = kf_state.gravity();
   last_imu_ = meas.imu.back();
   last_lidar_end_time_ = pcl_end_time;
 
@@ -557,7 +530,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
 
               V3D P_i(it_pcl->x, it_pcl->y, it_pcl->z);
               V3D T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt - imu_state.pos);
-              V3D P_compensate = imu_state.offset_R_L_I.conjugate() * (imu_state.rot.conjugate() * (R_i * (imu_state.offset_R_L_I * P_i + imu_state.offset_T_L_I) + T_ei) - imu_state.offset_T_L_I);// not accurate!
+              V3D P_compensate = Lidar_R_wrt_IMU.transpose() * (imu_state.rot.transpose() * (R_i * (Lidar_R_wrt_IMU * P_i + Lidar_T_wrt_IMU) + T_ei) - Lidar_T_wrt_IMU);// not accurate!
 
               // save Undistorted points and their rotation
               it_pcl->x = P_compensate(0);
@@ -570,7 +543,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, esekfom::esekf<state_ikf
   }
 }
 
-void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 12, input_ikfom> &kf_state, PointCloudXYZI::Ptr cur_pcl_un_)
+void ImuProcess::Process(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI::Ptr cur_pcl_un_)
 {
   double t1,t2,t3;
   t1 = omp_get_wtime();
@@ -587,7 +560,7 @@ void ImuProcess::Process(const MeasureGroup &meas,  esekfom::esekf<state_ikfom, 
     
     last_imu_   = meas.imu.back();
 
-    state_ikfom imu_state = kf_state.get_x();
+    SimpleEKF::State imu_state = kf_state.state();
     if (init_iter_num > MAX_INI_COUNT)
     {
       cov_acc *= pow(G_m_s2 / mean_acc.norm(), 2);

@@ -42,7 +42,6 @@ mapping:
     timeRepair: true
     fov_degree:    360.0
     det_range:     100.0
-    extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic
     extrinsic_R: [0.999996, -0.00129,  -0.00230,
                 0.00129,   0.999999, -0.00130,
                 0.00230,   0.00130,   0.999996]

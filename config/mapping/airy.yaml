@@ -45,7 +45,6 @@ mapping:
     b_gyr_cov: 0.0001
     fov_degree:    360.0
     det_range:     100.0
-    extrinsic_est_en:  false      # true: enable the online estimation of IMU-LiDAR extrinsic
     extrinsic_T: [ 0.00418, 0.00425, -0.00446 ] # LiDAR position in the IMU coordinate frame
     extrinsic_R: [ 0.000076, -0.999999,  0.001261, # LiDAR rotation in the IMU coordinate frame
                 -0.999999, -0.000076,  0.001208,
