@@ -1849,6 +1849,8 @@ int main(int argc, char** argv)
     Lidar_R_wrt_IMU<<MAT_FROM_ARRAY(extrinR);
     Lidar_T_wrt_IMU = standardize(Lidar_T_wrt_IMU);
     Lidar_R_wrt_IMU = standardize(Lidar_R_wrt_IMU);
+    translationLidarToIMU = Lidar_T_wrt_IMU;
+    rotationLidarToIMU = Lidar_R_wrt_IMU;
     p_imu->set_extrinsic(Lidar_T_wrt_IMU, Lidar_R_wrt_IMU);
     p_imu->set_grav_align(grav_align);
     p_imu->set_gyr_cov(V3D(gyr_cov, gyr_cov, gyr_cov));
@@ -2097,9 +2099,7 @@ int main(int argc, char** argv)
             if (sam_enable) {
                 if (keyframe)
                 {
-                    const Eigen::Matrix<double, 6, 1> odomPoseVar =
-                        kf.covariance().diagonal().head<6>();
-                    saveKeyFramesAndFactor(feats_undistort, odomPoseVar);
+                    saveKeyFramesAndFactor(feats_undistort);
                     correctPoses();
                     publishSamMsg();
                 }

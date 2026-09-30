@@ -32,10 +32,13 @@ extern float historyKeyframeSearchTimeDiff;
 extern int   historyKeyframeSearchNum;
 extern float historyKeyframeFitnessScore;
 extern float icpMaxCorrDistance;
-extern float loopWeight;
+extern double priorVar;
+extern double odomRotVar;
+extern double odomPosVar;
+extern double loopRotVar;
+extern double loopPosVar;
 extern int   loopCurNum;
 extern int   loopPreNum;
-extern double odomRollPitchScale;
 
 // global map visualization radius
 extern float globalMapVisualizationSearchRadius;
@@ -46,6 +49,10 @@ extern float mappingICPSize;
 extern float groundAssociationAngleDeg;
 extern float groundAssociationDistance;
 extern double floorHeight;
+extern double planeNormalVar;
+extern double planeDistVar;
+extern double floorPriorVar;
+extern double floorPlaneVar;
 
 extern int ikdtreeSearchNeighborNum;
 
@@ -75,7 +82,9 @@ extern Eigen::Vector3d gnss_extrinsic_T;
 extern Eigen::Matrix3d gnss_extrinsic_R;
 extern double heading_offset;
 extern bool useGnssYawFactor;
-extern double gnss_yaw_factor_sigma;
+extern double gnssPosXYVar;
+extern double gnssPosZVar;
+extern double gnssYawVar;
 extern bool useGnssElevation;
 extern std::atomic<bool> gnss_aligned;
 extern bool flip_en;

@@ -85,8 +85,8 @@ pcl::PointCloud<PointTypePose>::Ptr cloudKeyOdomPoses6D;
 double timeLaserInfoCur;
 
 float transformTobeMapped[6];
-Eigen::Vector3d translationLidarToIMU;
-Eigen::Matrix3d rotationLidarToIMU;
+Eigen::Vector3d translationLidarToIMU = Eigen::Vector3d::Zero();
+Eigen::Matrix3d rotationLidarToIMU = Eigen::Matrix3d::Identity();
 
 PathMsg globalPath;
 Plane plane;
@@ -238,13 +238,13 @@ void MapOptimizationInit()
     parameters.factorization = ISAM2Params::QR;
     isam = new ISAM2(parameters);
 
-    gtsam::Vector3 plane_sigmas;
-    plane_sigmas << (M_PI / 180.0) * 3.0, (M_PI / 180.0) * 3.0, 0.08;
-    planeNoise = gtsam::noiseModel::Diagonal::Sigmas(plane_sigmas);
+    gtsam::Vector3 plane_var;
+    plane_var << planeNormalVar, planeNormalVar, planeDistVar;
+    planeNoise = gtsam::noiseModel::Diagonal::Variances(plane_var);
     floorNormalPriorNoise = gtsam::noiseModel::Isotropic::Sigma(
-        2, (M_PI / 180.0) * 0.2);
+        2, std::sqrt(floorPriorVar));
     floorPlaneNoise = gtsam::noiseModel::Isotropic::Sigma(
-        2, (M_PI / 180.0) * 0.5);
+        2, std::sqrt(floorPlaneVar));
     setGravityUp(Eigen::Vector3d::UnitZ());
 
     init_ros_node();
@@ -498,11 +498,11 @@ void performLoopICP(
 
         float cur_x, cur_y, cur_z, cur_roll, cur_pitch, cur_yaw;
         pcl::getTranslationAndEulerAngles(T_cur_pre, cur_x, cur_y, cur_z, cur_roll, cur_pitch, cur_yaw);
-        gtsam::Vector Vector6(6);
-        const double noiseScore = std::max(
-            score * loopWeight, 1e-4);
-        Vector6 << noiseScore, noiseScore, noiseScore, noiseScore, noiseScore, noiseScore;
-        noiseModel::Diagonal::shared_ptr constraintNoise = noiseModel::Diagonal::Variances(Vector6);
+        gtsam::Vector6 loopVar;
+        loopVar << loopRotVar, loopRotVar, loopRotVar,
+                   loopPosVar, loopPosVar, loopPosVar;
+        noiseModel::Diagonal::shared_ptr constraintNoise =
+            noiseModel::Diagonal::Variances(loopVar);
 
         loopUsedKeys.insert(loopKeyCur);
         loopUsedKeys.insert(loopKeyPre);
@@ -546,15 +546,15 @@ void performLoopClosure(
         performLoopICP(loopKeyCur, loopKeys, floorRanges, poses6D, clouds);
 }
 
-void addOdomFactor(const Eigen::Matrix<double, 6, 1> &odomPoseVar)
+void addOdomFactor()
 {
     if (cloudKeyPoses3D->points.empty())
     {
+        gtsam::Vector6 priorVariance;
+        priorVariance << priorVar, priorVar, priorVar,
+                         priorVar, priorVar, priorVar;
         noiseModel::Diagonal::shared_ptr priorNoise = 
-            noiseModel::Diagonal::Variances(
-                (gtsam::Vector(6) <<
-                1e-4, 1e-4, 1e-4,
-                1e-4, 1e-4, 1e-4).finished());
+            noiseModel::Diagonal::Variances(priorVariance);
         const gtsam::Pose3 poseTo = [&]() {
             const gtsam::Pose3 poseOdom = trans2gtsamPose(transformTobeMapped);
             const Eigen::Matrix3d R_map_body = R_map_odom * poseOdom.rotation().matrix();
@@ -573,10 +573,9 @@ void addOdomFactor(const Eigen::Matrix<double, 6, 1> &odomPoseVar)
         const gtsam::Pose3 odomDelta = poseFromFront.between(poseToFront);
         const gtsam::Pose3 poseFromOpt = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
         const gtsam::Pose3 poseToOpt = poseFromOpt.compose(odomDelta);
-        gtsam::Vector odomVar(6);
-        odomVar << odomPoseVar(0) * odomRollPitchScale,
-                   odomPoseVar(1) * odomRollPitchScale,
-                   odomPoseVar(2), odomPoseVar(3), odomPoseVar(4), odomPoseVar(5);
+        gtsam::Vector6 odomVar;
+        odomVar << odomRotVar, odomRotVar, odomRotVar,
+                   odomPosVar, odomPosVar, odomPosVar;
         const auto odometryNoise = noiseModel::Diagonal::Variances(odomVar);
         gtSAMgraph.add(BetweenFactor<Pose3>(
             cloudKeyPoses3D->size()-1,
@@ -817,24 +816,20 @@ void performGnssMatching()
         const Eigen::Matrix3d R = poseRotation(pose);
         const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (pos.p - t_enu_map);
         Eigen::Vector3d gnss_pos = p_map_ant - R * p_gnss->lever;
-        Eigen::Matrix3d gnss_cov = pos.cov;
         if (!useGnssElevation)
         {
             gnss_pos.z() = pose.z;
-            gnss_cov(2, 2) = 100.0;
         }
 
         if (!has_fpos || (gnss_pos - last_fpos).norm() >= gpsFactorMinDis)
         {
-            gtsam::Vector3 sigma;
-            sigma << std::sqrt(gnss_cov(0, 0)),
-                     std::sqrt(gnss_cov(1, 1)),
-                     std::sqrt(gnss_cov(2, 2));
-            gtSAMgraph.add(
-                gtsam::GPSFactor(
-                    key,
+            gtsam::Vector3 gnssVar;
+            gnssVar << gnssPosXYVar,
+                       gnssPosXYVar,
+                       gnssPosZVar;
+            gtSAMgraph.add(gtsam::GPSFactor(key,
                     gtsam::Point3(gnss_pos.x(), gnss_pos.y(), gnss_pos.z()),
-                    gtsam::noiseModel::Diagonal::Sigmas(sigma)));
+                    gtsam::noiseModel::Diagonal::Variances(gnssVar)));
 
             last_fpos = gnss_pos;
             has_fpos = true;
@@ -866,10 +861,9 @@ void performGnssMatching()
         const double yaw_error = std::abs(normalizeYaw(yaw_map - pose.yaw));
         if (yaw_error <= 60.0 * M_PI / 180.0)
         {
-            const double yaw_sigma = std::max(gnss_yaw_factor_sigma, 1e-4);
-            const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(1, yaw_sigma);
-            gtSAMgraph.add(
-                boost::shared_ptr<GnssYawFactor>(
+            const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(
+                1, std::sqrt(gnssYawVar));
+            gtSAMgraph.add(boost::shared_ptr<GnssYawFactor>(
                     new GnssYawFactor(key, yaw_map, yawNoise)));
         }
     }
@@ -888,14 +882,13 @@ void updatePath(const PointTypePose& pose_in)
     globalPath.poses.push_back(pose_stamped);
 }
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
-                            const Eigen::Matrix<double, 6, 1> &odomPoseVar)
+void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort)
 {
     const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
     const gtsam::Key latestPoseKey = static_cast<gtsam::Key>(cloudKeyPoses3D->size());
 
     // odom factor
-    addOdomFactor(odomPoseVar);
+    addOdomFactor();
     addSceneFactor();
     // loop factor
     addLoopFactor();

@@ -25,11 +25,13 @@ gnss:
                   0.0, 0.0, 1.0]
     heading_offset_deg: 90.0
     useYawFactor: false
-    yawFactorSigma: 0.1 # rad, softened to avoid over-constraining pose graph
+    posXYVar: 0.25
+    posZVar: 100.0
+    yawVar: 0.01
     useGnssElevation: false
 
 preprocess:
-    lidar_type: 1                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
+    lidar_type: 8                # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR, 
     scan_line: 4
     blind: 0.5
 
@@ -61,6 +63,10 @@ s-graph:
     groundAssociationAngleDeg: 20.0
     groundAssociationDistance: 1.0
     floorHeight: 1.5
+    planeNormalVar: 0.0027
+    planeDistVar: 0.0064
+    floorPriorVar: 1.2e-5
+    floorPlaneVar: 7.6e-5
 
 lio_sam:
 
@@ -83,10 +89,13 @@ lio_sam:
     historyKeyframeSearchNum: 25                  # number of hostory key frames will be fused into a submap for loop closure
     historyKeyframeFitnessScore: 0.2              # icp threshold, the smaller the better alignment
     icpMaxCorrDistance: 10.0                       # meters, loop-closure ICP max correspondence distance
-    loopWeight: 0.02                               # loop factor variance scale, smaller is stronger
+    priorVar: 1.0e-4
+    odomRotVar: 1.0e-3
+    odomPosVar: 1.0e-3
+    loopRotVar: 0.1
+    loopPosVar: 0.1
     loopCurNum: 3                                  # max current keyframes processed per loop tick
     loopPreNum: 2                                  # max ICP attempts per current keyframe
-    odomRollPitchScale: 1.0                               # odom roll/pitch variance multiplier
     mappingICPSize: 0.1                            # meters, loop-closure ICP voxel size
 
     # Visualization

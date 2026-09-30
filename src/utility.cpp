@@ -24,10 +24,13 @@ float historyKeyframeSearchTimeDiff;
 int   historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
 float icpMaxCorrDistance;
-float loopWeight;
+double priorVar = 1e-4;
+double odomRotVar = 1e-3;
+double odomPosVar = 1e-3;
+double loopRotVar = 0.1;
+double loopPosVar = 0.1;
 int   loopCurNum;
 int   loopPreNum;
-double odomRollPitchScale = 1.0;
 
 // global map visualization radius
 float globalMapVisualizationSearchRadius;
@@ -38,6 +41,10 @@ float mappingICPSize;
 float groundAssociationAngleDeg;
 float groundAssociationDistance;
 double floorHeight;
+double planeNormalVar = 0.0027;
+double planeDistVar = 0.0064;
+double floorPriorVar = 1.2e-5;
+double floorPlaneVar = 7.6e-5;
 
 int ikdtreeSearchNeighborNum;
 
@@ -65,7 +72,9 @@ Eigen::Vector3d gnss_extrinsic_T = Eigen::Vector3d::Zero();
 Eigen::Matrix3d gnss_extrinsic_R = Eigen::Matrix3d::Identity();
 double heading_offset = 0.0;
 bool useGnssYawFactor = false;
-double gnss_yaw_factor_sigma = 0.10;
+double gnssPosXYVar = 0.25;
+double gnssPosZVar = 100.0;
+double gnssYawVar = 0.01;
 bool useGnssElevation = false;
 std::atomic<bool> gnss_aligned(false);
 bool flip_en = false;
@@ -124,10 +133,13 @@ void read_liosam_params() {
     rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
     rosparam_get("lio_sam/icpMaxCorrDistance", icpMaxCorrDistance, 2.0f);
-    rosparam_get("lio_sam/loopWeight", loopWeight, 0.2f);
+    rosparam_get("lio_sam/priorVar", priorVar, 1e-4);
+    rosparam_get("lio_sam/odomRotVar", odomRotVar, 1e-3);
+    rosparam_get("lio_sam/odomPosVar", odomPosVar, 1e-3);
+    rosparam_get("lio_sam/loopRotVar", loopRotVar, 0.1);
+    rosparam_get("lio_sam/loopPosVar", loopPosVar, 0.1);
     rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
     rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
-    rosparam_get("lio_sam/odomRollPitchScale", odomRollPitchScale, 100.0);
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);
@@ -148,6 +160,10 @@ void read_sgraph_params()
     rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
     rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
     rosparam_get("s-graph/floorHeight", floorHeight, 4.0);
+    rosparam_get("s-graph/planeNormalVar", planeNormalVar, 0.0027);
+    rosparam_get("s-graph/planeDistVar", planeDistVar, 0.0064);
+    rosparam_get("s-graph/floorPriorVar", floorPriorVar, 1.2e-5);
+    rosparam_get("s-graph/floorPlaneVar", floorPlaneVar, 7.6e-5);
 }
 
 void read_gnss_params() {
@@ -175,6 +191,8 @@ void read_gnss_params() {
     rosparam_get("gnss/heading_offset_deg", heading_offset_deg, 0.0);
     heading_offset = heading_offset_deg * M_PI / 180.0;
     rosparam_get("gnss/useYawFactor", useGnssYawFactor, false);
-    rosparam_get("gnss/yawFactorSigma", gnss_yaw_factor_sigma, 0.10);
+    rosparam_get("gnss/posXYVar", gnssPosXYVar, 0.25);
+    rosparam_get("gnss/posZVar", gnssPosZVar, 100.0);
+    rosparam_get("gnss/yawVar", gnssYawVar, 0.01);
     rosparam_get("gnss/useGnssElevation", useGnssElevation, false);
 }

@@ -70,8 +70,7 @@ extern std::atomic<bool> sceneDone;
 extern std::atomic<bool> loopDone;
 
 void saveKeyFramesAndFactor(
-    pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort,
-    const Eigen::Matrix<double, 6, 1> &odomPoseVar);
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
 void addLoopFactor();
 void poseGraphUpdate();
 void performGnssMatching();
