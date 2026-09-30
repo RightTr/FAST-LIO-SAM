@@ -61,6 +61,10 @@ double imu_timestamp_offset_sec = 0.0;
 double imu_dt = 0.005;
 bool   timeRepair = true;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
+bool geo_map_enable = false;
+bool geo_map_debug = false;
+double geo_support = 0.15;
+double geo_plane_dist = 0.05;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, lidar_end_time = 0, first_lidar_time = 0.0;
 int    effct_feat_num = 0, publish_count = 0;
@@ -162,6 +166,7 @@ PointCloudXYZI::Ptr featsFromPriorMap(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_body(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_world(new PointCloudXYZI());
+PointCloudXYZI::Ptr geo_map_dropped(new PointCloudXYZI());
 PointCloudXYZI::Ptr normvec(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr laserCloudOri(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr corr_normvect(new PointCloudXYZI(100000, 1));
@@ -875,6 +880,8 @@ bool sync_packages(MeasureGroup &meas)
 
 void map_incremental()
 {
+    geo_map_dropped->clear();
+
     if (!use_online_map)
         return;
 
@@ -883,49 +890,136 @@ void map_incremental()
     PointToAdd.reserve(feats_down_size);
     PointNoNeedDownsample.reserve(feats_down_size);
 
-    for (int i = 0; i < feats_down_size; i++)
+    for (int i = 0; i < feats_down_size; ++i)
     {
-        /* transform to world frame */
         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
-        /* decide if need add to map */
-        if (!Nearest_Points[i].empty() && flg_EKF_inited)
+    }
+
+    if (geo_map_enable)
+    {
+        for (int i = 0; i < feats_down_size; ++i)
         {
+            const PointType &point = feats_down_world->points[i];
+
+            if (coveredByPrior(point))
+                continue;
+
             const PointVector &points_near = Nearest_Points[i];
-            bool need_add = true;
-            PointType mid_point;
-            mid_point.x = floor(feats_down_world->points[i].x/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
-            mid_point.y = floor(feats_down_world->points[i].y/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
-            mid_point.z = floor(feats_down_world->points[i].z/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
-            float dist  = calc_dist(feats_down_world->points[i],mid_point);
-            if (fabs(points_near[0].x - mid_point.x) > 0.5 * filter_size_map_min && fabs(points_near[0].y - mid_point.y) > 0.5 * filter_size_map_min && fabs(points_near[0].z - mid_point.z) > 0.5 * filter_size_map_min){
-                if (!coveredByPrior(feats_down_world->points[i]))
-                    PointNoNeedDownsample.push_back(feats_down_world->points[i]);
+            bool keep = false;
+
+            if (!flg_EKF_inited || points_near.size() < NUM_MATCH_POINTS)
+            {
+                keep = true;
+            }
+            else if (std::sqrt(calc_dist(
+                         point,
+                         points_near[NUM_MATCH_POINTS - 1])) >
+                     geo_support)
+            {
+                keep = true;
+            }
+            else
+            {
+                VF(4) plane;
+
+                if (!esti_plane(plane, points_near, 0.1f))
+                {
+                    keep = true;
+                }
+                else
+                {
+                    const double residual = std::fabs(
+                        plane(0) * point.x +
+                        plane(1) * point.y +
+                        plane(2) * point.z +
+                        plane(3));
+
+                    keep = residual > geo_plane_dist;
+                }
+            }
+
+            if (keep)
+                PointToAdd.push_back(point);
+            else if (geo_map_debug)
+            {
+                geo_map_dropped->push_back(point);
+            }
+        }
+    }
+    else
+    {
+        for (int i = 0; i < feats_down_size; ++i)
+        {
+            const PointType &point = feats_down_world->points[i];
+
+            if (coveredByPrior(point))
+                continue;
+
+            if (Nearest_Points[i].empty() || !flg_EKF_inited)
+            {
+                PointToAdd.push_back(point);
                 continue;
             }
-            for (int readd_i = 0; readd_i < NUM_MATCH_POINTS; readd_i ++)
+
+            const PointVector &points_near = Nearest_Points[i];
+            PointType mid_point;
+            mid_point.x =
+                floor(point.x / filter_size_map_min) *
+                    filter_size_map_min +
+                0.5 * filter_size_map_min;
+            mid_point.y =
+                floor(point.y / filter_size_map_min) *
+                    filter_size_map_min +
+                0.5 * filter_size_map_min;
+            mid_point.z =
+                floor(point.z / filter_size_map_min) *
+                    filter_size_map_min +
+                0.5 * filter_size_map_min;
+
+            if (fabs(points_near[0].x - mid_point.x) >
+                    0.5 * filter_size_map_min &&
+                fabs(points_near[0].y - mid_point.y) >
+                    0.5 * filter_size_map_min &&
+                fabs(points_near[0].z - mid_point.z) >
+                    0.5 * filter_size_map_min)
             {
-                if (points_near.size() < NUM_MATCH_POINTS) break;
-                if (calc_dist(points_near[readd_i], mid_point) < dist)
+                PointNoNeedDownsample.push_back(point);
+                continue;
+            }
+
+            const float dist = calc_dist(point, mid_point);
+            bool need_add = true;
+
+            for (int j = 0;
+                 j < NUM_MATCH_POINTS &&
+                 j < static_cast<int>(points_near.size());
+                 ++j)
+            {
+                if (calc_dist(points_near[j], mid_point) < dist)
                 {
                     need_add = false;
                     break;
                 }
             }
-            if (need_add && !coveredByPrior(feats_down_world->points[i]))
-                PointToAdd.push_back(feats_down_world->points[i]);
-        }
-        else
-        {
-            if (!coveredByPrior(feats_down_world->points[i]))
-                PointToAdd.push_back(feats_down_world->points[i]);
+
+            if (need_add)
+                PointToAdd.push_back(point);
         }
     }
 
-    double st_time = omp_get_wtime();
-    add_point_size = ikdtree.Add_Points(PointToAdd, true);
-    ikdtree.Add_Points(PointNoNeedDownsample, false); 
-    add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
-    kdtree_incremental_time = omp_get_wtime() - st_time;
+    const double st_time = omp_get_wtime();
+
+    ikdtree.Add_Points(PointToAdd, true);
+
+    if (!geo_map_enable)
+        ikdtree.Add_Points(PointNoNeedDownsample, false);
+
+    add_point_size =
+        PointToAdd.size() +
+        PointNoNeedDownsample.size();
+
+    kdtree_incremental_time =
+        omp_get_wtime() - st_time;
 }
 
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
@@ -1260,6 +1354,18 @@ void publish_map(const Pcl2Publisher & pubLaserCloudMap)
     // Let TF apply map->odom for visualization instead of relabeling it as map.
     laserCloudMap.header.frame_id = odom_frame;
     ros_publish(pubLaserCloudMap, laserCloudMap);
+}
+
+void publish_geo_map_debug(const Pcl2Publisher &pubGeoMapDebug)
+{
+    if (!geo_map_enable || !geo_map_debug || geo_map_dropped->empty())
+        return;
+
+    Pcl2Msg geoMapDroppedMsg;
+    pcl::toROSMsg(*geo_map_dropped, geoMapDroppedMsg);
+    geoMapDroppedMsg.header.stamp = get_ros_time(lidar_end_time);
+    geoMapDroppedMsg.header.frame_id = odom_frame;
+    ros_publish(pubGeoMapDebug, geoMapDroppedMsg);
 }
 
 void publish_prior_map(const Pcl2Publisher & pubLaserCloudPriorMap)
@@ -1681,6 +1787,10 @@ int main(int argc, char** argv)
     rosparam_get("mapping/acc_cov", acc_cov, 0.1);
     rosparam_get("mapping/b_gyr_cov", b_gyr_cov, 0.0001);
     rosparam_get("mapping/b_acc_cov", b_acc_cov, 0.0001);
+    rosparam_get("geo_map/enable", geo_map_enable, false);
+    rosparam_get("geo_map/debug", geo_map_debug, false);
+    rosparam_get("geo_map/support", geo_support, 0.15);
+    rosparam_get("geo_map/plane_dist", geo_plane_dist, 0.05);
     rosparam_get("preprocess/blind", p_pre->blind, 0.01);
     rosparam_get("preprocess/lidar_type", lidar_type, (int)AVIA);
     rosparam_get("preprocess/scan_line", p_pre->N_SCANS, 16);
@@ -1798,6 +1908,8 @@ int main(int argc, char** argv)
     auto pubLaserCloudEffect = create_publisher<PointCloud2Msg>("/cloud_effected", 100000);
     auto pubLaserCloudMap = create_publisher<PointCloud2Msg>("/Laser_map", 100000);
     auto pubLaserCloudPriorMap = create_publisher<PointCloud2Msg>("/Laser_map_prior", 100000);
+    auto pubGeoMapDebug = create_publisher<PointCloud2Msg>(
+        "/geo_map/dropped", 100000);
     #ifdef USE_ROS1
     int best_qos = 0;  // ROS1 ignores this parameter
     int reliable_qos = 0;
@@ -1998,6 +2110,7 @@ int main(int argc, char** argv)
 
             /*** add the feature points to map kdtree ***/
             map_incremental();
+            publish_geo_map_debug(pubGeoMapDebug);
             
             /******* Publish points *******/
             if (path_en)                         publish_path(pubPath);

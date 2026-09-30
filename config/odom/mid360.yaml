@@ -37,6 +37,12 @@ mapping:
 
     extrinsic_T: [-0.009673, -0.037003, 0.047590]
 
+geo_map:
+    enable: false
+    debug: true
+    support: 0.15
+    plane_dist: 0.05
+
 publish:
     path_en:  true
     scan_publish_en:  true       # false: close all the point cloud output

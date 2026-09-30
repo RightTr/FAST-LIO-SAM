@@ -16,12 +16,21 @@ mapping:
     gyr_cov: 0.1
     b_acc_cov: 0.0001
     b_gyr_cov: 0.0001
+    imu_dt: 0.005
+    timeRepair: true
     fov_degree:    180.0
     det_range:     100.0
     extrinsic_T: [ 0.007698, 0.014655, 0.00667 ] # LiDAR position in the IMU coordinate frame
     extrinsic_R: [ 1.0, 0.0, 0.0, # LiDAR rotation in the IMU coordinate frame
                     0.0, 1.0, 0.0,
                     0.0, 0.0, 1.0 ]
+
+adaptive_voxel:
+    enable: false
+    root_size: 0.8
+    max_layer: 3
+    min_points: 15
+    eigen_ratio: [0.0625, 0.0625, 0.0625, 0.0625]
 
 gnss:
     topic: "handsfree/rtk/gnss"
