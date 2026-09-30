@@ -76,7 +76,6 @@ Comparison of outdoor trajectory and mapping results:
 
 * Support GNSS factors in the pose graph
 
-* Stationary detection and adaptive weight handling between LiDAR update scans and ZUPT
 
 * Support for RoboSense LiDARs, Unilidar LiDARs
   
@@ -172,12 +171,6 @@ Enable `lio_sam/keyframe_global_pcd_en` to additionally stitch all exported keyf
 * `result_save/imu_state_save_en` saves each IMU state to `ROOT_DIR/RESULTS/IMU_STATES/imu_state.txt`. 
 * `result_save/scan_frame_save_en` saves each undistorted scan in LiDAR body frame under `ROOT_DIR/RESULTS/SCAN_FRAMES/scans/<lidar_time>.pcd`, saves the corresponding timestamped cloud under `ROOT_DIR/RESULTS/SCAN_FRAMES/scans_tstamp/<lidar_time>.pcd`, and writes the pose to `ROOT_DIR/RESULTS/SCAN_FRAMES/scan_pose.txt`.
 
-## Stationary detection and adaptive weight handling
-
-The system will adjust the confidence of the ZUPT and LiDAR updates based on the detected motion state, using **accelerometer and gyroscope variances** as well as **the EMA of velocity**. When the system detects a stationary state, it will increase the confidence of the ZUPT update and decrease the confidence of the LiDAR update, and vice versa when in motion.
-
-Check the related parameters in the .yaml files.
-
 ### Extended LiDAR support
 
 Now, FAST-LIO supports tracking and mapping using the RoboSense LiDARs (e.g., RoboSense Airy) and Unilidar LiDARs (e.g., Unilidar L2). Check the related files in ./config, ./launch_ROS1/odom, ./launch_ROS1/mapping, ./launch_ROS2/odom, and ./launch_ROS2/mapping.
@@ -191,7 +184,6 @@ roslaunch fast_lio_sam odom_airy.launch
 
 * [x] GNSS fusion test
 * [ ] Full situational_graphs adaptation
-* [ ] ZUPT parameter tuning and test
 * [ ] Prior localization test
 
 ## 📚 Related Works

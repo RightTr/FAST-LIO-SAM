@@ -34,8 +34,3 @@ result_save:
     interval: -1                 # how many LiDAR frames to accumulate before writing one PCD; -1 saves only once at shutdown
     imu_state_save_en: false    # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
     scan_frame_save_en: false   # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
-
-zupt:
-    use_zupt: false              # enable zero velocity update
-    zupt_acc_var_threshold: 0.0001   # (m/s²)² acceleration variance threshold for ZUPT
-    zupt_gyro_var_threshold: 0.00001 # (rad/s)² gyroscope variance threshold for ZUPT

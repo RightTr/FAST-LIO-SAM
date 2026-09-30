@@ -85,24 +85,11 @@ bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool sam_enable = false;
 bool grav_align = false;
 int lidar_type;
-bool use_zupt = false;
 std::string prior_tree_path;
-double zupt_acc_var_threshold;
-double zupt_gyro_var_threshold;
 double prior_lidar_cov = 0.001;
 bool prior_init_en = false;
 bool prior_init_done = false;
 std::atomic<int64_t> last_input_time{-1};
-// Adaptive ZUPT params
-double zupt_r_min              = 1e-5;
-double zupt_r_max              = 1.0;
-double zupt_confidence_min     = 0.05;
-double zupt_inflate_pos        = 1e-7;
-double zupt_inflate_rot        = 1e-8;
-int    zupt_inflate_start      = 200;
-// Adaptive LiDAR weight params
-double lidar_cov_static_scale  = 5.0;
-double lidar_residual_ref      = 0.05;
 
 std::shared_ptr<GnssProcess> p_gnss = std::make_shared<GnssProcess>();
 PathPublisher pubGnssPath;
@@ -214,20 +201,6 @@ struct MatchObservation
     double residual = 0.0;
     double row_scale = 1.0;
 };
-
-double adapt_lidar_weight()
-{
-    if (!use_zupt)
-        return LASER_POINT_COV;
-
-    // confidence cached by UndistortPcl inside p_imu->Process()
-    const double static_confidence = p_imu->get_static_confidence();
-
-    // Adaptive LiDAR cov: rises with static confidence and previous-frame residual
-    const double lidar_static_scale   = 1.0 + lidar_cov_static_scale * static_confidence;
-    const double lidar_residual_scale = std::max(1.0, res_mean_last / lidar_residual_ref);
-    return std::min(LASER_POINT_COV * lidar_static_scale * lidar_residual_scale, 0.1);
-}
 
 bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
                              const PointVector *points_near,
@@ -1850,18 +1823,6 @@ int main(int argc, char** argv)
     rosparam_get("result_save/interval", res_save_interval, -1);
     rosparam_get("mapping/extrinsic_T", extrinT, std::vector<double>());
     rosparam_get("mapping/extrinsic_R", extrinR, std::vector<double>());
-    rosparam_get("zupt/use_zupt",                use_zupt,                false);
-    rosparam_get("zupt/zupt_acc_var_threshold",  zupt_acc_var_threshold,  0.001);
-    rosparam_get("zupt/zupt_gyro_var_threshold", zupt_gyro_var_threshold, 0.0001);
-    rosparam_get("zupt/zupt_r_min",              zupt_r_min,              1e-5);
-    rosparam_get("zupt/zupt_r_max",              zupt_r_max,              1.0);
-    rosparam_get("zupt/zupt_confidence_min",     zupt_confidence_min,     0.05);
-    rosparam_get("zupt/cov_inflate_pos",         zupt_inflate_pos,        1e-7);
-    rosparam_get("zupt/cov_inflate_rot",         zupt_inflate_rot,        1e-8);
-    rosparam_get("zupt/cov_inflate_start",       zupt_inflate_start,      200);
-    rosparam_get("zupt/lidar_cov_static_scale",  lidar_cov_static_scale,  5.0);
-    rosparam_get("zupt/lidar_residual_ref",      lidar_residual_ref,      0.05);
-
     path.header.stamp = get_ros_now();
     path.header.frame_id = map_frame;
 
@@ -1902,10 +1863,6 @@ int main(int argc, char** argv)
     p_imu->set_acc_cov(V3D(acc_cov, acc_cov, acc_cov));
     p_imu->set_gyr_bias_cov(V3D(b_gyr_cov, b_gyr_cov, b_gyr_cov));
     p_imu->set_acc_bias_cov(V3D(b_acc_cov, b_acc_cov, b_acc_cov));
-    p_imu->set_use_zupt(use_zupt);
-    p_imu->set_zupt_thresholds(zupt_acc_var_threshold, zupt_gyro_var_threshold);
-    p_imu->set_zupt_adaptive_params(zupt_r_min, zupt_r_max, zupt_confidence_min,
-                                     zupt_inflate_pos, zupt_inflate_rot, zupt_inflate_start);
     p_imu->lidar_type = lidar_type;
 
     kf.setMaxIterations(NUM_MAX_ITERATIONS);
@@ -2097,8 +2054,6 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            const double adaptive_lidar_cov = adapt_lidar_weight();
-            
             feats_down_world->resize(feats_down_size);
 
             if(feature_pub_en && use_online_map)
@@ -2123,7 +2078,7 @@ int main(int argc, char** argv)
             }
             else
             {
-                kf.updateLidar(buildLidarMeasurement, adaptive_lidar_cov);
+                kf.updateLidar(buildLidarMeasurement, LASER_POINT_COV);
                 state_point = kf.state();
                 euler_cur = state_point.rot.eulerAngles(0, 1, 2);
                 pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;

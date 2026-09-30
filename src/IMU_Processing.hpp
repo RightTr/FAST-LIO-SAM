@@ -47,14 +47,7 @@ class ImuProcess
   void set_acc_cov(const V3D &scaler);
   void set_gyr_bias_cov(const V3D &b_g);
   void set_acc_bias_cov(const V3D &b_a);
-  void set_use_zupt(bool enabled);
   void set_grav_align(bool enabled);
-  void set_zupt_thresholds(double acc_norm_threshold, double gyro_threshold);
-  void set_zupt_adaptive_params(double r_min, double r_max, double conf_min,
-                                 double inflate_pos, double inflate_rot, int inflate_start);
-
-  double compute_static_confidence(const MeasureGroup &meas);
-  double get_static_confidence() const { return static_confidence_; }
 
   void Process(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI::Ptr pcl_un_);
 
@@ -75,22 +68,8 @@ class ImuProcess
   double gap_handler(double dt);
   void IMU_init(const MeasureGroup &meas, SimpleEKF &kf_state, int &N);
   void UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI &pcl_in_out);
-  void zupt_update(SimpleEKF &kf_state, double confidence);
 
-  bool   use_zupt = false;
   bool   grav_align_ = false;
-  double zupt_acc_var_threshold;
-  double zupt_gyro_var_threshold;
-
-  double static_confidence_      = 0.0;
-  int    static_step_count_      = 0;
-  double zupt_vel_ema_           = 0.0;
-  double zupt_r_min_             = 1e-5;
-  double zupt_r_max_             = 1.0;
-  double zupt_confidence_min_    = 0.05;
-  double cov_inflate_pos_        = 1e-7;
-  double cov_inflate_rot_        = 1e-8;
-  int    static_inflation_start_ = 200;
 
   PointCloudXYZI::Ptr cur_pcl_un_;
   ImuMsgConstPtr last_imu_;
@@ -183,30 +162,9 @@ void ImuProcess::set_acc_bias_cov(const V3D &b_a)
   cov_bias_acc = b_a;
 }
 
-void ImuProcess::set_use_zupt(bool enabled) { 
-  use_zupt = enabled; 
-}
-
 void ImuProcess::set_grav_align(bool enabled)
 {
   grav_align_ = enabled;
-}
-
-void ImuProcess::set_zupt_thresholds(double acc_var_threshold, double gyro_var_threshold)
-{
-  zupt_acc_var_threshold = acc_var_threshold;
-  zupt_gyro_var_threshold = gyro_var_threshold;
-}
-
-void ImuProcess::set_zupt_adaptive_params(double r_min, double r_max, double conf_min,
-                                           double inflate_pos, double inflate_rot, int inflate_start)
-{
-  zupt_r_min_             = r_min;
-  zupt_r_max_             = r_max;
-  zupt_confidence_min_    = conf_min;
-  cov_inflate_pos_        = inflate_pos;
-  cov_inflate_rot_        = inflate_rot;
-  static_inflation_start_ = inflate_start;
 }
 
 double ImuProcess::gap_handler(double dt)
@@ -222,47 +180,6 @@ double ImuProcess::gap_handler(double dt)
   }
 
   return dt;
-}
-
-// confidence = exp(-3 * max_normalized_variance), in [0,1]
-// 1 = definitely static, 0 = definitely moving
-double ImuProcess::compute_static_confidence(const MeasureGroup &meas)
-{
-  if (meas.imu.empty()) { static_confidence_ = 0.0; return 0.0; }
-
-  V3D acc_sum = Zero3d, gyro_sum = Zero3d;
-  for (const auto &imu : meas.imu)
-  {
-    acc_sum  += V3D(imu->linear_acceleration.x, imu->linear_acceleration.y, imu->linear_acceleration.z);
-    gyro_sum += V3D(imu->angular_velocity.x,    imu->angular_velocity.y,    imu->angular_velocity.z);
-  }
-  const double inv_n  = 1.0 / static_cast<double>(meas.imu.size());
-  const V3D acc_mean  = acc_sum  * inv_n;
-  const V3D gyro_mean = gyro_sum * inv_n;
-
-  V3D acc_var = Zero3d, gyro_var = Zero3d;
-  for (const auto &imu : meas.imu)
-  {
-    V3D da = V3D(imu->linear_acceleration.x, imu->linear_acceleration.y, imu->linear_acceleration.z) - acc_mean;
-    V3D dg = V3D(imu->angular_velocity.x,    imu->angular_velocity.y,    imu->angular_velocity.z)    - gyro_mean;
-    acc_var  += da.cwiseProduct(da);
-    gyro_var += dg.cwiseProduct(dg);
-  }
-  acc_var  *= inv_n;
-  gyro_var *= inv_n;
-
-  // compute the maximum variance ratio among all axes and both acc and gyro
-  double max_ratio = 0.0;
-  for (int i = 0; i < 3; i++)
-  {
-    max_ratio = std::max(max_ratio, acc_var[i]  / zupt_acc_var_threshold);
-    max_ratio = std::max(max_ratio, gyro_var[i] / zupt_gyro_var_threshold);
-  }
-   
-  // static_confidence_ -> 1 when variance is much smaller than threshold, very likely static
-  // static confidence_ -> 0 when variance is much larger than threshold, very likely moving
-  static_confidence_ = std::exp(-3.0 * max_ratio);
-  return static_confidence_;
 }
 
 void ImuProcess::PBufferPop(Pose &pose)
@@ -334,39 +251,8 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, SimpleEKF &kf_state, int &N)
 
 }
 
-void ImuProcess::zupt_update(SimpleEKF &kf_state, double confidence)
-{
-  const SimpleEKF::State &s = kf_state.state();
-
-  // Residual adaptation: EMA of velocity norm attenuates confidence when
-  // the system moves slowly but continuously (low IMU variance, nonzero vel)
-  const double vel_norm    = s.vel.norm();
-  zupt_vel_ema_            = 0.9 * zupt_vel_ema_ + 0.1 * vel_norm;
-  
-  // confidence -> 1 when static, 0 when moving; also attenuated when slow movement is detected
-  const double eff_conf    = confidence * std::exp(-zupt_vel_ema_ / 0.05);
-
-  // Dynamic ZUPT weight: R = zupt_r_min / eff_conf, capped at zupt_r_max
-  const double r_scalar    = std::min(zupt_r_min_ / std::max(eff_conf, 1e-4), zupt_r_max_);
-
-  ++static_step_count_;
-  if (static_step_count_ > static_inflation_start_)
-  {
-    auto &P = kf_state.covariance();
-    P.block<3, 3>(3, 3).diagonal().array() += cov_inflate_pos_;
-    P.block<3, 3>(0, 0).diagonal().array() += cov_inflate_rot_;
-  }
-
-  kf_state.updateZeroVelocity(r_scalar);
-}
-
 void ImuProcess::UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI &pcl_out)
 {
-  /*** Compute static confidence for this LiDAR frame (caches result in static_confidence_) ***/
-  const double frame_confidence = use_zupt ? compute_static_confidence(meas) : 0.0;
-  const bool   is_frame_static  = frame_confidence >= zupt_confidence_min_;
-  if (!is_frame_static) static_step_count_ = 0;
-
   /*** add the imu of the last frame-tail to the of current frame-head ***/
   auto v_imu = meas.imu;
   v_imu.push_front(last_imu_);
@@ -440,8 +326,6 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, Poi
     noise.bg = cov_bias_gyr;
     noise.ba = cov_bias_acc;
     kf_state.predict(dt, acc_avr, angvel_avr, noise);
-    if (is_frame_static) zupt_update(kf_state, frame_confidence);
-
     /* save the poses at each IMU measurements */
     imu_state = kf_state.state();
     const V3D grav_vec = kf_state.gravity();
@@ -495,8 +379,6 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, Poi
   noise.bg = cov_bias_gyr;
   noise.ba = cov_bias_acc;
   kf_state.predict(dt, acc_avr, angvel_avr, noise);
-  if (is_frame_static) zupt_update(kf_state, frame_confidence);
-
   imu_state = kf_state.state();
   const V3D grav_vec = kf_state.gravity();
   last_imu_ = meas.imu.back();

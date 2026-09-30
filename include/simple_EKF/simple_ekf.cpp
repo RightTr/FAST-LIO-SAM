@@ -137,21 +137,6 @@ void SimpleEKF::updateLidar(const MeasurementBuilder &builder,
     }
 }
 
-void SimpleEKF::updateZeroVelocity(double measurement_covariance)
-{
-    Eigen::Matrix<double, 3, DIM> H =
-        Eigen::Matrix<double, 3, DIM>::Zero();
-    H.block<3, 3>(0, VEL).setIdentity();
-    const Matrix3 R = Matrix3::Identity() * measurement_covariance;
-    const Matrix3 innovation = H * P_ * H.transpose() + R;
-    const Eigen::Matrix<double, DIM, 3> K =
-        P_ * H.transpose() * innovation.inverse();
-    applyError(K * (-state_.vel));
-    const Covariance I = Covariance::Identity();
-    P_ = (I - K * H) * P_ * (I - K * H).transpose() +
-         K * R * K.transpose();
-}
-
 SimpleEKF::Error SimpleEKF::stateDifference(
     const State &propagated, const State &current) const
 {
