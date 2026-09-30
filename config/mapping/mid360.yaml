@@ -36,6 +36,7 @@ preprocess:
     blind: 0.5
 
 mapping:
+    point2point: true
     acc_cov: 0.1
     gyr_cov: 0.1
     b_acc_cov: 0.0001
@@ -51,7 +52,7 @@ mapping:
     extrinsic_T: [-0.009673, -0.037003, 0.047590]
 
 geo_map:
-    enable: true
+    enable: false
     debug: true
     support: 0.15
     plane_dist: 0.05
@@ -90,8 +91,8 @@ lio_sam:
     historyKeyframeFitnessScore: 0.2              # icp threshold, the smaller the better alignment
     icpMaxCorrDistance: 10.0                       # meters, loop-closure ICP max correspondence distance
     priorVar: 1.0e-4
-    odomRotVar: 1.0e-3
-    odomPosVar: 1.0e-3
+    odomRotVar: 1.0e-5
+    odomPosVar: 1.0e-4
     loopRotVar: 0.1
     loopPosVar: 0.1
     loopCurNum: 3                                  # max current keyframes processed per loop tick

@@ -12,6 +12,7 @@ preprocess:
     blind: 0.5
 
 mapping:
+    point2point: false
     acc_cov: 0.1
     gyr_cov: 0.1
     b_acc_cov: 0.0001

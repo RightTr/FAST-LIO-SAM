@@ -65,6 +65,7 @@ bool geo_map_enable = false;
 bool geo_map_debug = false;
 double geo_support = 0.15;
 double geo_plane_dist = 0.05;
+bool point2point = false;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, lidar_end_time = 0, first_lidar_time = 0.0;
 int    effct_feat_num = 0, publish_count = 0;
@@ -209,6 +210,7 @@ struct MatchObservation
 {
     PointType body;
     PointType normal;
+    PointType target;
     double residual = 0.0;
     double row_scale = 1.0;
 };
@@ -234,10 +236,13 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
                              double row_scale,
                              bool use_tree_search,
                              PointVector *points_near_out,
-                             MatchObservation &obs_out)
+                             MatchObservation &obs_out,
+                             bool use_point2point)
 {
     VF(4) pabcd;
     double pd2 = 0.0;
+    const PointVector *near = points_near;
+    PointVector near_local;
 
     if (use_tree_search)
     {
@@ -245,31 +250,38 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
             return false;
 
         vector<float> point_search_sq_dis(NUM_MATCH_POINTS);
-        PointVector points_near;
-        tree->Nearest_Search(point_world, NUM_MATCH_POINTS, points_near,
+        tree->Nearest_Search(point_world, NUM_MATCH_POINTS, near_local,
                              point_search_sq_dis);
 
         if (points_near_out != nullptr)
-            *points_near_out = points_near;
+            *points_near_out = near_local;
 
-        if (points_near.size() < NUM_MATCH_POINTS ||
+        if (near_local.size() < NUM_MATCH_POINTS ||
             point_search_sq_dis[NUM_MATCH_POINTS - 1] > 5)
             return false;
-        if (!esti_plane(pabcd, points_near, 0.1f))
-            return false;
-
-        pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
-              pabcd(2) * point_world.z + pabcd(3);
+        near = &near_local;
     }
     else
     {
-        if (points_near == nullptr || points_near->size() < NUM_MATCH_POINTS)
+        if (near == nullptr || near->size() < NUM_MATCH_POINTS)
             return false;
-        if (!esti_plane(pabcd, *points_near, 0.1f))
-            return false;
-        pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
-              pabcd(2) * point_world.z + pabcd(3);
     }
+
+    obs_out.body = point_body;
+    obs_out.row_scale = row_scale;
+
+    if (use_point2point)
+    {
+        obs_out.target = (*near)[0];
+        obs_out.residual = std::sqrt(calc_dist(point_world, obs_out.target));
+        return true;
+    }
+
+    if (!esti_plane(pabcd, *near, 0.1f))
+        return false;
+
+    pd2 = pabcd(0) * point_world.x + pabcd(1) * point_world.y +
+          pabcd(2) * point_world.z + pabcd(3);
 
     const double body_range = std::sqrt(point_body.x * point_body.x +
                                         point_body.y * point_body.y +
@@ -279,7 +291,6 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
     if (surf_quality <= 0.9)
         return false;
 
-    obs_out.body = point_body;
     obs_out.normal.x = pabcd(0);
     obs_out.normal.y = pabcd(1);
     obs_out.normal.z = pabcd(2);
@@ -1194,7 +1205,7 @@ bool refinePriorPointToPlane(Eigen::Matrix3d &R_map_odom_,
 
             MatchObservation obs;
             if (!build_point_observation(&prior_ikdtree, nullptr, point_body, point_map,
-                                         1.0, true, nullptr, obs))
+                                         1.0, true, nullptr, obs, false))
                 continue;
 
             const Eigen::Vector3d normal(obs.normal.x, obs.normal.y, obs.normal.z);
@@ -1587,7 +1598,7 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
             if (use_online_map &&
                 build_point_observation(&ikdtree, nullptr, point_body, point_world,
                                         1.0, true, &Nearest_Points[i],
-                                        online_candidates[i]))
+                                        online_candidates[i], point2point))
             {
                 online_valid[i] = 1;
                 point_selected_surf[i] = true;
@@ -1603,7 +1614,7 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
         {
             if (build_point_observation(nullptr, &Nearest_Points[i], point_body,
                                         point_world, 1.0, false, nullptr,
-                                        online_candidates[i]))
+                                        online_candidates[i], point2point))
             {
                 online_valid[i] = 1;
                 normvec->points[i] = online_candidates[i].normal;
@@ -1630,7 +1641,7 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
                 if (build_point_observation(&prior_ikdtree, nullptr, point_body,
                                             point_prior, prior_scale, true,
                                             &Prior_Nearest_Points[i],
-                                            prior_candidates[i]))
+                                            prior_candidates[i], point2point))
                 {
                     prior_valid[i] = 1;
                     prior_point_selected[i] = 1;
@@ -1644,7 +1655,8 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
             {
                 if (build_point_observation(nullptr, &Prior_Nearest_Points[i],
                                             point_body, point_prior, prior_scale,
-                                            false, nullptr, prior_candidates[i]))
+                                            false, nullptr, prior_candidates[i],
+                                            point2point))
                 {
                     prior_valid[i] = 1;
                 }
@@ -1656,13 +1668,28 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
 
             if (prior_valid[i])
             {
-                const Eigen::Vector3d n_prior(prior_candidates[i].normal.x,
-                                              prior_candidates[i].normal.y,
-                                              prior_candidates[i].normal.z);
-                const Eigen::Vector3d n_odom = R_prior_odom.transpose() * n_prior;
-                prior_candidates[i].normal.x = n_odom.x();
-                prior_candidates[i].normal.y = n_odom.y();
-                prior_candidates[i].normal.z = n_odom.z();
+                if (point2point)
+                {
+                    const Eigen::Vector3d q_prior(
+                        prior_candidates[i].target.x,
+                        prior_candidates[i].target.y,
+                        prior_candidates[i].target.z);
+                    const Eigen::Vector3d q_odom =
+                        R_prior_odom.transpose() * (q_prior - t_prior_odom);
+                    prior_candidates[i].target.x = q_odom.x();
+                    prior_candidates[i].target.y = q_odom.y();
+                    prior_candidates[i].target.z = q_odom.z();
+                }
+                else
+                {
+                    const Eigen::Vector3d n_prior(prior_candidates[i].normal.x,
+                                                  prior_candidates[i].normal.y,
+                                                  prior_candidates[i].normal.z);
+                    const Eigen::Vector3d n_odom = R_prior_odom.transpose() * n_prior;
+                    prior_candidates[i].normal.x = n_odom.x();
+                    prior_candidates[i].normal.y = n_odom.y();
+                    prior_candidates[i].normal.z = n_odom.z();
+                }
             }
         }
     }
@@ -1709,8 +1736,9 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
     double solve_start_  = omp_get_wtime();
     
     /*** Computation of measurement Jacobian and residual vector. ***/
-    H = MatrixXd::Zero(effct_feat_num, 6);
-    residual.resize(effct_feat_num);
+    const int measurement_rows = point2point ? 3 * effct_feat_num : effct_feat_num;
+    H = MatrixXd::Zero(measurement_rows, 6);
+    residual.resize(measurement_rows);
 
     for (int i = 0; i < effct_feat_num; i++)
     {
@@ -1720,19 +1748,35 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
         M3D point_crossmat;
         point_crossmat<<SKEW_SYM_MATRX(point_this);
 
-        /*** get the normal vector of closest surface/corner ***/
-        const PointType &norm_p = corr_normvect->points[i];
-        V3D norm_vec(norm_p.x, norm_p.y, norm_p.z);
-
-        /*** calculate the Measuremnt Jacobian matrix H ***/
-        V3D C(s.rot.transpose() * norm_vec);
-        V3D A(point_crossmat * C);
         const double row_scale = matches[i].row_scale;
-        H.block<1, 3>(i, 0) = row_scale * A.transpose();
-        H.block<1, 3>(i, 3) = row_scale * norm_vec.transpose();
 
-        /*** Measuremnt: distance to the closest surface/corner ***/
-        residual(i) = -row_scale * norm_p.intensity;
+        if (point2point)
+        {
+            const PointType &target = matches[i].target;
+            const V3D target_world(target.x, target.y, target.z);
+            const V3D point_world = s.rot * point_this + s.pos;
+            const int row = 3 * i;
+
+            H.block<3, 3>(row, 0) = -row_scale * s.rot * point_crossmat;
+            H.block<3, 3>(row, 3) = row_scale * M3D::Identity();
+            residual.segment<3>(row) =
+                row_scale * (target_world - point_world);
+        }
+        else
+        {
+            /*** get the normal vector of closest surface/corner ***/
+            const PointType &norm_p = corr_normvect->points[i];
+            V3D norm_vec(norm_p.x, norm_p.y, norm_p.z);
+
+            /*** calculate the Measuremnt Jacobian matrix H ***/
+            V3D C(s.rot.transpose() * norm_vec);
+            V3D A(point_crossmat * C);
+            H.block<1, 3>(i, 0) = row_scale * A.transpose();
+            H.block<1, 3>(i, 3) = row_scale * norm_vec.transpose();
+
+            /*** Measuremnt: distance to the closest surface/corner ***/
+            residual(i) = -row_scale * norm_p.intensity;
+        }
     }
     solve_time += omp_get_wtime() - solve_start_;
     return true;
@@ -1787,6 +1831,7 @@ int main(int argc, char** argv)
     rosparam_get("mapping/acc_cov", acc_cov, 0.1);
     rosparam_get("mapping/b_gyr_cov", b_gyr_cov, 0.0001);
     rosparam_get("mapping/b_acc_cov", b_acc_cov, 0.0001);
+    rosparam_get("mapping/point2point", point2point, false);
     rosparam_get("geo_map/enable", geo_map_enable, false);
     rosparam_get("geo_map/debug", geo_map_debug, false);
     rosparam_get("geo_map/support", geo_support, 0.15);
