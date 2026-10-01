@@ -98,7 +98,6 @@ public:
     KeyMat polarcontext_invkeys_mat_;
     KeyMat polarcontext_invkeys_to_search_;
     std::vector<int> polarcontext_search_ids_;
-    std::vector<std::pair<int, int>> polarcontext_search_ranges_;
     std::unique_ptr<InvKeyTree> polarcontext_tree_;
 
 }; // SCManager

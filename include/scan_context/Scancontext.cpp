@@ -291,7 +291,6 @@ std::pair<int, float> SCManager::detectLoopClosureID(
     // tree_ reconstruction (not mandatory to make everytime)
     if( polarcontext_tree_ == nullptr ||
         tree_making_period_conter % TREE_MAKING_PERIOD_ == 0 ||
-        polarcontext_search_ranges_ != search_ranges ||
         (!polarcontext_search_ids_.empty() &&
          polarcontext_search_ids_.back() > max_history_id))
     {
@@ -299,7 +298,6 @@ std::pair<int, float> SCManager::detectLoopClosureID(
 
         polarcontext_invkeys_to_search_.clear();
         polarcontext_search_ids_ = search_ids;
-        polarcontext_search_ranges_ = search_ranges;
         polarcontext_invkeys_to_search_.reserve(polarcontext_search_ids_.size());
         for (const int id : polarcontext_search_ids_)
             polarcontext_invkeys_to_search_.push_back(polarcontext_invkeys_mat_[id]);

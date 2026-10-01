@@ -93,8 +93,8 @@ lio_sam:
     priorVar: 1.0e-4
     odomRotVar: 1.0e-5
     odomPosVar: 1.0e-4
-    loopRotVar: 0.1
-    loopPosVar: 0.1
+    loopRotVar: 1.0e-4
+    loopPosVar: 1.0e-3
     loopCurNum: 3                                  # max current keyframes processed per loop tick
     loopPreNum: 2                                  # max ICP attempts per current keyframe
     mappingICPSize: 0.1                            # meters, loop-closure ICP voxel size
