@@ -243,9 +243,9 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, SimpleEKF &kf_state, int &N)
   init_state.bg  = mean_gyr;
   SimpleEKF::Covariance init_P = SimpleEKF::Covariance::Identity();
   init_P.block<3, 3>(9, 9) =
-      Eigen::Matrix3d::Identity() * 1e-5;
+      Eigen::Matrix3d::Identity() * 1e-4;
   init_P.block<3, 3>(12, 12) =
-      Eigen::Matrix3d::Identity() * 1e-5;
+      Eigen::Matrix3d::Identity() * 1e-3;
   kf_state.initialize(init_state, init_P, init_gravity);
   last_imu_ = meas.imu.back();
 

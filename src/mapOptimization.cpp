@@ -1251,11 +1251,11 @@ void loopClosureThread()
         }
 
         nextKey = std::max(nextKey, readyKey - loopCurNum + 1);
-        ROS_PRINT_INFO(
-            "[LOOP] range next=%d ready=%d latest=%zu",
-            nextKey,
-            readyKey,
-            poses6D.size() - 1);
+        // ROS_PRINT_INFO(
+        //     "[LOOP] range next=%d ready=%d latest=%zu",
+        //     nextKey,
+        //     readyKey,
+        //     poses6D.size() - 1);
 
         for (int processed = 0; processed < loopCurNum && nextKey <= readyKey; )
         {
