@@ -120,42 +120,37 @@ inline double clampDot(double v)
     return std::max(-1.0, std::min(1.0, v));
 }
 
-inline bool repairTimestamp(const double raw_ts, const double expected_dt,
-    double &off, double &last_raw_ts,
-    double &last_ts, double &cur_ts)
+inline bool repairTimestamp(double raw_stamp, double expected_dt, double& stamp_offset,
+                            double& last_raw_stamp, double& last_corrected_stamp,
+                            double& corrected_stamp)
 {
-    cur_ts = raw_ts + off;
+    corrected_stamp = raw_stamp + stamp_offset;
 
-    if (last_ts < 0.0)
+    if (last_corrected_stamp < 0.0)
     {
-        last_ts = cur_ts;
-        last_raw_ts = raw_ts;
+        last_corrected_stamp = corrected_stamp;
+        last_raw_stamp = raw_stamp;
         return true;
     }
 
-    if (raw_ts < last_raw_ts)
+    if (raw_stamp < last_raw_stamp)
     {
-        double rollback = last_raw_ts - raw_ts;
-
-        double correction =
-            (last_ts + expected_dt) - cur_ts;
-
-        off += correction;
-        cur_ts = raw_ts + off;
+        stamp_offset += last_corrected_stamp + expected_dt - corrected_stamp;
+        corrected_stamp = raw_stamp + stamp_offset;
     }
-    else if (off != 0.0 && raw_ts >= last_ts)
+    else if (stamp_offset != 0.0 && raw_stamp >= last_corrected_stamp)
     {
-        off = 0.0;
-        cur_ts = raw_ts;
+        stamp_offset = 0.0;
+        corrected_stamp = raw_stamp;
     }
 
-    if (cur_ts <= last_ts)
+    if (corrected_stamp <= last_corrected_stamp)
     {
         return false;
     }
 
-    last_ts = cur_ts;
-    last_raw_ts = raw_ts;
+    last_corrected_stamp = corrected_stamp;
+    last_raw_stamp = raw_stamp;
     return true;
 }
 
