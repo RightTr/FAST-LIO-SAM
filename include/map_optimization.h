@@ -52,10 +52,6 @@ inline Eigen::Matrix3d poseRotation(const PointTypePose &pose)
     return pcl::getTransformation(0.0, 0.0, 0.0, pose.roll, pose.pitch, pose.yaw).rotation().cast<double>();
 }
 
-extern float transformTobeMapped[6];
-extern Eigen::Vector3d translationLidarToIMU;
-extern Eigen::Matrix3d rotationLidarToIMU;
-
 extern std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> featCloudKeyFrames;
 extern pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 
@@ -66,16 +62,14 @@ Eigen::Vector3d getGravityUp();
 
 extern std::mutex mtxKeyframe;
 extern std::mutex mtxLoopFactor;
-extern std::atomic<bool> sceneDone;
 extern std::atomic<bool> loopDone;
-
-void saveKeyFramesAndFactor(
-    pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort);
+void KeyframeToGlobal(
+    const PointTypePose &odom_pose,
+    const PointTypePose &ba_pose,
+    const pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud);
 void addLoopFactor();
 void poseGraphUpdate();
 void performGnssMatching();
-
-bool isKeyFrame();
 
 void correctPoses();
 
@@ -86,10 +80,6 @@ void publishGlobalMap();
 void shutdownMapOptimization();
 
 void loopClosureThread();
-
-void sceneMatchingThread();
-
-void setLaserCurTime(double lidar_end_time);
 
 void visualizeGlobalMapThread();
 

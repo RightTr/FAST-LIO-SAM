@@ -5,6 +5,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <utility>
 
 template<typename PointType>
 class KD_TREE_PUBLIC : public KD_TREE<PointType>
@@ -13,6 +14,30 @@ class KD_TREE_PUBLIC : public KD_TREE<PointType>
         using KD_TREE<PointType>::delete_tree_nodes;
         using Ptr = std::shared_ptr<KD_TREE_PUBLIC<PointType>>;
         using Node = typename KD_TREE<PointType>::KD_TREE_NODE;
+        using PointVector = typename KD_TREE<PointType>::PointVector;
+
+        void Rebuild(PointVector points)
+        {
+            this->stop_thread();
+            this->termination_flag = false;
+            this->Rebuild_Ptr = nullptr;
+            this->Rebuild_Logger.clear();
+            PointVector().swap(this->PCL_Storage);
+            PointVector().swap(this->Rebuild_PCL_Storage);
+            PointVector().swap(this->Points_deleted);
+            PointVector().swap(this->Multithread_Points_deleted);
+            PointVector().swap(this->Downsample_Storage);
+            Node *old_static_root = this->STATIC_ROOT_NODE;
+            if (points.empty())
+                this->STATIC_ROOT_NODE = nullptr;
+            this->Build(std::move(points));
+            if (old_static_root != nullptr && this->STATIC_ROOT_NODE != old_static_root)
+            {
+                pthread_mutex_destroy(&old_static_root->push_down_mutex_lock);
+                delete old_static_root;
+            }
+            this->start_thread();
+        }
 
         int Add_Point(const PointType& point)
         {

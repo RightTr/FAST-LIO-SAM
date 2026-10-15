@@ -13,9 +13,7 @@ namespace
 constexpr int kSlopeWindow = 6;
 const double kStairAngle = std::atan(0.1);  // 4.6°
 constexpr double kSlopeDistance = 0.50;
-constexpr double kGroundRadius = 8.0;
 constexpr double kStairMinDz = 1.5;
-constexpr double kGroundDz = 0.5;
 constexpr double kLandingDistance = 1.8;
 } // namespace
 
@@ -187,101 +185,4 @@ bool FloorMap::getRanges(int key,
     }
 
     return false;
-}
-
-int FloorMap::floorId(int key) const
-{
-    for (size_t i = 0; i < floors_.size(); ++i)
-    {
-        for (const auto &floor_range : floors_[i].ranges)
-        {
-            if (key >= floor_range.begin &&
-                (floor_range.end < 0 || key <= floor_range.end))
-            {
-                return static_cast<int>(i);
-            }
-        }
-    }
-
-    return -1;
-}
-
-bool FloorMap::updateGround(const std::vector<PlaneObs> &planes,
-                            int key,
-                            const PointTypePose &pose,
-                            SceneBatch &batch)
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    batch = SceneBatch();
-
-    if (key < 0 || planes.empty())
-        return false;
-
-    PlaneObs candidate;
-    if (!buildGroundCandidate(planes, pose, candidate))
-        return false;
-
-    if (floors_.empty())
-    {
-        floors_.push_back(Floor{});
-        floors_.back().ranges.push_back(FloorRange{key, -1});
-        current_floor_id_ = 0;
-    }
-
-    const int floor_id = floorId(key);
-    if (floor_id < 0)
-        return false;
-
-    Floor &floor = floors_[static_cast<size_t>(floor_id)];
-
-    const Eigen::Vector3d gravity_up = getGravityUp();
-
-    double best_xy = std::numeric_limits<double>::infinity();
-    Ground *best_ground = nullptr;
-    for (auto &ground : floor.grounds)
-    {
-        const double dot = clampDot(
-            ground.plane.head<3>().dot(candidate.plane.head<3>()));
-        const double angle = std::acos(dot);
-        if (angle > rad(groundAssociationAngleDeg))
-            continue;
-
-        const double xy = (candidate.center - ground.center).head<2>().norm();
-        const double dz = std::abs(
-            gravity_up.dot(candidate.center - ground.center));
-        if (xy > kGroundRadius || dz > kGroundDz || xy >= best_xy)
-            continue;
-
-        best_xy = xy;
-        best_ground = &ground;
-    }
-
-    const bool is_new_ground = (best_ground == nullptr);
-    const int ground_id = is_new_ground ? next_plane_id_ : best_ground->id;
-
-    if (is_new_ground)
-    {
-        Ground new_ground;
-        new_ground.id = ground_id;
-        new_ground.plane = candidate.plane;
-        new_ground.center = candidate.center;
-        new_ground.last_key = key;
-        floor.grounds.push_back(std::move(new_ground));
-        ++next_plane_id_;
-    }
-    else
-    {
-        best_ground->plane = candidate.plane;
-        best_ground->center = candidate.center;
-        best_ground->last_key = key;
-    }
-
-    batch.factors.emplace_back(key, ground_id, candidate.body_plane);
-
-    if (is_new_ground)
-    {
-        batch.planes.emplace_back(floor_id, ground_id, candidate.plane);
-    }
-
-    return true;
 }

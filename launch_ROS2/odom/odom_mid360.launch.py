@@ -40,7 +40,7 @@ fast_lio_params = [
     {'max_iteration': 3},
     {'filter_size_surf': 0.5},
     {'filter_size_map': 0.5},
-    {'cube_side_length': 1000.0},
+    {'cube_side_length': 300.0},
     yaml_params
 ]
 

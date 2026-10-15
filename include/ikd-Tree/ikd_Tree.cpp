@@ -199,7 +199,6 @@ void KD_TREE<PointType>::start_thread()
     pthread_mutex_init(&working_flag_mutex, NULL);
     pthread_mutex_init(&search_flag_mutex, NULL);
     pthread_create(&rebuild_thread, NULL, multi_thread_ptr, (void *)this);
-    printf("Multi thread started \n");
 }
 
 template <typename PointType>
@@ -363,7 +362,6 @@ void KD_TREE<PointType>::multi_thread_rebuild()
         pthread_mutex_unlock(&termination_flag_mutex_lock);
         usleep(100);
     }
-    printf("Rebuild thread terminated normally\n");
 }
 
 template <typename PointType>
@@ -516,7 +514,8 @@ int KD_TREE<PointType>::Add_Points(PointVector &PointToAdd, bool downsample_on)
                 {
                     if (Downsample_Storage.size() > 0)
                         Delete_by_range(&Root_Node, Box_of_Point, true, true);
-                    Add_by_point(&Root_Node, downsample_result, true, Root_Node->division_axis);
+                    Add_by_point(&Root_Node, downsample_result, true,
+                                 Root_Node ? Root_Node->division_axis : 0);
                     tmp_counter++;
                 }
             }
@@ -532,7 +531,8 @@ int KD_TREE<PointType>::Add_Points(PointVector &PointToAdd, bool downsample_on)
                     pthread_mutex_lock(&working_flag_mutex);
                     if (Downsample_Storage.size() > 0)
                         Delete_by_range(&Root_Node, Box_of_Point, false, true);
-                    Add_by_point(&Root_Node, downsample_result, false, Root_Node->division_axis);
+                    Add_by_point(&Root_Node, downsample_result, false,
+                                 Root_Node ? Root_Node->division_axis : 0);
                     tmp_counter++;
                     if (rebuild_flag)
                     {
@@ -550,7 +550,8 @@ int KD_TREE<PointType>::Add_Points(PointVector &PointToAdd, bool downsample_on)
         {
             if (Rebuild_Ptr == nullptr || *Rebuild_Ptr != Root_Node)
             {
-                Add_by_point(&Root_Node, PointToAdd[i], true, Root_Node->division_axis);
+                Add_by_point(&Root_Node, PointToAdd[i], true,
+                             Root_Node ? Root_Node->division_axis : 0);
             }
             else
             {
@@ -558,7 +559,8 @@ int KD_TREE<PointType>::Add_Points(PointVector &PointToAdd, bool downsample_on)
                 operation.point = PointToAdd[i];
                 operation.op = ADD_POINT;
                 pthread_mutex_lock(&working_flag_mutex);
-                Add_by_point(&Root_Node, PointToAdd[i], false, Root_Node->division_axis);
+                Add_by_point(&Root_Node, PointToAdd[i], false,
+                             Root_Node ? Root_Node->division_axis : 0);
                 if (rebuild_flag)
                 {
                     pthread_mutex_lock(&rebuild_logger_mutex_lock);

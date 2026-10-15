@@ -1,6 +1,6 @@
 # FAST-LIO-SAM
 
-A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency frontend with a **LIO-SAM-style factor graph backend** for global optimization, enhanced by **hierarchical scene representation** and **ground-normal constraints**, and compatible with both **ROS1** and **ROS2**.
+A LiDAR-inertial SLAM system that combines the **FAST-LIO2** high-frequency frontend with **pose-only Local LiDAR BA** for local consistency and the **LIO-SAM-style factor graph backend** for global optimization. The system also supports **hierarchical scene representation**, **ROS1**, and **ROS2**.
 
 <p align="center">
   <img src="assets/floor_1.png" alt="Floor 1" width="45%">
@@ -24,8 +24,8 @@ A LiDAR-inertial SLAM system that integrates **FAST-LIO2** as the high-frequency
 <em>
 Comparison of multi-floor trajectory and mapping results: 
 <strong>our method</strong> enhanced with 
+<strong>local bundle adjustment</strong> and
 <strong>hierarchical scene representation</strong>, 
-<strong>ground-normal constraints</strong>, and 
 <strong>loop closure</strong> (top) versus 
 <strong>FAST-LIO2</strong> (bottom).
 </em>
@@ -55,7 +55,7 @@ Comparison of multi-floor trajectory and mapping results:
 <em>
 Comparison of outdoor trajectory and mapping results: 
 <strong>our method</strong> enhanced with
-<strong>ground-normal constraints</strong>, 
+<strong>local bundle adjustment</strong> and
 <strong>GNSS position and heading constraints</strong>, and 
 <strong>loop closure</strong> (top) versus 
 <strong>FAST-LIO2</strong> (bottom).
@@ -66,11 +66,11 @@ Comparison of outdoor trajectory and mapping results:
 
 * A SLAM system that integrates FAST-LIO2 with a LIO-SAM-style factor graph backend.
 
+* Pose-only Local LiDAR Bundle Adjustment
+
 * ROS1 and ROS2 adaptation
 
 * Hierarchical scene representation
-
-* Support ground-normal constraints in pose graph
 
 * Manual initial pose setting for relocalization
 
@@ -127,13 +127,13 @@ source devel/setup.bash
 roslaunch fast_lio_sam mapping_airy.launch
 ```
 
-### Ground normal constraint
-
-`groundEnableFlag` enables ground-normal pose-graph constraints from ground observations.
-
 ### Hierarchical representation
 
-`sceneEnableFlag` enables multi-floor switching and floor-aware loop filtering; when off, ground stays in `floor0` and loop uses ordinary spatial search.
+`sceneEnableFlag` enables multi-floor switching and same-floor loop filtering. `FloorMap` uses the trajectory to track floor ranges; it does not add geometric constraints to GTSAM. When disabled, loop search uses ordinary spatial search.
+
+### Local LiDAR BA
+
+Local BA and the global PGO backend are controlled independently. `lidar_ba/enable` enables pose-only local bundle adjustment, while `sam_enable` enables the GTSAM pose graph with its GNSS and loop factors. BA can run with the PGO backend disabled, and PGO can run with BA disabled, using FAST-LIO2 odometry poses. When both are enabled, BA-refined poses are passed to the global backend for PGO. Set `lidar_ba/feedback_to_ekf` to `true` to feed optimized window poses back into the EKF and rebuild the local ikd-tree; this is disabled by default and makes BA processing synchronous.
 
 ### TF layout
 
@@ -200,5 +200,7 @@ roslaunch fast_lio_sam odom_airy.launch
 [point_lio_unilidar](https://github.com/unitreerobotics/point_lio_unilidar.git)
 
 [BALM](https://github.com/hku-mars/BALM.git)
+
+[Voxel-SLAM: A Complete, Robust and Versatile LiDAR-Inertial SLAM System](https://github.com/hku-mars/Voxel-SLAM)
 
 [lidar_situational_graphs](https://github.com/snt-arg/lidar_situational_graphs.git)

@@ -359,6 +359,16 @@ inline typename rclcpp::Subscription<T>::SharedPtr create_subscriber(const std::
     return get_ros_node()->create_subscription<T>(topic, rclcpp::QoS(rclcpp::KeepLast(queue_size)), cb);
 }
 
+template<typename T, typename Callback>
+inline typename rclcpp::Subscription<T>::SharedPtr create_sensor_subscriber(
+    const std::string& topic, uint32_t queue_size, Callback cb,
+    const rclcpp::CallbackGroup::SharedPtr& group) {
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = group;
+    return get_ros_node()->create_subscription<T>(
+        topic, rclcpp::SensorDataQoS().keep_last(queue_size), cb, options);
+}
+
 // Publisher creation for ROS2
 template<typename T>
 inline typename rclcpp::Publisher<T>::SharedPtr create_publisher(const std::string& topic, uint32_t queue_size) {

@@ -17,7 +17,7 @@ prior_map:
     prior_init: true
 
 preprocess:
-    lidar_type: 8               # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,
+    lidar_type: 1               # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,
     scan_line: 4
     blind: 1.0
 
@@ -59,3 +59,18 @@ result_save:
     imu_state_save_en: true         # save each IMU state to ROOT_DIR/IMU_STATES/imu_states.txt
     scan_frame_save_en: false      # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
     ikdtree_output_save_en: false  # true: save the ikdtree point cloud to ROOT_DIR/TREE_CLOUDS/
+
+lidar_ba:
+    enable: true
+    feedback_to_ekf: true
+    window_size: 10
+    max_iterations: 5
+    voxel_size: 1.0
+    point_leaf_size: 0.2
+    max_layer: 2
+    min_points: 20
+    thread_num: 2
+    min_eigen_value: 0.0025
+    max_fixed_points: 100
+    plane_eigenvalue_threshold: [0.25, 0.25, 0.25]
+    min_layer_points: [5.0, 5.0, 5.0]

@@ -26,12 +26,12 @@ gnss:
     heading_offset_deg: 90.0
     useYawFactor: false
     posXYVar: 0.25
-    posZVar: 100.0
+    posZVar: 100000.0
     yawVar: 0.01
     useGnssElevation: false
 
 preprocess:
-    lidar_type: 8               # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,
+    lidar_type: 1               # 1 for Livox serials LiDAR, 2 for Velodyne LiDAR, 3 for ouster LiDAR,
     scan_line: 4
     blind: 0.5
 
@@ -58,16 +58,7 @@ geo_map:
     plane_dist: 0.05
 
 s-graph:
-    groundEnableFlag: true
     sceneEnableFlag: true
-    groundInterval: 1
-    groundAssociationAngleDeg: 20.0
-    groundAssociationDistance: 1.0
-    floorHeight: 1.5
-    planeNormalVar: 0.0027
-    planeDistVar: 0.0064
-    floorPriorVar: 1.2e-5
-    floorPlaneVar: 7.6e-5
 
 lio_sam:
 
@@ -121,3 +112,17 @@ result_save:
     scan_frame_save_en: false    # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
                                 # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
     ikdtree_output_save_en: false  # true: save the ikdtree point cloud to ROOT_DIR/TREE_CLOUDS/
+
+lidar_ba:
+    enable: true
+    window_size: 10
+    max_iterations: 5
+    voxel_size: 1.0
+    point_leaf_size: 0.2
+    max_layer: 2
+    min_points: 20
+    thread_num: 2
+    min_eigen_value: 0.0025
+    max_fixed_points: 100
+    plane_eigenvalue_threshold: [0.25, 0.25, 0.25]
+    min_layer_points: [5.0, 5.0, 5.0]

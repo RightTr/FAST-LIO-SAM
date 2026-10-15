@@ -48,6 +48,11 @@ class ImuProcess
   void set_gyr_bias_cov(const V3D &b_g);
   void set_acc_bias_cov(const V3D &b_a);
   void set_grav_align(bool enabled);
+  void syncPose(const M3D &rotationDelta, const V3D &gravity)
+  {
+    acc_s_last = rotationDelta * (acc_s_last - gravity) + gravity;
+    pbuffer.Clear();
+  }
 
   void Process(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI::Ptr pcl_un_);
 

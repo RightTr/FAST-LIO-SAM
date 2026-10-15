@@ -43,6 +43,7 @@ public:
     void predict(double dt, const Vector3 &acc, const Vector3 &gyro,
                  const Noise &noise);
     void updateLidar(const MeasurementBuilder &builder, double lidar_cov);
+    void setPose(const Matrix3 &rotation, const Vector3 &position);
     void setMaxIterations(int n) { max_iterations_ = n; }
 
     State &state() { return state_; }

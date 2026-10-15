@@ -46,13 +46,6 @@ extern float globalMapVisualizationPoseDensity;
 extern float globalMapVisualizationLeafSize;
 
 extern float mappingICPSize;
-extern float groundAssociationAngleDeg;
-extern float groundAssociationDistance;
-extern double floorHeight;
-extern double planeNormalVar;
-extern double planeDistVar;
-extern double floorPriorVar;
-extern double floorPlaneVar;
 
 extern int ikdtreeSearchNeighborNum;
 
@@ -62,9 +55,7 @@ extern bool feat_accum_save_en;
 extern bool scan_frame_save_en;
 extern bool imu_state_save_en;
 extern bool ikdtree_output_save_en;
-extern bool groundEnableFlag;
 extern bool sceneEnableFlag;
-extern int groundInterval;
 
 extern std::string map_frame;
 extern std::string odom_frame;
@@ -96,6 +87,7 @@ extern bool use_prior_map;
 extern std::atomic<bool> flg_exit;
 
 void read_liosam_params();
+void read_lidar_ba_params();
 void read_sgraph_params();
 void read_gnss_params();
 void set_mapping_mode();

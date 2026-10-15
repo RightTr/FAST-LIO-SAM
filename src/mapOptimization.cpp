@@ -4,8 +4,7 @@
 #include "common_utils.h"
 #include "GNSS_Processing.hpp"
 #include "factor/gnssYaw_factor.h"
-#include "s-graph/factor/floor_factor.h"
-#include "s-graph/plane.h"
+#include "factor/gnssXY_factor.h"
 #include "s-graph/floorMap.h"
 #include "scan_context/Scancontext.h"
 #include "map_optimization.h"
@@ -23,10 +22,8 @@
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
-#include <gtsam/geometry/OrientedPlane3.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
-#include <gtsam/slam/OrientedPlane3Factor.h>
 #include <gtsam/navigation/GPSFactor.h>
 #include <gtsam/navigation/ImuFactor.h>
 #include <gtsam/navigation/CombinedImuFactor.h>
@@ -64,6 +61,7 @@ Eigen::MatrixXd poseCovariance;
 
 Pcl2Publisher pubKeyPoses;
 PathPublisher pubPath;
+PathPublisher pubGlobalPath;
 
 Pcl2Publisher pubLaserCloudGlobal;
 
@@ -81,33 +79,20 @@ TimeType timeLaserInfoStamp;
 pcl::PointCloud<PointTypeIndex>::Ptr cloudKeyPoses3D; // Store keyframe poses and indexes 
 pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 pcl::PointCloud<PointTypePose>::Ptr cloudKeyOdomPoses6D;
-
-double timeLaserInfoCur;
-
-float transformTobeMapped[6];
-Eigen::Vector3d translationLidarToIMU = Eigen::Vector3d::Zero();
-Eigen::Matrix3d rotationLidarToIMU = Eigen::Matrix3d::Identity();
+std::vector<PointTypePose> cloudKeyBAPoses6D;
 
 PathMsg globalPath;
-Plane plane;
 FloorMap floorMap;
 SCManager sc_manager;
-
-gtsam::noiseModel::Diagonal::shared_ptr planeNoise;
-gtsam::SharedNoiseModel floorNormalPriorNoise;
-gtsam::SharedNoiseModel floorPlaneNoise;
 std::mutex gravityAxisMutex;
 Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
 
 std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
-std::mutex mtxSceneBatch;
-std::atomic<bool> sceneDone{false};
 std::atomic<bool> loopDone{false};
 
 bool graphUpdate = false;
 bool loopIsClosed = false;
-std::deque<SceneBatch> sceneQueue;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
 std::deque<LoopFactor> loopQueue;
@@ -122,8 +107,6 @@ static double yawToMap(double yaw)
 }
 
 void correctPoses();
-void addSceneFactor();
-void sceneMatchingThread();
 
 void setGravityUp(const Eigen::Vector3d &gravity_up)
 {
@@ -163,23 +146,6 @@ float pointDistance(PointTypeIndex p1, PointTypeIndex p2)
     return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));
 }
 
-PointTypePose trans2PointTypePose(float transformIn[])
-{
-    PointTypePose thisPose6D;
-    thisPose6D.x = transformIn[3];
-    thisPose6D.y = transformIn[4];
-    thisPose6D.z = transformIn[5];
-    thisPose6D.roll  = transformIn[0];
-    thisPose6D.pitch = transformIn[1];
-    thisPose6D.yaw   = transformIn[2];
-    return thisPose6D;
-}
-
-void setLaserCurTime(double lidar_end_time)
-{
-    timeLaserInfoCur = lidar_end_time;
-}
-
 pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, const PointTypePose *transformIn)
 {
     return transformPointCloud(
@@ -216,15 +182,11 @@ void allocateMemory()
     cloudKeyPoses3D.reset(new pcl::PointCloud<PointTypeIndex>());
     cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
     cloudKeyOdomPoses6D.reset(new pcl::PointCloud<PointTypePose>());
-
-    for (int i = 0; i < 6; ++i){
-        transformTobeMapped[i] = 0;
-    }
 }
 
 void MapOptimizationInit()
 {
-    sceneDone.store(!groundEnableFlag);
+    cloudKeyBAPoses6D.clear();
     loopDone.store(!loopClosureEnableFlag);
     gnss_aligned.store(false);
     R_enu_map = Eigen::Matrix3d::Identity();
@@ -238,19 +200,13 @@ void MapOptimizationInit()
     parameters.factorization = ISAM2Params::QR;
     isam = new ISAM2(parameters);
 
-    gtsam::Vector3 plane_var;
-    plane_var << planeNormalVar, planeNormalVar, planeDistVar;
-    planeNoise = gtsam::noiseModel::Diagonal::Variances(plane_var);
-    floorNormalPriorNoise = gtsam::noiseModel::Isotropic::Sigma(
-        2, std::sqrt(floorPriorVar));
-    floorPlaneNoise = gtsam::noiseModel::Isotropic::Sigma(
-        2, std::sqrt(floorPlaneVar));
     setGravityUp(Eigen::Vector3d::UnitZ());
 
     init_ros_node();
     
     pubKeyPoses = create_publisher<PointCloud2Msg>("lio_sam/trajectory", 1);
     pubPath = create_publisher<PathMsg>("lio_sam/mapping/path", 1);
+    pubGlobalPath = create_publisher<PathMsg>("/global_path", 1);
     pubLaserCloudGlobal = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_global", 1);
     pubRecentKeyFrame = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_recent_keyframe", 1);
     pubLoopConstraintEdge = create_publisher<MarkerArrayMsg>("lio_sam/loop_closure_constraints", 1);
@@ -265,27 +221,6 @@ void MapOptimizationInit()
 
     allocateMemory();
 }
-
-bool isKeyFrame()
-{
-    if (cloudKeyOdomPoses6D->points.empty())
-        return true;
-
-    Eigen::Affine3f transStart = pclPointToAffine3f(cloudKeyOdomPoses6D->back());
-    Eigen::Affine3f transFinal = pcl::getTransformation(transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5], 
-                                                        transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
-    Eigen::Affine3f transBetween = transStart.inverse() * transFinal;
-    float x, y, z, roll, pitch, yaw;
-    pcl::getTranslationAndEulerAngles(transBetween, x, y, z, roll, pitch, yaw);
-
-    if (abs(roll)  < surroundingkeyframeAddingAngleThreshold &&
-        abs(pitch) < surroundingkeyframeAddingAngleThreshold && 
-        abs(yaw)   < surroundingkeyframeAddingAngleThreshold &&
-        sqrt(x*x + y*y + z*z) < surroundingkeyframeAddingDistThreshold)
-        return false;
-    
-    return true;
-}  
 
 std::vector<std::pair<int, int>> getLoopSearchRanges(
     int loopKeyCur,
@@ -546,7 +481,8 @@ void performLoopClosure(
         performLoopICP(loopKeyCur, loopKeys, floorRanges, poses6D, clouds);
 }
 
-void addOdomFactor()
+void addOdomFactor(const PointTypePose &odomPose,
+                  const PointTypePose &baPose)
 {
     if (cloudKeyPoses3D->points.empty())
     {
@@ -556,7 +492,7 @@ void addOdomFactor()
         noiseModel::Diagonal::shared_ptr priorNoise = 
             noiseModel::Diagonal::Variances(priorVariance);
         const gtsam::Pose3 poseTo = [&]() {
-            const gtsam::Pose3 poseOdom = trans2gtsamPose(transformTobeMapped);
+            const gtsam::Pose3 poseOdom = pclPointTogtsamPose3(baPose);
             const Eigen::Matrix3d R_map_body = R_map_odom * poseOdom.rotation().matrix();
             const Eigen::Vector3d t_map_body = R_map_odom *
                 Eigen::Vector3d(poseOdom.translation().x(),
@@ -568,8 +504,8 @@ void addOdomFactor()
         gtSAMgraph.add(PriorFactor<Pose3>(0, poseTo, priorNoise));
         initialEstimate.insert(0, poseTo);
     }else{
-        const gtsam::Pose3 poseFromFront = pclPointTogtsamPose3(cloudKeyOdomPoses6D->points.back());
-        const gtsam::Pose3 poseToFront = trans2gtsamPose(transformTobeMapped);
+        const gtsam::Pose3 poseFromFront = pclPointTogtsamPose3(cloudKeyBAPoses6D.back());
+        const gtsam::Pose3 poseToFront = pclPointTogtsamPose3(baPose);
         const gtsam::Pose3 odomDelta = poseFromFront.between(poseToFront);
         const gtsam::Pose3 poseFromOpt = pclPointTogtsamPose3(cloudKeyPoses6D->points.back());
         const gtsam::Pose3 poseToOpt = poseFromOpt.compose(odomDelta);
@@ -624,7 +560,6 @@ void addLoopFactor()
 
 void poseGraphUpdate()
 {
-    addSceneFactor();
     addLoopFactor();
     if (gtSAMgraph.empty())
         return;
@@ -639,150 +574,6 @@ void poseGraphUpdate()
     isamCurrentEstimate = isam->calculateEstimate();
     graphUpdate = true;
     correctPoses();
-}
-
-void addSceneFactor()
-{
-    if (!groundEnableFlag)
-        return;
-
-    std::deque<SceneBatch> batches;
-
-    {
-        std::lock_guard<std::mutex> lock(mtxSceneBatch);
-        if (sceneQueue.empty())
-            return;
-
-        batches.swap(sceneQueue);
-    }
-
-    while (!batches.empty())
-    {
-        SceneBatch batch = std::move(batches.front());
-        batches.pop_front();
-
-        const gtsam::Unit3 floor_up(getGravityUp());
-
-        for (const auto &factor : batch.factors)
-        {
-            const gtsam::Key pkey = gtsam::Symbol('p', factor.id);
-            if (!initialEstimate.exists(pkey) &&
-                !isamCurrentEstimate.exists(pkey))
-            {
-                if (batch.planes.empty() ||
-                    !isamCurrentEstimate.exists(static_cast<gtsam::Key>(factor.key)))
-                    continue;
-
-                Eigen::Vector4d body_plane = factor.obs;
-                const double body_norm = body_plane.head<3>().norm();
-                if (body_norm <= 1e-6) continue;
-                body_plane /= body_norm;
-
-                const gtsam::Pose3 pose_map =
-                    isamCurrentEstimate.at<Pose3>(
-                        static_cast<gtsam::Key>(factor.key));
-                const Eigen::Matrix3d R = pose_map.rotation().matrix();
-                const Eigen::Vector3d t(
-                    pose_map.translation().x(),
-                    pose_map.translation().y(),
-                    pose_map.translation().z());
-
-                Eigen::Vector3d normal = R * body_plane.head<3>();
-                double d = body_plane[3] - normal.dot(t);
-                Eigen::Vector4d map_plane;
-                map_plane << normal.x(), normal.y(), normal.z(), d;
-
-                const Eigen::Vector3d up = getGravityUp();
-                if (map_plane.head<3>().dot(up) < 0.0)
-                    map_plane = -map_plane;
-
-                initialEstimate.insert(pkey, gtsam::OrientedPlane3(map_plane));
-
-                const int floor_id = sceneEnableFlag ? batch.planes.front().floor : 0;
-                const gtsam::Key fkey = gtsam::Symbol('f', floor_id);
-
-                if (!initialEstimate.exists(fkey) &&
-                    !isamCurrentEstimate.exists(fkey))
-                {
-                    initialEstimate.insert(fkey, floor_up);
-                    gtSAMgraph.add(
-                        gtsam::PriorFactor<gtsam::Unit3>(fkey, floor_up, floorNormalPriorNoise));
-                }
-
-                gtSAMgraph.add(
-                    boost::shared_ptr<FloorFactor>(
-                        new FloorFactor(fkey, pkey, floorPlaneNoise)));
-
-                // ROS_PRINT_INFO(
-                //     "[GROUND GRAPH] NEW p%d floor=%d key=%d body=(%.3f %.3f %.3f %.3f) map=(%.3f %.3f %.3f %.3f)",
-                //     factor.id, floor_id, factor.key,
-                //     body_plane[0], body_plane[1], body_plane[2], body_plane[3],
-                //     map_plane[0], map_plane[1], map_plane[2], map_plane[3]);
-            }
-
-            gtSAMgraph.add(
-                gtsam::OrientedPlane3Factor(
-                    factor.obs, planeNoise, static_cast<gtsam::Key>(factor.key), pkey));
-        }
-        graphUpdate = true;
-    }
-}
-
-void sceneMatchingThread()
-{
-    if (!groundEnableFlag)
-        return;
-
-    RateType rate(20);
-    int nextKey = 0;
-
-    while (ros_ok() && !flg_exit)
-    {
-        rate.sleep();
-
-        pcl::PointCloud<PointTypeIndex>::Ptr cloud;
-        PointTypePose pose;
-        int readyKeyNum = 0;
-
-        {
-            std::lock_guard<std::mutex> lock(mtxKeyframe);
-            readyKeyNum = static_cast<int>(featCloudKeyFrames.size());
-            if (nextKey >= readyKeyNum)
-            {
-                sceneDone.store(true);
-                continue;
-            }
-
-            cloud = featCloudKeyFrames[nextKey];
-            pose = cloudKeyOdomPoses6D->points[nextKey];
-        }
-
-        sceneDone.store(false);
-
-        plane.update(nextKey, cloud, pose);
-
-        if (nextKey && nextKey % groundInterval == 0)
-        {
-            std::vector<PlaneObs> planes;
-            plane.extract(planes);
-
-            SceneBatch batch;
-            if (floorMap.updateGround(
-                    planes,
-                    nextKey,
-                    pose,
-                    batch))
-            {
-                std::lock_guard<std::mutex> batchLock(mtxSceneBatch);
-                sceneQueue.push_back(std::move(batch));
-            }
-        }
-
-        ++nextKey;
-        sceneDone.store(nextKey >= readyKeyNum);
-    }
-
-    sceneDone.store(true);
 }
 
 void performGnssMatching()
@@ -816,20 +607,28 @@ void performGnssMatching()
         const Eigen::Matrix3d R = poseRotation(pose);
         const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (pos.p - t_enu_map);
         Eigen::Vector3d gnss_pos = p_map_ant - R * p_gnss->lever;
-        if (!useGnssElevation)
+        const Eigen::Vector3d positionDelta = gnss_pos - last_fpos;
+        const double positionDistance = useGnssElevation
+            ? positionDelta.norm() : positionDelta.head<2>().norm();
+        if (!has_fpos || positionDistance >= gpsFactorMinDis)
         {
-            gnss_pos.z() = pose.z;
-        }
-
-        if (!has_fpos || (gnss_pos - last_fpos).norm() >= gpsFactorMinDis)
-        {
-            gtsam::Vector3 gnssVar;
-            gnssVar << gnssPosXYVar,
-                       gnssPosXYVar,
-                       gnssPosZVar;
-            gtSAMgraph.add(gtsam::GPSFactor(key,
-                    gtsam::Point3(gnss_pos.x(), gnss_pos.y(), gnss_pos.z()),
-                    gtsam::noiseModel::Diagonal::Variances(gnssVar)));
+            if (useGnssElevation)
+            {
+                gtsam::Vector3 gnssVar;
+                gnssVar << gnssPosXYVar,
+                           gnssPosXYVar,
+                           gnssPosZVar;
+                gtSAMgraph.add(gtsam::GPSFactor(key,
+                        gtsam::Point3(gnss_pos.x(), gnss_pos.y(), gnss_pos.z()),
+                        gtsam::noiseModel::Diagonal::Variances(gnssVar)));
+            }
+            else
+            {
+                const gtsam::Vector2 gnssVar = gtsam::Vector2::Constant(gnssPosXYVar);
+                gtSAMgraph.add(boost::shared_ptr<GnssXYFactor>(
+                    new GnssXYFactor(key, gnss_pos.head<2>(),
+                        gtsam::noiseModel::Diagonal::Variances(gnssVar))));
+            }
 
             last_fpos = gnss_pos;
             has_fpos = true;
@@ -882,108 +681,69 @@ void updatePath(const PointTypePose& pose_in)
     globalPath.poses.push_back(pose_stamped);
 }
 
-void saveKeyFramesAndFactor(pcl::PointCloud<pcl::PointXYZINormal>::Ptr feats_undistort)
+void KeyframeToGlobal(
+    const PointTypePose &odomPose,
+    const PointTypePose &baPose,
+    const pcl::PointCloud<pcl::PointXYZI>::Ptr &frameCloud)
 {
-    const PointTypePose OdomPose = trans2PointTypePose(transformTobeMapped);
-    const gtsam::Key latestPoseKey = static_cast<gtsam::Key>(cloudKeyPoses3D->size());
-
-    // odom factor
-    addOdomFactor();
-    addSceneFactor();
-    // loop factor
+    const gtsam::Key latestPoseKey=static_cast<gtsam::Key>(cloudKeyPoses3D->size());
+    addOdomFactor(odomPose,baPose);
     addLoopFactor();
-    isam->update(gtSAMgraph, initialEstimate);
+    isam->update(gtSAMgraph,initialEstimate);
     isam->update();
+    if(loopIsClosed) for(int i=0;i<5;++i) isam->update();
+    gtSAMgraph.resize(0); initialEstimate.clear();
+    isamCurrentEstimate=isam->calculateEstimate(); graphUpdate=true;
 
-    if (loopIsClosed)
-    {
-        isam->update();
-        isam->update();
-        isam->update();
-        isam->update();
-        isam->update();
-    }
+    const Pose3 estimate=isamCurrentEstimate.at<Pose3>(latestPoseKey);
+    PointTypeIndex pose3; pose3.x=estimate.translation().x(); pose3.y=estimate.translation().y(); pose3.z=estimate.translation().z();
+    pose3.intensity=cloudKeyPoses3D->size();
+    PointTypePose pose6; pose6.x=pose3.x; pose6.y=pose3.y; pose6.z=pose3.z; pose6.intensity=pose3.intensity;
+    pose6.roll=estimate.rotation().roll(); pose6.pitch=estimate.rotation().pitch(); pose6.yaw=estimate.rotation().yaw(); pose6.time=odomPose.time;
 
-    gtSAMgraph.resize(0);
-    initialEstimate.clear();
-
-    isamCurrentEstimate = isam->calculateEstimate();
-    graphUpdate = true;
-
-    //save key poses
-    PointTypeIndex thisPose3D;
-    PointTypePose thisPose6D;
-    const Pose3 latestEstimate = isamCurrentEstimate.at<Pose3>(latestPoseKey);
-
-    thisPose3D.x = latestEstimate.translation().x();
-    thisPose3D.y = latestEstimate.translation().y();
-    thisPose3D.z = latestEstimate.translation().z();
-    thisPose3D.intensity = cloudKeyPoses3D->size(); // this can be used as index
-
-    thisPose6D.x = thisPose3D.x;
-    thisPose6D.y = thisPose3D.y;
-    thisPose6D.z = thisPose3D.z;
-    thisPose6D.intensity = thisPose3D.intensity ; // this can be used as index
-    thisPose6D.roll  = latestEstimate.rotation().roll();
-    thisPose6D.pitch = latestEstimate.rotation().pitch();
-    thisPose6D.yaw   = latestEstimate.rotation().yaw();
-    thisPose6D.time = timeLaserInfoCur;
-
-    pcl::PointCloud<PointTypeIndex>::Ptr featCloudKeyFrame(new pcl::PointCloud<PointTypeIndex>());
-    PointTypeIndex point;
-    for (const auto &pt : feats_undistort->points)
-    {
-        Eigen::Vector3d pointBodyLidar(pt.x, pt.y, pt.z);
-        Eigen::Vector3d pointBodyImu(rotationLidarToIMU * pointBodyLidar + translationLidarToIMU);
-
-        point.x = pointBodyImu(0);
-        point.y = pointBodyImu(1);
-        point.z = pointBodyImu(2);
-        point.intensity = pt.intensity;
-        featCloudKeyFrame->push_back(point);
-    }
-
+    pcl::PointCloud<PointTypeIndex>::Ptr cloud(new pcl::PointCloud<PointTypeIndex>());
+    cloud->reserve(frameCloud ? frameCloud->size() : 0);
+    if(frameCloud) for(const auto &pt: frameCloud->points) { PointTypeIndex q; q.x=pt.x;q.y=pt.y;q.z=pt.z;q.intensity=pt.intensity;cloud->push_back(q); }
     {
         std::lock_guard<std::mutex> lock(mtxKeyframe);
-
-        cloudKeyPoses3D->push_back(thisPose3D);
-        cloudKeyPoses6D->push_back(thisPose6D);
-        featCloudKeyFrames.push_back(featCloudKeyFrame);
-        cloudKeyOdomPoses6D->push_back(OdomPose);
-        if (loopClosureEnableFlag && scanContextEnableFlag)
-            sc_manager.makeAndSaveScancontextAndKeys(*featCloudKeyFrame);
+        cloudKeyPoses3D->push_back(pose3); cloudKeyPoses6D->push_back(pose6);
+        cloudKeyOdomPoses6D->push_back(odomPose); cloudKeyBAPoses6D.push_back(baPose);
+        featCloudKeyFrames.push_back(cloud);
+        if(loopClosureEnableFlag && scanContextEnableFlag) sc_manager.makeAndSaveScancontextAndKeys(*cloud);
     }
+    if (loopClosureEnableFlag) loopDone.store(false);
+    if(sceneEnableFlag) floorMap.update(static_cast<int>(latestPoseKey),odomPose);
+    updatePath(pose6);
+    poseCovariance=isam->marginalCovariance(latestPoseKey);
 
-    if (sceneEnableFlag)
-    {
-        floorMap.update(static_cast<int>(latestPoseKey), OdomPose);
-    }
-
-    updatePath(thisPose6D);
-    poseCovariance = isam->marginalCovariance(latestPoseKey);
-
-    if (keyframe_export_en)
-    {
-        const std::string stamp_str = format_unix_time(thisPose6D.time);
-        const std::string pcd_path = keyframe_frames_dir + "scans/" + stamp_str + ".pcd";
-        pcl::PCDWriter pcd_writer;
-        pcd_writer.writeBinary(pcd_path, *feats_undistort);
+    if(keyframe_export_en) {
+        pcl::PointCloud<pcl::PointXYZINormal> exportCloud;
+        if(frameCloud) for(const auto &pt:frameCloud->points){pcl::PointXYZINormal q;q.x=pt.x;q.y=pt.y;q.z=pt.z;q.intensity=pt.intensity;exportCloud.push_back(q);}
+        const std::string stamp=format_unix_time(pose6.time);
+        pcl::PCDWriter writer; writer.writeBinary(keyframe_frames_dir+"scans/"+stamp+".pcd",exportCloud);
     }
 }
 
 void shutdownMapOptimization()
 {
+#ifdef USE_ROS1
+    pubKeyPoses.shutdown();
+    pubPath.shutdown();
+    pubGlobalPath.shutdown();
+    pubLaserCloudGlobal.shutdown();
+    pubRecentKeyFrame.shutdown();
+    pubLoopConstraintEdge.shutdown();
+    pubKeyFrameYawMarkers.shutdown();
+#elif defined(USE_ROS2)
     pubKeyPoses.reset();
     pubPath.reset();
+    pubGlobalPath.reset();
     pubLaserCloudGlobal.reset();
     pubRecentKeyFrame.reset();
     pubLoopConstraintEdge.reset();
     pubKeyFrameYawMarkers.reset();
-#ifdef USE_ROS1
-    samTfBroadcaster.reset();
-#elif defined(USE_ROS2)
-    samTfBroadcaster.reset();
 #endif
+    samTfBroadcaster.reset();
 
     if (isam != nullptr)
     {
@@ -1089,6 +849,12 @@ void publishSamMsg()
         globalPath.header.stamp = timeLaserInfoStamp;
         globalPath.header.frame_id = map_frame;
         ros_publish(pubPath, globalPath);
+    }
+    if (ros_subscription_count(pubGlobalPath) != 0)
+    {
+        globalPath.header.stamp = timeLaserInfoStamp;
+        globalPath.header.frame_id = map_frame;
+        ros_publish(pubGlobalPath, globalPath);
     }
 
     if (ros_subscription_count(pubKeyFrameYawMarkers) != 0)

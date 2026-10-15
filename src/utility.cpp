@@ -1,4 +1,5 @@
 #include "utility.h"
+#include "lidarBA.h"
 #include "ros_utils.h"
 
 #include <algorithm>
@@ -38,21 +39,13 @@ float globalMapVisualizationPoseDensity;
 float globalMapVisualizationLeafSize;
 
 float mappingICPSize;
-float groundAssociationAngleDeg;
-float groundAssociationDistance;
-double floorHeight;
-double planeNormalVar = 0.0027;
-double planeDistVar = 0.0064;
-double floorPriorVar = 1.2e-5;
-double floorPlaneVar = 7.6e-5;
 
 int ikdtreeSearchNeighborNum;
 
 bool keyframe_export_en = false;
 bool keyframe_global_pcd_en = false;
-bool groundEnableFlag = true;
+LidarBAConfig lidarBAConfig;
 bool sceneEnableFlag = false;
-int groundInterval = 3;
 
 std::string map_frame = "map";
 std::string odom_frame = "odom";
@@ -150,20 +143,30 @@ void read_liosam_params() {
     rosparam_get("lio_sam/ikdtreeSearchNeighborNum", ikdtreeSearchNeighborNum, 8);
     rosparam_get("lio_sam/keyframe_export_en", keyframe_export_en, false);
     rosparam_get("lio_sam/keyframe_global_pcd_en", keyframe_global_pcd_en, false);
+
+}
+
+void read_lidar_ba_params()
+{
+    rosparam_get("lidar_ba/enable", lidarBAConfig.enable, true);
+    rosparam_get("lidar_ba/feedback_to_ekf", lidarBAConfig.feedback_to_ekf, false);
+    rosparam_get("lidar_ba/window_size", lidarBAConfig.window_size, 10);
+    lidarBAConfig.window_size = std::max(2, lidarBAConfig.window_size);
+    rosparam_get("lidar_ba/max_iterations", lidarBAConfig.max_iterations, 5);
+    rosparam_get("lidar_ba/voxel_size", lidarBAConfig.voxel_size, 1.0);
+    rosparam_get("lidar_ba/point_leaf_size", lidarBAConfig.point_leaf_size, 0.2);
+    rosparam_get("lidar_ba/max_layer", lidarBAConfig.max_layer, 2);
+    rosparam_get("lidar_ba/min_points", lidarBAConfig.min_points, 20);
+    rosparam_get("lidar_ba/thread_num", lidarBAConfig.thread_num, 2);
+    rosparam_get("lidar_ba/min_eigen_value", lidarBAConfig.min_eigen_value, 0.0025);
+    rosparam_get("lidar_ba/max_fixed_points", lidarBAConfig.max_fixed_points, 100);
+    rosparam_get("lidar_ba/plane_eigenvalue_threshold", lidarBAConfig.plane_eigenvalue_threshold, std::vector<double>{0.25, 0.25, 0.25});
+    rosparam_get("lidar_ba/min_layer_points", lidarBAConfig.min_layer_points, std::vector<double>{5.0, 5.0, 5.0});
 }
 
 void read_sgraph_params()
 {
-    rosparam_get("s-graph/groundEnableFlag", groundEnableFlag, true);
     rosparam_get("s-graph/sceneEnableFlag", sceneEnableFlag, true);
-    rosparam_get("s-graph/groundInterval", groundInterval, 3);
-    rosparam_get("s-graph/groundAssociationAngleDeg", groundAssociationAngleDeg, 20.0f);
-    rosparam_get("s-graph/groundAssociationDistance", groundAssociationDistance, 1.0f);
-    rosparam_get("s-graph/floorHeight", floorHeight, 4.0);
-    rosparam_get("s-graph/planeNormalVar", planeNormalVar, 0.0027);
-    rosparam_get("s-graph/planeDistVar", planeDistVar, 0.0064);
-    rosparam_get("s-graph/floorPriorVar", floorPriorVar, 1.2e-5);
-    rosparam_get("s-graph/floorPlaneVar", floorPlaneVar, 7.6e-5);
 }
 
 void read_gnss_params() {

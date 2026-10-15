@@ -157,3 +157,9 @@ void SimpleEKF::applyError(const Error &dx)
     state_.bg += dx.segment<3>(BG);
     state_.ba += dx.segment<3>(BA);
 }
+
+void SimpleEKF::setPose(const Matrix3 &rotation, const Vector3 &position)
+{
+    state_.rot = rotation;
+    state_.pos = position;
+}
