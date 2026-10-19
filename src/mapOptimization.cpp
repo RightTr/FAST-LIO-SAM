@@ -89,7 +89,7 @@ std::mutex gravityAxisMutex;
 Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
 Eigen::Vector3d gravityUpMapAxis = Eigen::Vector3d::UnitZ();
 bool gravityUpMapInitialized = false;
-size_t gravityFactorCount = 0;
+bool mapOdomInitialized = false;
 
 std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
@@ -97,6 +97,7 @@ std::atomic<bool> loopDone{false};
 
 bool graphUpdate = false;
 bool loopIsClosed = false;
+bool gnssGraphUpdated = false;
 std::unordered_set<int> loopUsedKeys;
 std::vector<std::pair<int, int>> loopEdges;
 std::deque<LoopFactor> loopQueue;
@@ -199,7 +200,7 @@ void MapOptimizationInit()
     has_fpos = false;
     gravityUpMapAxis = Eigen::Vector3d::UnitZ();
     gravityUpMapInitialized = false;
-    gravityFactorCount = 0;
+    mapOdomInitialized = false;
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
@@ -545,25 +546,12 @@ void addGravityFactor(gtsam::Key key,
     if (!gravityFactorEnable)
         return;
 
-    std::fprintf(stderr, "GravityFactor key=%lu sigma=%.6f body=[%.3f %.3f %.3f] odom=[%.3f %.3f %.3f]\n",
-                 static_cast<unsigned long>(key), gravity_sigma,
-                 gravity_body.x(), gravity_body.y(), gravity_body.z(),
-                 gravity_up_odom.x(), gravity_up_odom.y(), gravity_up_odom.z());
-
-    std::fprintf(stderr, "GravityFactor key=%lu sigma=%.6f body=[%.3f %.3f %.3f] odom=[%.3f %.3f %.3f]\n",
-                 static_cast<unsigned long>(key), gravity_sigma,
-                 gravity_body.x(), gravity_body.y(), gravity_body.z(),
-                 gravity_up_odom.x(), gravity_up_odom.y(), gravity_up_odom.z());
-
     initGravityRef(gravity_up_odom);
     const gtsam::Unit3 worldUp(gravityUpMapAxis);
     const gtsam::Unit3 bodyUp(gravity_body);
     const auto noise = gtsam::noiseModel::Isotropic::Sigma(2, gravity_sigma);
     gtSAMgraph.add(boost::shared_ptr<gtsam::Pose3AttitudeFactor>(
         new gtsam::Pose3AttitudeFactor(key, worldUp, noise, bodyUp)));
-    ++gravityFactorCount;
-    if (gravityFactorCount % 20 == 0)
-        ROS_PRINT_INFO("GTSAM gravity factors added: %zu", gravityFactorCount);
 }
 
 void addLoopFactor()
@@ -665,6 +653,7 @@ void performGnssMatching()
                 gtSAMgraph.add(gtsam::GPSFactor(key,
                         gtsam::Point3(gnss_pos.x(), gnss_pos.y(), gnss_pos.z()),
                         gtsam::noiseModel::Diagonal::Variances(gnssVar)));
+                gnssGraphUpdated = true;
             }
             else
             {
@@ -672,6 +661,7 @@ void performGnssMatching()
                 gtSAMgraph.add(boost::shared_ptr<GnssXYFactor>(
                     new GnssXYFactor(key, gnss_pos.head<2>(),
                         gtsam::noiseModel::Diagonal::Variances(gnssVar))));
+                gnssGraphUpdated = true;
             }
 
             last_fpos = gnss_pos;
@@ -708,6 +698,7 @@ void performGnssMatching()
                 1, std::sqrt(gnssYawVar));
             gtSAMgraph.add(boost::shared_ptr<GnssYawFactor>(
                     new GnssYawFactor(key, yaw_map, yawNoise)));
+            gnssGraphUpdated = true;
         }
     }
 }
@@ -837,7 +828,8 @@ void correctPoses()
         }
     }
 
-    if (!cloudKeyOdomPoses6D->points.empty() &&
+    if ((!mapOdomInitialized || loopIsClosed || gnssGraphUpdated) &&
+        !cloudKeyOdomPoses6D->points.empty() &&
         cloudKeyOdomPoses6D->points.size() == cloudKeyPoses6D->points.size())
     {
         const size_t ref = cloudKeyPoses6D->points.size() - 1;
@@ -853,10 +845,12 @@ void correctPoses()
                                              pose_odom_ref.translation().y(),
                                              pose_odom_ref.translation().z());
         setMapOdom(R_map_odom, t_map_odom);
+        mapOdomInitialized = true;
     }
 
     graphUpdate = false;
     loopIsClosed = false;
+    gnssGraphUpdated = false;
 }
 
 void publishSamMsg()

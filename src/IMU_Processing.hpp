@@ -1,4 +1,5 @@
 #include <cmath>
+#include <algorithm>
 #include <math.h>
 #include <deque>
 #include <mutex>
@@ -23,6 +24,7 @@
 #include "preprocess.h"
 #include "posebuffer.h"
 #include "map_optimization.h"
+#include "lidarBA.h"
 
 /// *************Preconfiguration
 
@@ -56,6 +58,10 @@ class ImuProcess
   double accelerationScale() const { return G_m_s2 / mean_acc.norm(); }
 
   void Process(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI::Ptr pcl_un_);
+
+  void accumulateBAImu(const std::deque<ImuMsgConstPtr> &imu);
+  std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>>
+  takeBAImuInterval(double frame_time, const ImuMsgConstPtr &right_msg = {});
 
   void PBufferPop(Pose &pose);
 
@@ -94,6 +100,14 @@ class ImuProcess
   int    init_iter_num = 1;
   bool   b_first_frame_ = true;
   bool   imu_need_init_ = true;
+
+  std::deque<ImuSample, Eigen::aligned_allocator<ImuSample>> ba_imu_queue_;
+  ImuSample ba_imu_last_;
+  bool ba_imu_last_valid_ = false;
+
+  ImuSample makeBAImuSample(const ImuMsgConstPtr &msg) const;
+  ImuSample interpolateBAImu(const ImuSample &a, const ImuSample &b,
+                             double t) const;
 };
 
 ImuProcess::ImuProcess()
@@ -114,6 +128,86 @@ ImuProcess::ImuProcess()
 
 ImuProcess::~ImuProcess() {}
 
+ImuSample ImuProcess::makeBAImuSample(const ImuMsgConstPtr &msg) const
+{
+  ImuSample sample;
+  sample.t = get_ros_time_sec(msg->header.stamp);
+  sample.acc = accelerationScale() * V3D(
+      msg->linear_acceleration.x,
+      msg->linear_acceleration.y,
+      msg->linear_acceleration.z);
+  sample.gyr << msg->angular_velocity.x,
+                msg->angular_velocity.y,
+                msg->angular_velocity.z;
+  return sample;
+}
+
+ImuSample ImuProcess::interpolateBAImu(const ImuSample &a,
+                                       const ImuSample &b,
+                                       double t) const
+{
+  const double alpha = (t - a.t) / (b.t - a.t);
+  ImuSample sample;
+  sample.t = t;
+  sample.acc = (1.0 - alpha) * a.acc + alpha * b.acc;
+  sample.gyr = (1.0 - alpha) * a.gyr + alpha * b.gyr;
+  return sample;
+}
+
+void ImuProcess::accumulateBAImu(const std::deque<ImuMsgConstPtr> &imu)
+{
+  for (const auto &msg : imu)
+  {
+    ImuSample sample = makeBAImuSample(msg);
+    if ((!ba_imu_last_valid_ || sample.t > ba_imu_last_.t) &&
+        (ba_imu_queue_.empty() || sample.t > ba_imu_queue_.back().t))
+      ba_imu_queue_.push_back(std::move(sample));
+  }
+}
+
+std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>>
+ImuProcess::takeBAImuInterval(double frame_time,
+                              const ImuMsgConstPtr &right_msg)
+{
+  ImuSample right;
+  const bool has_right = right_msg != nullptr;
+  if (has_right) right = makeBAImuSample(right_msg);
+
+  auto upper = std::lower_bound(
+      ba_imu_queue_.begin(), ba_imu_queue_.end(), frame_time,
+      [](const ImuSample &sample, double t) { return sample.t < t; });
+
+  ImuSample endpoint;
+  if (upper != ba_imu_queue_.end() && upper->t == frame_time)
+    endpoint = *upper;
+  else if (upper != ba_imu_queue_.end())
+  {
+    if (upper == ba_imu_queue_.begin()) return {};
+    endpoint = interpolateBAImu(*(upper - 1), *upper, frame_time);
+  }
+  else if (has_right && !ba_imu_queue_.empty() &&
+           right.t > ba_imu_queue_.back().t)
+    endpoint = interpolateBAImu(ba_imu_queue_.back(), right, frame_time);
+  else
+    return {};
+
+  std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>> interval;
+  if (ba_imu_last_valid_)
+  {
+    interval.push_back(ba_imu_last_);
+    for (const ImuSample &sample : ba_imu_queue_)
+      if (sample.t > ba_imu_last_.t && sample.t < frame_time)
+        interval.push_back(sample);
+    interval.push_back(endpoint);
+  }
+
+  ba_imu_last_ = endpoint;
+  ba_imu_last_valid_ = true;
+  while (!ba_imu_queue_.empty() && ba_imu_queue_.front().t <= frame_time)
+    ba_imu_queue_.pop_front();
+  return interval;
+}
+
 void ImuProcess::Reset() 
 {
   // ROS_WARN("Reset ImuProcess");
@@ -128,6 +222,8 @@ void ImuProcess::Reset()
   pbuffer.Clear();
   last_imu_.reset(new ImuMsg());
   cur_pcl_un_.reset(new PointCloudXYZI());
+  ba_imu_queue_.clear();
+  ba_imu_last_valid_ = false;
 }
 
 void ImuProcess::set_extrinsic(const MD(4,4) &T)

@@ -173,9 +173,6 @@ vector<double>       extrinR(9, 0.0);
 deque<double>                     time_buffer;
 deque<PointCloudXYZI::Ptr>        lidar_buffer;
 deque<ImuMsgConstPtr> imu_buffer;
-std::deque<ImuSample, Eigen::aligned_allocator<ImuSample>> baImuPending;
-ImuSample baImuBoundary;
-bool baImuBoundaryValid = false;
 
 mutex mtx_reloc;
 condition_variable sig_reloc;
@@ -940,85 +937,14 @@ bool sync_packages(MeasureGroup &meas)
     imuRollbackScan = false;
     while (!imuRollbackTimes.empty() && imuRollbackTimes.front() <= lidar_end_time)
     {
-        imuRollbackScan = lidarBAConfig.enable && lidarBAConfig.feedback_to_ekf;
+        // The first scan after an IMU timestamp repair uses a synthetic
+        // continuous timestamp.  Let the EKF consume it to keep state
+        // continuity, but never let this transition scan contaminate the
+        // map or the BA window.
+        imuRollbackScan = true;
         imuRollbackTimes.pop_front();
     }
     return true;
-}
-
-ImuSample makeBAImuSample(const ImuMsgConstPtr &msg)
-{
-    ImuSample sample;
-    sample.t = get_ros_time_sec(msg->header.stamp);
-    sample.acc = p_imu->accelerationScale() * Eigen::Vector3d(
-        msg->linear_acceleration.x,
-        msg->linear_acceleration.y,
-        msg->linear_acceleration.z);
-    sample.gyr = Eigen::Vector3d(
-        msg->angular_velocity.x,
-        msg->angular_velocity.y,
-        msg->angular_velocity.z);
-    return sample;
-}
-
-void accumulateBAImu(const MeasureGroup &measures)
-{
-    for (const auto &msg : measures.imu)
-    {
-        ImuSample sample = makeBAImuSample(msg);
-        if ((!baImuBoundaryValid || sample.t > baImuBoundary.t) &&
-            (baImuPending.empty() || sample.t > baImuPending.back().t))
-            baImuPending.push_back(std::move(sample));
-    }
-}
-
-ImuSample interpolateBAImu(const ImuSample &a, const ImuSample &b, double t)
-{
-    const double alpha = (t-a.t)/(b.t-a.t);
-    ImuSample sample;
-    sample.t=t;
-    sample.acc=(1.0-alpha)*a.acc+alpha*b.acc;
-    sample.gyr=(1.0-alpha)*a.gyr+alpha*b.gyr;
-    return sample;
-}
-
-std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>>
-takeBAImuInterval(double frameTime)
-{
-    std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>> samples(
-        baImuPending.begin(),baImuPending.end());
-    {
-        std::lock_guard<std::mutex> lock(mtx_buffer);
-        if(!imu_buffer.empty())
-        {
-            const ImuSample right=makeBAImuSample(imu_buffer.front());
-            if(samples.empty() || right.t>samples.back().t)
-                samples.push_back(right);
-        }
-    }
-
-    auto upper=std::lower_bound(samples.begin(),samples.end(),frameTime,
-        [](const ImuSample &sample,double t){return sample.t<t;});
-    ImuSample endpoint;
-    if(upper!=samples.end() && upper->t==frameTime)
-        endpoint=*upper;
-    else
-        endpoint=interpolateBAImu(*(upper-1),*upper,frameTime);
-
-    std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>> interval;
-    if(baImuBoundaryValid)
-    {
-        interval.push_back(baImuBoundary);
-        for(const ImuSample &sample:baImuPending)
-            if(sample.t>baImuBoundary.t && sample.t<frameTime)
-                interval.push_back(sample);
-        interval.push_back(endpoint);
-    }
-    baImuBoundary=endpoint;
-    baImuBoundaryValid=true;
-    while(!baImuPending.empty() && baImuPending.front().t<=frameTime)
-        baImuPending.pop_front();
-    return interval;
 }
 
 void map_incremental(pcl::PointCloud<PointType> *acceptedCloud = nullptr,
@@ -1288,7 +1214,12 @@ int addLidarBAFrame(pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud,
     frame.bg = kf.state().bg;
     frame.ba = kf.state().ba;
     frame.gravity_odom = kf.gravity();
-    frame.imu = takeBAImuInterval(timestamp);
+    ImuMsgConstPtr right_imu;
+    {
+        std::lock_guard<std::mutex> lock(mtx_buffer);
+        if (!imu_buffer.empty()) right_imu = imu_buffer.front();
+    }
+    frame.imu = p_imu->takeBAImuInterval(timestamp, right_imu);
     if (lidarBAConfig.enable && lidarBAConfig.feedback_to_ekf)
     {
         LidarBAMapFrame mapFrame;
@@ -1487,8 +1418,7 @@ bool handleLidarBA()
                 KeyframeToGlobal(
                     odomPose, baPose, frame.cloud,
                     baTransform.linear().transpose()*gravityUpOdom,
-                    gravityUpOdom,
-                    baGravitySigma);
+                    gravityUpOdom, baGravitySigma);
                 correctPoses();
                 publishSamMsg();
             }
@@ -2633,8 +2563,6 @@ int main(int argc, char** argv)
     lidarBAOdomPosesById.clear();
     lidarBAMapFrames.clear();
     lidarBAPoses.clear();
-    baImuPending.clear();
-    baImuBoundaryValid = false;
     if (keyframe_en)
         lidarBA.reset(new LidarBA(lidarBAConfig));
 #ifdef USE_ROS1
@@ -2714,7 +2642,7 @@ int main(int argc, char** argv)
             solve_time = 0;
 
             p_imu->Process(Measures, kf, feats_undistort);
-            accumulateBAImu(Measures);
+            p_imu->accumulateBAImu(Measures.imu);
             state_point = kf.state();
             pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU; // LiDAR position in the world coordinate frame
 

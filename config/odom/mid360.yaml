@@ -62,9 +62,10 @@ result_save:
 
 lidar_ba:
     enable: true
-    feedback_to_ekf: false
+    feedback_to_ekf: true
     imu_enable: true
-    gravity_optimize: false
+    gravity_optimize: true
+    gravity_prior_sigma_deg: 3.0
     window_size: 10
     max_iterations: 5
     voxel_size: 1.0
