@@ -35,166 +35,166 @@ using GnssOdomMsg = nav_msgs::msg::Odometry;
 using GnssOdomMsgConstPtr = nav_msgs::msg::Odometry::ConstSharedPtr;
 #endif
 
-struct PosData
+struct GnssPositionData
 {
-  double t = -1.0;
-  Eigen::Vector3d p = Eigen::Vector3d::Zero();
-  Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+  double time = -1.0;
+  Eigen::Vector3d position = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
 };
 
-struct YawData
+struct GnssYawData
 {
-  double t = -1.0;
+  double time = -1.0;
   double yaw = 0.0;
 };
 
 template <typename Allocator>
-inline int find_gnss_key(const std::vector<PointTypePose, Allocator> &keyposes,
-                         double stamp)
+inline int findGnssKey(const std::vector<PointTypePose, Allocator> &keyPoses,
+                       double stamp)
 {
-  if (keyposes.empty() || stamp > keyposes.back().time)
+  if (keyPoses.empty() || stamp > keyPoses.back().time)
     return -2;
 
-  int key = -1;
-  double dt = 0.0;
+  int keyIndex = -1;
+  double timeDiff = 0.0;
   findNearestByTime(
-      keyposes, stamp, key, dt,
+      keyPoses, stamp, keyIndex, timeDiff,
       [](const PointTypePose &pose) { return pose.time; });
-  return dt <= gnss_dt ? key : -1;
+  return timeDiff <= gnss_dt ? keyIndex : -1;
 }
 
 class GnssProcess
 {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-  bool gnss_fix_cbk(const GnssFixMsgConstPtr &msg, PosData &data)
+  bool processGnssFix(const GnssFixMsgConstPtr &msg, GnssPositionData &data)
   {
     const GnssFixMsg &fix = *msg;
     if (fix.status.status < 0) {
       return false;
     }
-    const double t = get_ros_time_sec(fix.header.stamp);
+    const double stamp = get_ros_time_sec(fix.header.stamp);
 
-    std::lock_guard<std::mutex> lock(mtx_gnss);
-    if (!origin_ready_) {
-      origin_ecef_ = GeodeticToECEF(fix.latitude, fix.longitude, fix.altitude);
-      origin_rot_ = EnuRotation(fix.latitude, fix.longitude);
-      origin_ready_ = true;
+    std::lock_guard<std::mutex> lock(gnssMutex);
+    if (!originReady_) {
+      originEcef_ = geodeticToEcef(fix.latitude, fix.longitude, fix.altitude);
+      originRotation_ = enuRotation(fix.latitude, fix.longitude);
+      originReady_ = true;
     }
 
-    const Eigen::Vector3d ecef = GeodeticToECEF(fix.latitude, fix.longitude, fix.altitude);
-    data.t = t;
-    data.p = origin_rot_ * (ecef - origin_ecef_);
-    data.cov = covarianceFromMsg(fix);
+    const Eigen::Vector3d ecef = geodeticToEcef(fix.latitude, fix.longitude, fix.altitude);
+    data.time = stamp;
+    data.position = originRotation_ * (ecef - originEcef_);
+    data.covariance = covarianceFromMsg(fix);
 
-    if ((data.cov.diagonal().array() <= 0.0).any())
+    if ((data.covariance.diagonal().array() <= 0.0).any())
     {
       return false;
     }
 
-    const auto pos_it = std::lower_bound(
-        pos_buf.begin(), pos_buf.end(), t,
-        [](const PosData &item, double stamp) { return item.t < stamp; });
-    pos_buf.insert(pos_it, data);
-    if (t > latest_pos.t) {
-      latest_pos = data;
+    const auto posIt = std::lower_bound(
+        posBuffer.begin(), posBuffer.end(), stamp,
+        [](const GnssPositionData &item, double stamp) { return item.time < stamp; });
+    posBuffer.insert(posIt, data);
+    if (stamp > latestPos.time) {
+      latestPos = data;
     }
     return true;
   }
 
-  bool gnss_yaw_cbk(const GnssOdomMsgConstPtr &msg)
+  bool processGnssYaw(const GnssOdomMsgConstPtr &msg)
   {
     const auto &q = msg->pose.pose.orientation;
-    const double t = get_ros_time_sec(msg->header.stamp);
-    const double raw = quaternionToRPY(q.w, q.x, q.y, q.z).z();
+    const double stamp = get_ros_time_sec(msg->header.stamp);
+    const double rawYaw = quaternionToRPY(q.w, q.x, q.y, q.z).z();
 
-    YawData data;
-    data.t = t;
-    data.yaw = normalizeYaw(M_PI * 0.5 - raw - heading_offset);
+    GnssYawData data;
+    data.time = stamp;
+    data.yaw = normalizeYaw(M_PI * 0.5 - rawYaw - headingOffset);
 
-    std::lock_guard<std::mutex> lock(mtx_gnss);
-    const auto yaw_it = std::lower_bound(
-        yaw_buf.begin(), yaw_buf.end(), t,
-        [](const YawData &item, double stamp) { return item.t < stamp; });
-    yaw_buf.insert(yaw_it, data);
-    if (t > latest_yaw.t) {
-      latest_yaw = data;
+    std::lock_guard<std::mutex> lock(gnssMutex);
+    const auto yawIt = std::lower_bound(
+        yawBuffer.begin(), yawBuffer.end(), stamp,
+        [](const GnssYawData &item, double stamp) { return item.time < stamp; });
+    yawBuffer.insert(yawIt, data);
+    if (stamp > latestYaw.time) {
+      latestYaw = data;
     }
     return true;
   }
 
-  bool sync_gnss_init(PosData &pos_out, YawData &yaw_out)
+  bool syncGnssInit(GnssPositionData &posOut, GnssYawData &yawOut)
   {
-    std::lock_guard<std::mutex> lock(mtx_gnss);
+    std::lock_guard<std::mutex> lock(gnssMutex);
 
-    while (!pos_buf.empty() && !yaw_buf.empty()) {
-      const double dt = pos_buf.front().t - yaw_buf.front().t;
+    while (!posBuffer.empty() && !yawBuffer.empty()) {
+      const double timeDiff = posBuffer.front().time - yawBuffer.front().time;
 
-      if (std::abs(dt) <= 0.1) {
-        pos_out = pos_buf.front();
-        yaw_out = yaw_buf.front();
-        pos_buf.pop_front();
-        yaw_buf.pop_front();
+      if (std::abs(timeDiff) <= 0.1) {
+        posOut = posBuffer.front();
+        yawOut = yawBuffer.front();
+        posBuffer.pop_front();
+        yawBuffer.pop_front();
         return true;
       }
 
-      if (dt < 0.0) {
-        pos_buf.pop_front();
+      if (timeDiff < 0.0) {
+        posBuffer.pop_front();
       } else {
-        yaw_buf.pop_front();
+        yawBuffer.pop_front();
       }
     }
 
     return false;
   }
 
-  std::deque<PosData> pos_buf;
-  std::deque<YawData> yaw_buf;
-  std::mutex mtx_gnss;
+  std::deque<GnssPositionData> posBuffer;
+  std::deque<GnssYawData> yawBuffer;
+  std::mutex gnssMutex;
 
-  PosData latest_pos;
-  YawData latest_yaw;
+  GnssPositionData latestPos;
+  GnssYawData latestYaw;
 
-  Eigen::Vector3d lever = Eigen::Vector3d::Zero();
-  double heading_offset = 0.0;
+  Eigen::Vector3d leverArm = Eigen::Vector3d::Zero();
+  double headingOffset = 0.0;
 
  private:
   static constexpr double kWgs84A = 6378137.0;
   static constexpr double kWgs84F = 1.0 / 298.257223563;
   static constexpr double kWgs84E2 = kWgs84F * (2.0 - kWgs84F);
 
-  static Eigen::Matrix3d EnuRotation(double latitude_deg, double longitude_deg)
+  static Eigen::Matrix3d enuRotation(double latitudeDeg, double longitudeDeg)
   {
-    const double lat = latitude_deg * M_PI / 180.0;
-    const double lon = longitude_deg * M_PI / 180.0;
-    const double sin_lat = std::sin(lat);
-    const double cos_lat = std::cos(lat);
-    const double sin_lon = std::sin(lon);
-    const double cos_lon = std::cos(lon);
+    const double lat = latitudeDeg * M_PI / 180.0;
+    const double lon = longitudeDeg * M_PI / 180.0;
+    const double sinLat = std::sin(lat);
+    const double cosLat = std::cos(lat);
+    const double sinLon = std::sin(lon);
+    const double cosLon = std::cos(lon);
 
     Eigen::Matrix3d rot;
-    rot << -sin_lon,            cos_lon,           0.0,
-           -sin_lat * cos_lon,  -sin_lat * sin_lon, cos_lat,
-            cos_lat * cos_lon,   cos_lat * sin_lon, sin_lat;
+    rot << -sinLon,          cosLon,         0.0,
+           -sinLat * cosLon, -sinLat * sinLon, cosLat,
+            cosLat * cosLon,  cosLat * sinLon, sinLat;
     return rot;
   }
 
-  static Eigen::Vector3d GeodeticToECEF(double latitude_deg,
-                                        double longitude_deg,
+  static Eigen::Vector3d geodeticToEcef(double latitudeDeg,
+                                        double longitudeDeg,
                                         double altitude)
   {
-    const double lat = latitude_deg * M_PI / 180.0;
-    const double lon = longitude_deg * M_PI / 180.0;
-    const double sin_lat = std::sin(lat);
-    const double cos_lat = std::cos(lat);
-    const double sin_lon = std::sin(lon);
-    const double cos_lon = std::cos(lon);
-    const double n = kWgs84A / std::sqrt(1.0 - kWgs84E2 * sin_lat * sin_lat);
+    const double lat = latitudeDeg * M_PI / 180.0;
+    const double lon = longitudeDeg * M_PI / 180.0;
+    const double sinLat = std::sin(lat);
+    const double cosLat = std::cos(lat);
+    const double sinLon = std::sin(lon);
+    const double cosLon = std::cos(lon);
+    const double radius = kWgs84A / std::sqrt(1.0 - kWgs84E2 * sinLat * sinLat);
 
     Eigen::Vector3d ecef;
-    ecef.x() = (n + altitude) * cos_lat * cos_lon;
-    ecef.y() = (n + altitude) * cos_lat * sin_lon;
-    ecef.z() = (n * (1.0 - kWgs84E2) + altitude) * sin_lat;
+    ecef.x() = (radius + altitude) * cosLat * cosLon;
+    ecef.y() = (radius + altitude) * cosLat * sinLon;
+    ecef.z() = (radius * (1.0 - kWgs84E2) + altitude) * sinLat;
     return ecef;
   }
 
@@ -220,9 +220,9 @@ class GnssProcess
     return cov;
   }
 
-  bool origin_ready_ = false;
-  Eigen::Vector3d origin_ecef_ = Eigen::Vector3d::Zero();
-  Eigen::Matrix3d origin_rot_ = Eigen::Matrix3d::Identity();
+  bool originReady_ = false;
+  Eigen::Vector3d originEcef_ = Eigen::Vector3d::Zero();
+  Eigen::Matrix3d originRotation_ = Eigen::Matrix3d::Identity();
 };
 
 extern std::shared_ptr<GnssProcess> p_gnss;

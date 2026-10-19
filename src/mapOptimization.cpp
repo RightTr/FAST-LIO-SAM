@@ -74,8 +74,6 @@ std::shared_ptr<tf::TransformBroadcaster> samTfBroadcaster;
 std::shared_ptr<tf2_ros::TransformBroadcaster> samTfBroadcaster;
 #endif
 
-TimeType timeLaserInfoStamp;
-
 pcl::PointCloud<PointTypeIndex>::Ptr cloudKeyPoses3D; // Store keyframe poses and indexes 
 pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
 pcl::PointCloud<PointTypePose>::Ptr cloudKeyOdomPoses6D;
@@ -587,30 +585,30 @@ void performGnssMatching()
     if (!cloudKeyPoses6D || cloudKeyPoses6D->empty())
         return;
 
-    const auto &keyposes = cloudKeyPoses6D->points;
+    const auto &keyPoses6D = cloudKeyPoses6D->points;
 
     while (true)
     {
-        PosData pos;
-        int key = -1;
+        GnssPositionData gnssPos;
+        int keyIndex = -1;
         {
-            std::lock_guard<std::mutex> lock(p_gnss->mtx_gnss);
-            if (p_gnss->pos_buf.empty()) break;
+            std::lock_guard<std::mutex> lock(p_gnss->gnssMutex);
+            if (p_gnss->posBuffer.empty()) break;
 
-            pos = p_gnss->pos_buf.front();
-            key = find_gnss_key(keyposes, pos.t);
-            if (key == -2) break;
+            gnssPos = p_gnss->posBuffer.front();
+            keyIndex = findGnssKey(keyPoses6D, gnssPos.time);
+            if (keyIndex == -2) break;
 
-            p_gnss->pos_buf.pop_front();
+            p_gnss->posBuffer.pop_front();
         }
 
-        if (key < 0) continue;
+        if (keyIndex < 0) continue;
 
-        const PointTypePose &pose = keyposes[key];
-        const Eigen::Matrix3d R = poseRotation(pose);
-        const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (pos.p - t_enu_map);
-        Eigen::Vector3d gnss_pos = p_map_ant - R * p_gnss->lever;
-        const Eigen::Vector3d positionDelta = gnss_pos - last_fpos;
+        const PointTypePose &keyPose = keyPoses6D[keyIndex];
+        const Eigen::Matrix3d R_map_body = poseRotation(keyPose);
+        const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (gnssPos.position - t_enu_map);
+        Eigen::Vector3d gnssPosition = p_map_ant - R_map_body * p_gnss->leverArm;
+        const Eigen::Vector3d positionDelta = gnssPosition - last_fpos;
         const double positionDistance = useGnssElevation
             ? positionDelta.norm() : positionDelta.head<2>().norm();
         if (!has_fpos || positionDistance >= gpsFactorMinDis)
@@ -621,8 +619,8 @@ void performGnssMatching()
                 gnssVar << gnssPosXYVar,
                            gnssPosXYVar,
                            gnssPosZVar;
-                gtSAMgraph.add(gtsam::GPSFactor(key,
-                        gtsam::Point3(gnss_pos.x(), gnss_pos.y(), gnss_pos.z()),
+                gtSAMgraph.add(gtsam::GPSFactor(keyIndex,
+                        gtsam::Point3(gnssPosition.x(), gnssPosition.y(), gnssPosition.z()),
                         gtsam::noiseModel::Diagonal::Variances(gnssVar)));
                 gnssGraphUpdated = true;
             }
@@ -630,12 +628,12 @@ void performGnssMatching()
             {
                 const gtsam::Vector2 gnssVar = gtsam::Vector2::Constant(gnssPosXYVar);
                 gtSAMgraph.add(boost::shared_ptr<GnssXYFactor>(
-                    new GnssXYFactor(key, gnss_pos.head<2>(),
+                    new GnssXYFactor(keyIndex, gnssPosition.head<2>(),
                         gtsam::noiseModel::Diagonal::Variances(gnssVar))));
                 gnssGraphUpdated = true;
             }
 
-            last_fpos = gnss_pos;
+            last_fpos = gnssPosition;
             has_fpos = true;
         }
     }
@@ -645,30 +643,30 @@ void performGnssMatching()
 
     while (true)
     {
-        YawData yaw;
-        int key = -1;
+        GnssYawData gnssYaw;
+        int keyIndex = -1;
         {
-            std::lock_guard<std::mutex> lock(p_gnss->mtx_gnss);
-            if (p_gnss->yaw_buf.empty()) break;
+            std::lock_guard<std::mutex> lock(p_gnss->gnssMutex);
+            if (p_gnss->yawBuffer.empty()) break;
 
-            yaw = p_gnss->yaw_buf.front();
-            key = find_gnss_key(keyposes, yaw.t);
-            if (key == -2) break;
+            gnssYaw = p_gnss->yawBuffer.front();
+            keyIndex = findGnssKey(keyPoses6D, gnssYaw.time);
+            if (keyIndex == -2) break;
 
-            p_gnss->yaw_buf.pop_front();
+            p_gnss->yawBuffer.pop_front();
         }
 
-        if (key < 0) continue;
+        if (keyIndex < 0) continue;
 
-        const PointTypePose &pose = keyposes[key];
-        const double yaw_map = yawToMap(yaw.yaw);
-        const double yaw_error = std::abs(normalizeYaw(yaw_map - pose.yaw));
-        if (yaw_error <= 60.0 * M_PI / 180.0)
+        const PointTypePose &keyPose = keyPoses6D[keyIndex];
+        const double yawMap = yawToMap(gnssYaw.yaw);
+        const double yawError = std::abs(normalizeYaw(yawMap - keyPose.yaw));
+        if (yawError <= 60.0 * M_PI / 180.0)
         {
             const auto yawNoise = gtsam::noiseModel::Isotropic::Sigma(
                 1, std::sqrt(gnssYawVar));
             gtSAMgraph.add(boost::shared_ptr<GnssYawFactor>(
-                    new GnssYawFactor(key, yaw_map, yawNoise)));
+                    new GnssYawFactor(keyIndex, yawMap, yawNoise)));
             gnssGraphUpdated = true;
         }
     }
@@ -839,6 +837,7 @@ void publishSamMsg()
     if (poses3D.empty() || poses6D.empty() || clouds.empty())
         return;
 
+    const auto stamp = get_ros_time(poses6D.back().time);
     pcl::PointCloud<PointTypeIndex>::Ptr keyPosesCloud(new pcl::PointCloud<PointTypeIndex>());
     keyPosesCloud->points.reserve(poses3D.size());
     for (size_t i = 0; i < poses3D.size(); ++i)
@@ -852,16 +851,16 @@ void publishSamMsg()
     }
 
     // publish key poses
-    publishCloud(pubKeyPoses, keyPosesCloud, timeLaserInfoStamp, map_frame);
+    publishCloud(pubKeyPoses, keyPosesCloud, stamp, map_frame);
     if (ros_subscription_count(pubPath) != 0)
     {
-        globalPath.header.stamp = timeLaserInfoStamp;
+        globalPath.header.stamp = stamp;
         globalPath.header.frame_id = map_frame;
         ros_publish(pubPath, globalPath);
     }
     if (ros_subscription_count(pubGlobalPath) != 0)
     {
-        globalPath.header.stamp = timeLaserInfoStamp;
+        globalPath.header.stamp = stamp;
         globalPath.header.frame_id = map_frame;
         ros_publish(pubGlobalPath, globalPath);
     }
@@ -872,7 +871,7 @@ void publishSamMsg()
 
         MarkerMsg markerClear;
         markerClear.header.frame_id = map_frame;
-        markerClear.header.stamp = timeLaserInfoStamp;
+        markerClear.header.stamp = stamp;
         markerClear.action = MarkerMsg::DELETEALL;
         markerArray.markers.push_back(markerClear);
 
@@ -882,7 +881,7 @@ void publishSamMsg()
             const auto &pose = poses6D[i];
             MarkerMsg marker;
             marker.header.frame_id = map_frame;
-            marker.header.stamp = timeLaserInfoStamp;
+            marker.header.stamp = stamp;
             marker.ns = "keyframe_yaw";
             marker.id = static_cast<int>(i);
             marker.action = MarkerMsg::ADD;
@@ -909,7 +908,7 @@ void publishSamMsg()
         pcl::PointCloud<PointTypeIndex>::Ptr cloudOut(new pcl::PointCloud<PointTypeIndex>());
         PointTypePose thisPose6D = poses6D.back();
         *cloudOut += *transformPointCloud(clouds.back(), &thisPose6D);
-        publishCloud(pubRecentKeyFrame, cloudOut, timeLaserInfoStamp, map_frame);
+        publishCloud(pubRecentKeyFrame, cloudOut, stamp, map_frame);
     }
 }
 
@@ -930,11 +929,12 @@ void visualizeLoopClosure()
         keyposes.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
     }
 
+    const auto stamp = get_ros_time(keyposes.back().time);
     MarkerArrayMsg markerArray;
     // loop nodes
     MarkerMsg markerNode;
     markerNode.header.frame_id = map_frame;
-    markerNode.header.stamp = timeLaserInfoStamp;
+    markerNode.header.stamp = stamp;
     markerNode.action = MarkerMsg::ADD;
     markerNode.type = MarkerMsg::SPHERE_LIST;
     markerNode.ns = "loop_nodes";
@@ -946,7 +946,7 @@ void visualizeLoopClosure()
     // loop edges
     MarkerMsg markerEdge;
     markerEdge.header.frame_id = map_frame;
-    markerEdge.header.stamp = timeLaserInfoStamp;
+    markerEdge.header.stamp = stamp;
     markerEdge.action = MarkerMsg::ADD;
     markerEdge.type = MarkerMsg::LINE_LIST;
     markerEdge.ns = "loop_edges";
@@ -1065,6 +1065,7 @@ void publishGlobalMap() {
     if (keyPoses3D->empty() || keyPoses6D.empty() || keyClouds.empty())
         return;
 
+    const auto stamp = get_ros_time(keyPoses6D.back().time);
     const PointTypeIndex &currentPose = keyPoses3D->back();
     pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyPoses(new pcl::PointCloud<PointTypeIndex>());
     pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyPosesDS(new pcl::PointCloud<PointTypeIndex>());
@@ -1110,7 +1111,7 @@ void publishGlobalMap() {
     downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
     downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
     downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
-    publishCloud(pubLaserCloudGlobal, globalMapKeyFramesDS, timeLaserInfoStamp, map_frame);
+    publishCloud(pubLaserCloudGlobal, globalMapKeyFramesDS, stamp, map_frame);
 }
 
 void visualizeGlobalMapThread()

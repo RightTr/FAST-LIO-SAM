@@ -160,7 +160,7 @@ void setPriorOdom(const Eigen::Matrix3d &R_prior_odom_,
     t_prior_odom = t_prior_odom_;
 }
 
-void publishGnssPath(const PosData &pos);
+void publishGnssPath(const GnssPositionData &pos);
 void publishGnssLinkTf();
 bool initGnssMap(double lidar_stamp_sec);
 
@@ -844,8 +844,8 @@ void reloc_cbk(const PoseStampedMsgConstPtr &msg_in)
 
 void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
 {
-    PosData pos;
-    if (!p_gnss->gnss_fix_cbk(msg_in, pos)) return;
+    GnssPositionData pos;
+    if (!p_gnss->processGnssFix(msg_in, pos)) return;
 
     if (gnssPathVis && gnss_aligned.load())
         publishGnssPath(pos);
@@ -855,7 +855,7 @@ void gnss_cbk(const GnssFixMsgConstPtr &msg_in)
 
 void gnss_heading_cbk(const OdometryMsgConstPtr &msg_in)
 {
-    if (!p_gnss->gnss_yaw_cbk(msg_in)) return;
+    if (!p_gnss->processGnssYaw(msg_in)) return;
     publishGnssLinkTf();
 }
 
@@ -1605,15 +1605,15 @@ void fillOdometryCovariance(OdomMsg& odom_msg, const CovT& P)
     }
 }
 
-void publishGnssPath(const PosData &pos)
+void publishGnssPath(const GnssPositionData &pos)
 {
     if (!gnssPathVis || !gnss_aligned.load()) return;
     PoseStampedMsg gnss_pose;
-    gnss_pose.header.stamp = get_ros_time(pos.t);
+    gnss_pose.header.stamp = get_ros_time(pos.time);
     gnss_pose.header.frame_id = "enu";
-    gnss_pose.pose.position.x = pos.p.x();
-    gnss_pose.pose.position.y = pos.p.y();
-    gnss_pose.pose.position.z = pos.p.z();
+    gnss_pose.pose.position.x = pos.position.x();
+    gnss_pose.pose.position.y = pos.position.y();
+    gnss_pose.pose.position.z = pos.position.z();
     gnss_pose.pose.orientation.w = 1.0;
 
     gnssPath.header.stamp = gnss_pose.header.stamp;
@@ -1624,25 +1624,25 @@ void publishGnssPath(const PosData &pos)
 
 void publishGnssLinkTf()
 {
-    PosData pos;
-    YawData yaw;
+    GnssPositionData pos;
+    GnssYawData yaw;
     {
-        std::lock_guard<std::mutex> lock(p_gnss->mtx_gnss);
-        if (p_gnss->latest_pos.t < 0.0 || p_gnss->latest_yaw.t < 0.0)
+        std::lock_guard<std::mutex> lock(p_gnss->gnssMutex);
+        if (p_gnss->latestPos.time < 0.0 || p_gnss->latestYaw.time < 0.0)
             return;
 
-        pos = p_gnss->latest_pos;
-        yaw = p_gnss->latest_yaw;
+        pos = p_gnss->latestPos;
+        yaw = p_gnss->latestYaw;
     }
 
     TransformStampedMsg tf_msg;
-    tf_msg.header.stamp = get_ros_time(std::max(pos.t, yaw.t));
+    tf_msg.header.stamp = get_ros_time(std::max(pos.time, yaw.time));
     tf_msg.header.frame_id = "enu";
     tf_msg.child_frame_id = "gnss_link";
 
     const Eigen::Matrix3d R_enu_gnss =
         Eigen::AngleAxisd(yaw.yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-    fillTransformMsg(tf_msg, R_enu_gnss, pos.p);
+    fillTransformMsg(tf_msg, R_enu_gnss, pos.position);
 
 #ifdef USE_ROS1
     if (laserTfBroadcaster)
@@ -1655,9 +1655,9 @@ void publishGnssLinkTf()
 
 bool initGnssMap(double lidar_stamp_sec)
 {
-    PosData gnss_pos;
-    YawData heading;
-    if (!p_gnss->sync_gnss_init(gnss_pos, heading)) return false;
+    GnssPositionData gnss_pos;
+    GnssYawData heading;
+    if (!p_gnss->syncGnssInit(gnss_pos, heading)) return false;
 
     Eigen::Matrix3d R_map_body;
     Eigen::Vector3d t_map_body;
@@ -1666,8 +1666,8 @@ bool initGnssMap(double lidar_stamp_sec)
     const double map_yaw = std::atan2(R_map_body(1, 0), R_map_body(0, 0));
     const double dyaw = normalizeYaw(heading.yaw - map_yaw);
     R_enu_map = Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-    const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->lever;
-    t_enu_map = gnss_pos.p - R_enu_map * p_map_ant;
+    const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->leverArm;
+    t_enu_map = gnss_pos.position - R_enu_map * p_map_ant;
 
     gnss_aligned.store(true);
     publishEnuToMapTf(get_ros_time(lidar_stamp_sec));
@@ -2439,7 +2439,7 @@ int main(int argc, char** argv)
         read_sgraph_params();
     }
     read_gnss_params();
-    p_gnss->heading_offset = heading_offset;
+    p_gnss->headingOffset = heading_offset;
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
 
@@ -2473,7 +2473,7 @@ int main(int argc, char** argv)
 
     kf.setMaxIterations(NUM_MAX_ITERATIONS);
 
-    p_gnss->lever =
+    p_gnss->leverArm =
         Lidar_T_wrt_IMU + Lidar_R_wrt_IMU * gnss_extrinsic_T;
 
     if (use_prior_map)
