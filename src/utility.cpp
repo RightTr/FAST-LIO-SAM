@@ -151,7 +151,6 @@ void read_lidar_ba_params()
     rosparam_get("lidar_ba/enable", lidarBAConfig.enable, true);
     rosparam_get("lidar_ba/feedback_to_ekf", lidarBAConfig.feedback_to_ekf, false);
     rosparam_get("lidar_ba/window_size", lidarBAConfig.window_size, 10);
-    lidarBAConfig.window_size = std::max(2, lidarBAConfig.window_size);
     rosparam_get("lidar_ba/max_iterations", lidarBAConfig.max_iterations, 5);
     rosparam_get("lidar_ba/voxel_size", lidarBAConfig.voxel_size, 1.0);
     rosparam_get("lidar_ba/point_leaf_size", lidarBAConfig.point_leaf_size, 0.2);
@@ -166,8 +165,6 @@ void read_lidar_ba_params()
     rosparam_get("lidar_ba/gravity_optimize", lidarBAConfig.gravity_optimize, false);
     rosparam_get("lidar_ba/gravity_prior_sigma_deg",
                  lidarBAConfig.gravity_prior_sigma_deg, 10.0);
-    lidarBAConfig.gravity_prior_sigma_deg =
-        std::max(1e-3, lidarBAConfig.gravity_prior_sigma_deg);
 }
 
 void read_sgraph_params()

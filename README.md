@@ -1,6 +1,6 @@
 # FAST-LIO-SAM
 
-A LiDAR-inertial SLAM system that combines the **FAST-LIO2** high-frequency frontend with **pose-only Local LiDAR BA** for local consistency and the **LIO-SAM-style factor graph backend** for global optimization. The system also supports **hierarchical scene representation**, **ROS1**, and **ROS2**.
+A LiDAR-inertial SLAM system that combines the **FAST-LIO2** high-frequency frontend with **local LiDAR-IMU BA** for local consistency and the **LIO-SAM-style factor graph backend** for global optimization. The system also supports **hierarchical scene representation**, **ROS1**, and **ROS2**.
 
 <p align="center">
   <img src="assets/floor_1.png" alt="Floor 1" width="45%">
@@ -66,7 +66,7 @@ Comparison of outdoor trajectory and mapping results:
 
 * A SLAM system that integrates FAST-LIO2 with a LIO-SAM-style factor graph backend.
 
-* Pose-only Local LiDAR Bundle Adjustment
+* Local LiDAR-IMU Bundle Adjustment
 
 * ROS1 and ROS2 adaptation
 
@@ -133,13 +133,13 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 ### Local LiDAR BA
 
-Local BA and the global PGO backend are controlled independently. `lidar_ba/enable` enables pose-only local bundle adjustment, while `sam_enable` enables the GTSAM pose graph with its GNSS and loop factors. BA can run with the PGO backend disabled, and PGO can run with BA disabled, using FAST-LIO2 odometry poses. When both are enabled, BA-refined poses are passed to the global backend for PGO. Set `lidar_ba/feedback_to_ekf` to `true` to feed optimized window poses back into the EKF and rebuild the local ikd-tree; this is disabled by default and makes BA processing synchronous.
+`lidar_ba/enable` enables local BA; `sam_enable` enables global PGO. BA uses IMU preintegration when `lidar_ba/imu_enable` is set and can refine the shared gravity direction with `lidar_ba/gravity_optimize`.`lidar_ba/feedback_to_ekf` optionally feeds BA results back to the frontend.
 
 ### TF layout
 
 The system uses one global correction link and two local odometry outputs:
 
-- `map -> odom`: backend / relocalization correction
+- `map -> odom`: initialized once, then updated after loop closure, GNSS graph updates, or relocalization
 - `odom -> base_link`: LiDAR-updated odometry
 - `odom -> base_link_hf`: IMU high-frequency odometry
 
