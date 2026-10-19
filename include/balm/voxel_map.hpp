@@ -334,7 +334,6 @@ class Lidar_BA_Optimizer
 {
 public:
   int win_size, jac_leng, thd_num = 2;
-  double last_gravity_sigma = 5.0 * M_PI / 180.0;
 
   double lidar_linearize(std::vector<BAState> &x_stats, LidarFactor &voxhess,
                          Eigen::MatrixXd &Hess, Eigen::VectorXd &JacT)

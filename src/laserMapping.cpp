@@ -1323,9 +1323,7 @@ bool handleLidarBA()
     bool windowChanged = false;
     int id;
     Eigen::Isometry3d baTransform;
-    Eigen::Vector3d gravityUpOdom;
-    double baGravitySigma=5.0*PI_M/180.0;
-    while (lidarBA->tryPop(id, baTransform, gravityUpOdom, baGravitySigma))
+    while (lidarBA->tryPop(id, baTransform))
     {
         const auto frameIt = lidarBAFramesById.find(id);
         if (frameIt == lidarBAFramesById.end())
@@ -1415,10 +1413,7 @@ bool handleLidarBA()
         {
             if (frame.keyframe && hasOdomPose)
             {
-                KeyframeToGlobal(
-                    odomPose, baPose, frame.cloud,
-                    baTransform.linear().transpose()*gravityUpOdom,
-                    gravityUpOdom, baGravitySigma);
+                KeyframeToGlobal(odomPose, baPose, frame.cloud);
                 correctPoses();
                 publishSamMsg();
             }

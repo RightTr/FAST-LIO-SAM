@@ -36,8 +36,6 @@ extern double priorVar;
 extern double odomRotVar;
 extern double odomPosVar;
 extern double loopRotVar;
-extern bool gravityFactorEnable;
-extern double gravityFactorSigmaDeg;
 extern double loopPosVar;
 extern int   loopCurNum;
 extern int   loopPreNum;

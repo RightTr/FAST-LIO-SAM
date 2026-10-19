@@ -63,8 +63,7 @@ public:
     bool pushAndWait(BAFrame frame, std::vector<int> &window_ids,
                      std::vector<Eigen::Matrix4d> &window_poses,
                      bool &window_optimized);
-    bool tryPop(int &id, Eigen::Isometry3d &pose,
-                Eigen::Vector3d &gravity_up_odom, double &gravity_sigma);
+    bool tryPop(int &id, Eigen::Isometry3d &pose);
     void finish();
 private:
     struct Impl;

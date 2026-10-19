@@ -27,7 +27,6 @@
 #include <gtsam/navigation/GPSFactor.h>
 #include <gtsam/navigation/ImuFactor.h>
 #include <gtsam/navigation/CombinedImuFactor.h>
-#include <gtsam/navigation/AttitudeFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
 #include <gtsam/base/numericalDerivative.h>
@@ -87,8 +86,6 @@ FloorMap floorMap;
 SCManager sc_manager;
 std::mutex gravityAxisMutex;
 Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
-Eigen::Vector3d gravityUpMapAxis = Eigen::Vector3d::UnitZ();
-bool gravityUpMapInitialized = false;
 bool mapOdomInitialized = false;
 
 std::mutex mtxKeyframe;
@@ -198,8 +195,6 @@ void MapOptimizationInit()
     t_enu_map = Eigen::Vector3d::Zero();
     last_fpos.setZero();
     has_fpos = false;
-    gravityUpMapAxis = Eigen::Vector3d::UnitZ();
-    gravityUpMapInitialized = false;
     mapOdomInitialized = false;
 
     ISAM2Params parameters;
@@ -530,30 +525,6 @@ void addOdomFactor(const PointTypePose &odomPose,
     }
 }
 
-void initGravityRef(const Eigen::Vector3d &gravityUpOdom)
-{
-    if (gravityUpMapInitialized)
-        return;
-    gravityUpMapAxis = (R_map_odom * gravityUpOdom).normalized();
-    gravityUpMapInitialized = true;
-}
-
-void addGravityFactor(gtsam::Key key,
-                      const Eigen::Vector3d &gravity_body,
-                      const Eigen::Vector3d &gravity_up_odom,
-                      double gravity_sigma)
-{
-    if (!gravityFactorEnable)
-        return;
-
-    initGravityRef(gravity_up_odom);
-    const gtsam::Unit3 worldUp(gravityUpMapAxis);
-    const gtsam::Unit3 bodyUp(gravity_body);
-    const auto noise = gtsam::noiseModel::Isotropic::Sigma(2, gravity_sigma);
-    gtSAMgraph.add(boost::shared_ptr<gtsam::Pose3AttitudeFactor>(
-        new gtsam::Pose3AttitudeFactor(key, worldUp, noise, bodyUp)));
-}
-
 void addLoopFactor()
 {
     if (!loopClosureEnableFlag)
@@ -719,14 +690,10 @@ void updatePath(const PointTypePose& pose_in)
 void KeyframeToGlobal(
     const PointTypePose &odomPose,
     const PointTypePose &baPose,
-    const pcl::PointCloud<pcl::PointXYZI>::Ptr &frameCloud,
-    const Eigen::Vector3d &gravityBody,
-    const Eigen::Vector3d &gravityUpOdom,
-    double gravitySigma)
+    const pcl::PointCloud<pcl::PointXYZI>::Ptr &frameCloud)
 {
     const gtsam::Key latestPoseKey=static_cast<gtsam::Key>(cloudKeyPoses3D->size());
     addOdomFactor(odomPose,baPose);
-    addGravityFactor(latestPoseKey, gravityBody, gravityUpOdom, gravitySigma);
     addLoopFactor();
     isam->update(gtSAMgraph,initialEstimate);
     isam->update();

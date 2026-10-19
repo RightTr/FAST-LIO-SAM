@@ -133,11 +133,10 @@ struct LidarBA::Impl {
         window_optimized=completedWindowOptimized;
         return true;
     }
-    bool tryPop(int &id, Eigen::Isometry3d &pose,
-                Eigen::Vector3d &gravity_up_odom, double &gravity_sigma) {
+    bool tryPop(int &id, Eigen::Isometry3d &pose) {
         std::lock_guard<std::mutex> lock(mutex);
         if (output.empty()) return false;
-        std::tie(id, pose, gravity_up_odom, gravity_sigma) = output.front();
+        std::tie(id, pose) = output.front();
         output.pop_front(); return true;
     }
     void finish() {
@@ -153,10 +152,8 @@ struct LidarBA::Impl {
     void publish(const BAFrame &f, const BAState &s) {
         const int id=f.id;
         const Eigen::Isometry3d pose=toIsometry(s);
-        const Eigen::Vector3d gravity_up_odom=gravityInitialized
-            ? gravityUp.point3() : (-f.gravity_odom).normalized();
         std::lock_guard<std::mutex> lock(mutex);
-        output.emplace_back(id, pose, gravity_up_odom, gravitySigma);
+        output.emplace_back(id, pose);
     }
     void process(BAFrame f) {
         BAState state; state.R=f.odom_pose.linear(); state.p=f.odom_pose.translation();
@@ -224,7 +221,6 @@ struct LidarBA::Impl {
                     gravityMagnitude,config.gravity_prior_sigma_deg*M_PI/180.0,
                     config.bg_cov,config.ba_cov,config.gravity_optimize,
                     config.max_iterations);
-                gravitySigma=optimizer.last_gravity_sigma;
             }
             else
             {
@@ -298,8 +294,7 @@ struct LidarBA::Impl {
     std::vector<std::vector<lidar_ba::SlideWindow*>> windows;
     lidar_ba::LidarFactor factor{10};
     std::mutex mutex; std::condition_variable cv; std::deque<BAFrame> input;
-    std::deque<std::tuple<int, Eigen::Isometry3d, Eigen::Vector3d, double>> output;
-    double gravitySigma=5.0*M_PI/180.0;
+    std::deque<std::tuple<int, Eigen::Isometry3d>> output;
     std::vector<int> completedWindowIds;
     std::vector<Eigen::Matrix4d> completedWindowPoses;
     int completedInputId=-1;
@@ -315,8 +310,7 @@ bool LidarBA::pushAndWait(BAFrame frame, std::vector<int> &window_ids,
                           bool &window_optimized) {
     return impl_->pushAndWait(std::move(frame),window_ids,window_poses,window_optimized);
 }
-bool LidarBA::tryPop(int &id, Eigen::Isometry3d &pose,
-                     Eigen::Vector3d &gravity_up_odom, double &gravity_sigma) {
-    return impl_->tryPop(id, pose, gravity_up_odom, gravity_sigma);
+bool LidarBA::tryPop(int &id, Eigen::Isometry3d &pose) {
+    return impl_->tryPop(id, pose);
 }
 void LidarBA::finish() { impl_->finish(); }

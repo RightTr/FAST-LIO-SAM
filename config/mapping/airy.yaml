@@ -92,7 +92,6 @@ lio_sam:
     odomPosVar: 1.0e-3
     loopRotVar: 0.1
     loopPosVar: 0.1
-    gravityFactorEnable: false
     loopCurNum: 5                                 # max current keyframes processed per loop tick
     loopPreNum: 3                                 # max ICP attempts per current keyframe
     mappingICPSize: 0.2                            # meters, loop-closure ICP voxel size

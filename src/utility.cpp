@@ -29,8 +29,6 @@ double priorVar = 1e-4;
 double odomRotVar = 1e-3;
 double odomPosVar = 1e-3;
 double loopRotVar = 0.1;
-bool gravityFactorEnable = false;
-double gravityFactorSigmaDeg = 5.0;
 double loopPosVar = 0.1;
 int   loopCurNum;
 int   loopPreNum;
@@ -135,8 +133,6 @@ void read_liosam_params() {
     rosparam_get("lio_sam/loopPosVar", loopPosVar, 0.1);
     rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
     rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
-    rosparam_get("lio_sam/gravityFactorEnable", gravityFactorEnable, false);
-    gravityFactorSigmaDeg = std::max(1e-3, gravityFactorSigmaDeg);
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);

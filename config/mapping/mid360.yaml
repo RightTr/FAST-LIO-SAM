@@ -82,12 +82,11 @@ lio_sam:
     historyKeyframeFitnessScore: 0.2              # icp threshold, the smaller the better alignment
     icpMaxCorrDistance: 10.0                       # meters, loop-closure ICP max correspondence distance
     priorVar: 1.0e-4
-    odomRotVar: 1.0e-5
+    odomRotVar: 1.0e-7
     odomPosVar: 1.0e-4
     loopRotVar: 1.0e-4
     loopPosVar: 1.0e-3
     loopCurNum: 3                                  # max current keyframes processed per loop tick
-    gravityFactorEnable: false
     loopPreNum: 2                                  # max ICP attempts per current keyframe
     mappingICPSize: 0.1                            # meters, loop-closure ICP voxel size
 
