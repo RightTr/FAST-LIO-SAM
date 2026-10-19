@@ -53,6 +53,7 @@ class ImuProcess
     acc_s_last = rotationDelta * (acc_s_last - gravity) + gravity;
     pbuffer.Clear();
   }
+  double accelerationScale() const { return G_m_s2 / mean_acc.norm(); }
 
   void Process(const MeasureGroup &meas, SimpleEKF &kf_state, PointCloudXYZI::Ptr pcl_un_);
 
@@ -178,7 +179,6 @@ double ImuProcess::gap_handler(double dt)
   {
     return -1.0;
   }
-
   if (dt > imu_gap_)
   {
     return -1.0;

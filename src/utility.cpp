@@ -29,6 +29,8 @@ double priorVar = 1e-4;
 double odomRotVar = 1e-3;
 double odomPosVar = 1e-3;
 double loopRotVar = 0.1;
+bool gravityFactorEnable = false;
+double gravityFactorSigmaDeg = 5.0;
 double loopPosVar = 0.1;
 int   loopCurNum;
 int   loopPreNum;
@@ -133,6 +135,8 @@ void read_liosam_params() {
     rosparam_get("lio_sam/loopPosVar", loopPosVar, 0.1);
     rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
     rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
+    rosparam_get("lio_sam/gravityFactorEnable", gravityFactorEnable, false);
+    gravityFactorSigmaDeg = std::max(1e-3, gravityFactorSigmaDeg);
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);
@@ -162,6 +166,12 @@ void read_lidar_ba_params()
     rosparam_get("lidar_ba/max_fixed_points", lidarBAConfig.max_fixed_points, 100);
     rosparam_get("lidar_ba/plane_eigenvalue_threshold", lidarBAConfig.plane_eigenvalue_threshold, std::vector<double>{0.25, 0.25, 0.25});
     rosparam_get("lidar_ba/min_layer_points", lidarBAConfig.min_layer_points, std::vector<double>{5.0, 5.0, 5.0});
+    rosparam_get("lidar_ba/imu_enable", lidarBAConfig.imu_enable, true);
+    rosparam_get("lidar_ba/gravity_optimize", lidarBAConfig.gravity_optimize, false);
+    rosparam_get("lidar_ba/gravity_prior_sigma_deg",
+                 lidarBAConfig.gravity_prior_sigma_deg, 10.0);
+    lidarBAConfig.gravity_prior_sigma_deg =
+        std::max(1e-3, lidarBAConfig.gravity_prior_sigma_deg);
 }
 
 void read_sgraph_params()

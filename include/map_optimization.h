@@ -66,7 +66,10 @@ extern std::atomic<bool> loopDone;
 void KeyframeToGlobal(
     const PointTypePose &odom_pose,
     const PointTypePose &ba_pose,
-    const pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud);
+    const pcl::PointCloud<pcl::PointXYZI>::Ptr &cloud,
+    const Eigen::Vector3d &gravity_body,
+    const Eigen::Vector3d &gravity_up_odom,
+    double gravity_sigma);
 void addLoopFactor();
 void poseGraphUpdate();
 void performGnssMatching();

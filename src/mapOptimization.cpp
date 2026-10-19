@@ -27,6 +27,7 @@
 #include <gtsam/navigation/GPSFactor.h>
 #include <gtsam/navigation/ImuFactor.h>
 #include <gtsam/navigation/CombinedImuFactor.h>
+#include <gtsam/navigation/AttitudeFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
 #include <gtsam/base/numericalDerivative.h>
@@ -86,6 +87,9 @@ FloorMap floorMap;
 SCManager sc_manager;
 std::mutex gravityAxisMutex;
 Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
+Eigen::Vector3d gravityUpMapAxis = Eigen::Vector3d::UnitZ();
+bool gravityUpMapInitialized = false;
+size_t gravityFactorCount = 0;
 
 std::mutex mtxKeyframe;
 std::mutex mtxLoopFactor;
@@ -193,6 +197,9 @@ void MapOptimizationInit()
     t_enu_map = Eigen::Vector3d::Zero();
     last_fpos.setZero();
     has_fpos = false;
+    gravityUpMapAxis = Eigen::Vector3d::UnitZ();
+    gravityUpMapInitialized = false;
+    gravityFactorCount = 0;
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
@@ -522,6 +529,43 @@ void addOdomFactor(const PointTypePose &odomPose,
     }
 }
 
+void initGravityRef(const Eigen::Vector3d &gravityUpOdom)
+{
+    if (gravityUpMapInitialized)
+        return;
+    gravityUpMapAxis = (R_map_odom * gravityUpOdom).normalized();
+    gravityUpMapInitialized = true;
+}
+
+void addGravityFactor(gtsam::Key key,
+                      const Eigen::Vector3d &gravity_body,
+                      const Eigen::Vector3d &gravity_up_odom,
+                      double gravity_sigma)
+{
+    if (!gravityFactorEnable)
+        return;
+
+    std::fprintf(stderr, "GravityFactor key=%lu sigma=%.6f body=[%.3f %.3f %.3f] odom=[%.3f %.3f %.3f]\n",
+                 static_cast<unsigned long>(key), gravity_sigma,
+                 gravity_body.x(), gravity_body.y(), gravity_body.z(),
+                 gravity_up_odom.x(), gravity_up_odom.y(), gravity_up_odom.z());
+
+    std::fprintf(stderr, "GravityFactor key=%lu sigma=%.6f body=[%.3f %.3f %.3f] odom=[%.3f %.3f %.3f]\n",
+                 static_cast<unsigned long>(key), gravity_sigma,
+                 gravity_body.x(), gravity_body.y(), gravity_body.z(),
+                 gravity_up_odom.x(), gravity_up_odom.y(), gravity_up_odom.z());
+
+    initGravityRef(gravity_up_odom);
+    const gtsam::Unit3 worldUp(gravityUpMapAxis);
+    const gtsam::Unit3 bodyUp(gravity_body);
+    const auto noise = gtsam::noiseModel::Isotropic::Sigma(2, gravity_sigma);
+    gtSAMgraph.add(boost::shared_ptr<gtsam::Pose3AttitudeFactor>(
+        new gtsam::Pose3AttitudeFactor(key, worldUp, noise, bodyUp)));
+    ++gravityFactorCount;
+    if (gravityFactorCount % 20 == 0)
+        ROS_PRINT_INFO("GTSAM gravity factors added: %zu", gravityFactorCount);
+}
+
 void addLoopFactor()
 {
     if (!loopClosureEnableFlag)
@@ -684,10 +728,14 @@ void updatePath(const PointTypePose& pose_in)
 void KeyframeToGlobal(
     const PointTypePose &odomPose,
     const PointTypePose &baPose,
-    const pcl::PointCloud<pcl::PointXYZI>::Ptr &frameCloud)
+    const pcl::PointCloud<pcl::PointXYZI>::Ptr &frameCloud,
+    const Eigen::Vector3d &gravityBody,
+    const Eigen::Vector3d &gravityUpOdom,
+    double gravitySigma)
 {
     const gtsam::Key latestPoseKey=static_cast<gtsam::Key>(cloudKeyPoses3D->size());
     addOdomFactor(odomPose,baPose);
+    addGravityFactor(latestPoseKey, gravityBody, gravityUpOdom, gravitySigma);
     addLoopFactor();
     isam->update(gtSAMgraph,initialEstimate);
     isam->update();

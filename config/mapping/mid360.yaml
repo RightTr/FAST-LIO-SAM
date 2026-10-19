@@ -87,6 +87,7 @@ lio_sam:
     loopRotVar: 1.0e-4
     loopPosVar: 1.0e-3
     loopCurNum: 3                                  # max current keyframes processed per loop tick
+    gravityFactorEnable: true
     loopPreNum: 2                                  # max ICP attempts per current keyframe
     mappingICPSize: 0.1                            # meters, loop-closure ICP voxel size
 
@@ -119,6 +120,8 @@ lidar_ba:
     max_iterations: 5
     voxel_size: 1.0
     point_leaf_size: 0.2
+    gravity_enable: true
+    gravity_sigma_deg: 3.0
     max_layer: 2
     min_points: 20
     thread_num: 2
