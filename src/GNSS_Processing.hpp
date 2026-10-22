@@ -17,20 +17,16 @@
 
 #include "common_utils.h"
 #include "utility.h"
-#include "ros_utils.h"
+#include "ros/ros_utils.h"
 
 #ifdef USE_ROS1
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/NavSatFix.h>
-using GnssFixMsg = sensor_msgs::NavSatFix;
-using GnssFixMsgConstPtr = sensor_msgs::NavSatFix::ConstPtr;
 using GnssOdomMsg = nav_msgs::Odometry;
 using GnssOdomMsgConstPtr = nav_msgs::Odometry::ConstPtr;
 #elif defined(USE_ROS2)
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
-using GnssFixMsg = sensor_msgs::msg::NavSatFix;
-using GnssFixMsgConstPtr = sensor_msgs::msg::NavSatFix::ConstSharedPtr;
 using GnssOdomMsg = nav_msgs::msg::Odometry;
 using GnssOdomMsgConstPtr = nav_msgs::msg::Odometry::ConstSharedPtr;
 #endif

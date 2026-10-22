@@ -119,7 +119,7 @@ result_save:
 lidar_ba:
     enable: true
     feedback_to_ekf: false
-    imu_enable: true
+    imu_enable: false
     gravity_optimize: false
     window_size: 10
     max_iterations: 5

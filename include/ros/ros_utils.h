@@ -21,6 +21,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Point.h>
 #include <sensor_msgs/Imu.h>
+#include <sensor_msgs/NavSatFix.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3.h>
@@ -42,6 +43,8 @@ using MarkerArrayMsg = visualization_msgs::MarkerArray;
 using PointMsg = geometry_msgs::Point;
 using PoseStampedMsg = geometry_msgs::PoseStamped;
 using ImuMsg = sensor_msgs::Imu;
+using GnssFixMsg = sensor_msgs::NavSatFix;
+using GnssFixMsgConstPtr = sensor_msgs::NavSatFix::ConstPtr;
 using Float64Msg = std_msgs::Float64;
 using Vector3StampedMsg = geometry_msgs::Vector3Stamped;
 using PathPublisher = ros::Publisher;
@@ -75,6 +78,7 @@ using TransformStampedMsg = geometry_msgs::TransformStamped;
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <tf2/LinearMath/Transform.h>
@@ -100,6 +104,8 @@ using MarkerArrayMsg = visualization_msgs::msg::MarkerArray;
 using PointMsg = geometry_msgs::msg::Point;
 using PoseStampedMsg = geometry_msgs::msg::PoseStamped;
 using ImuMsg = sensor_msgs::msg::Imu;
+using GnssFixMsg = sensor_msgs::msg::NavSatFix;
+using GnssFixMsgConstPtr = sensor_msgs::msg::NavSatFix::ConstSharedPtr;
 using Float64Msg = std_msgs::msg::Float64;
 using Vector3StampedMsg = geometry_msgs::msg::Vector3Stamped;
 using PathPublisher = rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr;

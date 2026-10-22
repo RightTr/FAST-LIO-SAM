@@ -1,17 +1,11 @@
 #include "lidarBA.h"
 #include "balm/voxel_map.hpp"
-#include "ros_utils.h"
+#include "ros/ros_utils.h"
 
 #include <Eigen/Cholesky>
 #include <gtsam/navigation/PreintegrationParams.h>
 #include <pcl/filters/voxel_grid.h>
 #include <algorithm>
-#include <condition_variable>
-#include <deque>
-#include <limits>
-#include <mutex>
-#include <thread>
-#include <tuple>
 #include <unordered_map>
 
 using namespace lidar_ba;
@@ -75,12 +69,13 @@ Eigen::Isometry3d toIsometry(const BAState &state) {
 } // namespace
 
 struct LidarBA::Impl {
-    explicit Impl(const LidarBAConfig &cfg) : config(cfg) {
+    explicit Impl(const LidarBAConfig &cfg, const Eigen::Vector3d &gravity)
+        : config(cfg), gravityOdom(gravity) {
         config.window_size=std::max(2, config.window_size);
         config.thread_num=std::max(1, config.thread_num);
         config.max_iterations=std::max(1,config.max_iterations);
         config.max_layer=std::clamp(config.max_layer,0,3);
-        config.min_points=std::max(3,config.min_points);
+        config.min_points=std::max(1,config.min_points);
         config.max_fixed_points=std::max(config.min_points,config.max_fixed_points);
         if(!(config.voxel_size>0.0)) config.voxel_size=1.0;
         lidar_ba::thread_num=config.thread_num;
@@ -107,61 +102,38 @@ struct LidarBA::Impl {
         imuParams->gyroscopeCovariance=Eigen::Matrix3d::Identity()*config.gyr_cov;
         imuParams->accelerometerCovariance=Eigen::Matrix3d::Identity()*config.acc_cov;
         imuParams->integrationCovariance=Eigen::Matrix3d::Identity()*1e-8;
-        worker=std::thread(&Impl::run,this);
     }
-    ~Impl() { finish(); releaseMap(map, windows[0]); lidar_ba::mp=nullptr; }
+    ~Impl() { releaseMap(map, windows[0]); lidar_ba::mp=nullptr; }
 
-    void push(BAFrame f) {
-        if (!f.cloud) f.cloud.reset(new pcl::PointCloud<pcl::PointXYZI>());
-        std::lock_guard<std::mutex> lock(mutex);
-        if (stopping) return;
-        input.push_back(std::move(f)); cv.notify_one();
+    void finalize(const BAFramePtr &frame, const BAState &s,
+                  std::vector<BAFramePtr> &finalizedFrames) {
+        frame->optimized_pose = toIsometry(s);
+        frame->finalized.store(true, std::memory_order_release);
+        finalizedFrames.push_back(frame);
     }
-    bool pushAndWait(BAFrame f, std::vector<int> &window_ids,
-                     std::vector<Eigen::Matrix4d> &window_poses,
-                     bool &window_optimized) {
-        if (!f.cloud) f.cloud.reset(new pcl::PointCloud<pcl::PointXYZI>());
-        const int id=f.id;
-        std::unique_lock<std::mutex> lock(mutex);
-        if (stopping) return false;
-        input.push_back(std::move(f));
-        cv.notify_one();
-        cv.wait(lock,[&]{return stopping||completedInputId>=id;});
-        if (completedInputId<id) return false;
-        window_ids=completedWindowIds;
-        window_poses=completedWindowPoses;
-        window_optimized=completedWindowOptimized;
-        return true;
-    }
-    bool tryPop(int &id, Eigen::Isometry3d &pose) {
-        std::lock_guard<std::mutex> lock(mutex);
-        if (output.empty()) return false;
-        std::tie(id, pose) = output.front();
-        output.pop_front(); return true;
-    }
-    void finish() {
-        {
-            std::lock_guard<std::mutex> lock(mutex);
-            if (joined) return;
-            stopping=true;
+
+    bool process(const BAFramePtr &frame, Eigen::Isometry3d &pose,
+                 std::vector<BAFramePtr> &finalizedFrames) {
+        pose = Eigen::Isometry3d::Identity();
+        finalizedFrames.clear();
+        if (!frame || finished)
+            return false;
+
+        if (!config.enable) {
+            BAState state;
+            state.R = frame->odom_pose.linear();
+            state.p = frame->odom_pose.translation();
+            finalize(frame, state, finalizedFrames);
+            return false;
         }
-        cv.notify_all();
-        if (worker.joinable()) worker.join();
-        joined=true;
-    }
-    void publish(const BAFrame &f, const BAState &s) {
-        const int id=f.id;
-        const Eigen::Isometry3d pose=toIsometry(s);
-        std::lock_guard<std::mutex> lock(mutex);
-        output.emplace_back(id, pose);
-    }
-    void process(BAFrame f) {
+
+        const BAFrame &f = *frame;
         BAState state; state.R=f.odom_pose.linear(); state.p=f.odom_pose.translation();
         InertialState inertial;
         inertial.v=f.velocity; inertial.bg=f.bg; inertial.ba=f.ba;
         if(!gravityInitialized)
         {
-            gravityUp=gtsam::Unit3(-f.gravity_odom);
+            gravityUp=gtsam::Unit3(-gravityOdom);
             gravityInitialized=true;
         }
         if(!poses.empty() && config.imu_enable)
@@ -196,15 +168,16 @@ struct LidarBA::Impl {
             pv.var=Eigen::Matrix3d::Identity()*1e-4; points->push_back(pv);
         }
         poses.push_back(state); imuStates.push_back(inertial);
-        clouds.push_back(points); frames.push_back(std::move(f));
+        clouds.push_back(points); frames.push_back(frame);
         const int idx=static_cast<int>(poses.size())-1;
         LBA_PLV(3) world(points->size());
         for (size_t i=0;i<points->size();++i) world[i]=state.R*(*points)[i].pnt+state.p;
         if (!world.empty()) cut_voxel_multi(map,clouds.back(),idx,slideMap,window_size,world,windows);
         recutMap(slideMap,static_cast<int>(poses.size()),poses,factor,windows);
+        for (size_t i = 0; i < frames.size() && i < poses.size(); ++i)
+            frames[i]->optimized_pose = toIsometry(poses[i]);
         if (static_cast<int>(poses.size()) < window_size) {
-            saveWindowSnapshot(false);
-            return;
+            return false;
         }
 
         bool optimized=false;
@@ -233,84 +206,53 @@ struct LidarBA::Impl {
                 gravityUp=previous_gravity;
             }
         }
-        saveWindowSnapshot(optimized);
-        publish(frames.front(),poses.front());
+        if (optimized)
+            pose = toIsometry(poses.back());
+        for (size_t i = 0; i < frames.size() && i < poses.size(); ++i)
+            frames[i]->optimized_pose = toIsometry(poses[i]);
+        finalize(frames.front(), poses.front(), finalizedFrames);
         marginalize(slideMap,window_size,poses,factor,windows[0]);
         for (int &slot: slots) { ++slot; if(slot>=window_size) slot=0; }
         poses.erase(poses.begin()); imuStates.erase(imuStates.begin());
         clouds.erase(clouds.begin()); frames.erase(frames.begin());
         if(!preintegrations.empty()) preintegrations.erase(preintegrations.begin());
         factor=LidarFactor(window_size);
+        return optimized;
     }
-    void saveWindowSnapshot(bool optimized) {
-        completedWindowIds.clear();
-        completedWindowPoses.clear();
-        completedWindowIds.reserve(frames.size());
-        completedWindowPoses.reserve(poses.size());
-        for (size_t i=0; i<frames.size() && i<poses.size(); ++i) {
-            completedWindowIds.push_back(frames[i].id);
-            completedWindowPoses.push_back(toIsometry(poses[i]).matrix());
-        }
-        completedWindowOptimized=optimized;
-    }
-    void run() {
-        for (;;) {
-            BAFrame f;
-            {
-                std::unique_lock<std::mutex> lock(mutex);
-                cv.wait(lock,[&]{return stopping||!input.empty();});
-                if(input.empty()&&stopping) break;
-                f=std::move(input.front());input.pop_front();
-            }
-            if(config.enable) process(f);
-            else {
-                BAState s; s.R=f.odom_pose.linear();s.p=f.odom_pose.translation();publish(f,s);
-                completedWindowIds.assign(1,f.id);
-                completedWindowPoses.assign(1,f.odom_pose.matrix());
-                completedWindowOptimized=false;
-            }
-            {
-                std::lock_guard<std::mutex> lock(mutex);
-                completedInputId=f.id;
-            }
-            cv.notify_all();
-        }
-        // A partial final window cannot use the fixed-size upstream Hessian safely.
-        // Emit every remaining frame in order with its EKF pose.
-        for(size_t i=0;i<frames.size();++i) publish(frames[i],poses[i]);
-        frames.clear();poses.clear();imuStates.clear();preintegrations.clear();clouds.clear();
+    std::vector<BAFramePtr> Finish() {
+        std::vector<BAFramePtr> finalizedFrames;
+        if (finished)
+            return finalizedFrames;
+        finished = true;
+        finalizedFrames.reserve(frames.size());
+        for (size_t i = 0; i < frames.size() && i < poses.size(); ++i)
+            finalize(frames[i], poses[i], finalizedFrames);
+        frames.clear(); poses.clear(); imuStates.clear(); preintegrations.clear(); clouds.clear();
+        return finalizedFrames;
     }
 
     LidarBAConfig config; int window_size=10; double gravityMagnitude=9.81; std::vector<int> slots;
     std::vector<BAState> poses;
     std::vector<InertialState> imuStates;
     std::vector<ImuPreintegration> preintegrations;
-    std::vector<PVecPtr> clouds; std::vector<BAFrame> frames;
+    std::vector<PVecPtr> clouds; std::vector<BAFramePtr> frames;
     boost::shared_ptr<gtsam::PreintegrationParams> imuParams;
     gtsam::Unit3 gravityUp{Eigen::Vector3d::UnitZ()};
     gtsam::Unit3 gravityPrior{Eigen::Vector3d::UnitZ()};
     bool gravityInitialized=false;
+    Eigen::Vector3d gravityOdom;
     std::unordered_map<lidar_ba::VOXEL_LOC,lidar_ba::OctoTree*> map, slideMap;
     std::vector<std::vector<lidar_ba::SlideWindow*>> windows;
     lidar_ba::LidarFactor factor{10};
-    std::mutex mutex; std::condition_variable cv; std::deque<BAFrame> input;
-    std::deque<std::tuple<int, Eigen::Isometry3d>> output;
-    std::vector<int> completedWindowIds;
-    std::vector<Eigen::Matrix4d> completedWindowPoses;
-    int completedInputId=-1;
-    bool completedWindowOptimized=false;
-    bool stopping=false,joined=false; std::thread worker;
+    bool finished = false;
 };
 
-LidarBA::LidarBA(const LidarBAConfig &config) : impl_(new Impl(config)) {}
+LidarBA::LidarBA(const LidarBAConfig &config, const Eigen::Vector3d &gravity)
+    : impl_(new Impl(config, gravity)) {}
 LidarBA::~LidarBA() = default;
-void LidarBA::push(BAFrame frame) { impl_->push(std::move(frame)); }
-bool LidarBA::pushAndWait(BAFrame frame, std::vector<int> &window_ids,
-                          std::vector<Eigen::Matrix4d> &window_poses,
-                          bool &window_optimized) {
-    return impl_->pushAndWait(std::move(frame),window_ids,window_poses,window_optimized);
+bool LidarBA::Process(BAFramePtr frame, Eigen::Isometry3d &pose,
+                      std::vector<BAFramePtr> &finalized) {
+    return impl_->process(frame, pose, finalized);
 }
-bool LidarBA::tryPop(int &id, Eigen::Isometry3d &pose) {
-    return impl_->tryPop(id, pose);
-}
-void LidarBA::finish() { impl_->finish(); }
+std::vector<BAFramePtr> LidarBA::ActiveFrames() const { return impl_->frames; }
+std::vector<BAFramePtr> LidarBA::Finish() { return impl_->Finish(); }

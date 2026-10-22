@@ -5,6 +5,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <memory>
+#include <atomic>
 #include <vector>
 
 struct ImuSample {
@@ -23,10 +24,14 @@ struct BAFrame {
     Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
     Eigen::Vector3d bg = Eigen::Vector3d::Zero();
     Eigen::Vector3d ba = Eigen::Vector3d::Zero();
-    Eigen::Vector3d gravity_odom = Eigen::Vector3d(0.0, 0.0, -9.81);
+    Eigen::Isometry3d optimized_pose = Eigen::Isometry3d::Identity();
+    std::atomic<bool> finalized{false};
     std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>> imu;
     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr map_cloud;
 };
+
+using BAFramePtr = std::shared_ptr<BAFrame>;
 
 struct LidarBAConfig {
     bool enable = true;
@@ -55,16 +60,15 @@ extern LidarBAConfig lidarBAConfig;
 
 class LidarBA {
 public:
-    explicit LidarBA(const LidarBAConfig &config = {});
+    explicit LidarBA(const LidarBAConfig &config,
+                     const Eigen::Vector3d &gravity);
     ~LidarBA();
     LidarBA(const LidarBA &) = delete;
     LidarBA &operator=(const LidarBA &) = delete;
-    void push(BAFrame frame);
-    bool pushAndWait(BAFrame frame, std::vector<int> &window_ids,
-                     std::vector<Eigen::Matrix4d> &window_poses,
-                     bool &window_optimized);
-    bool tryPop(int &id, Eigen::Isometry3d &pose);
-    void finish();
+    bool Process(BAFramePtr frame, Eigen::Isometry3d &pose,
+                 std::vector<BAFramePtr> &finalized);
+    std::vector<BAFramePtr> ActiveFrames() const;
+    std::vector<BAFramePtr> Finish();
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

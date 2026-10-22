@@ -24,7 +24,7 @@ double FloorMap::trajectoryAngle() const
 
     const size_t count = kSlopeWindow;
     const size_t begin = recent_poses_.size() - count;
-    const Eigen::Vector3d up = getGravityUp();
+    const Eigen::Vector3d up = GlobalGraph::GetGravityUp();
 
     std::array<double, kSlopeWindow> dist{};
     for (size_t i = 1; i < count; ++i)
@@ -91,7 +91,7 @@ void FloorMap::update(int key,
     Floor &current_floor = floors_[static_cast<size_t>(current_floor_id_)];
 
     const double angle = trajectoryAngle();
-    const Eigen::Vector3d gravity_up = getGravityUp();
+    const Eigen::Vector3d gravity_up = GlobalGraph::GetGravityUp();
 
     if (transition_dir_ == 0)
     {

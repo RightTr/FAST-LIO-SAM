@@ -1,4 +1,4 @@
-// Modified from LIO-SAM: MapOptimization.cpp
+// Global graph, GNSS, and loop processing.
 
 #include "utility.h"
 #include "common_utils.h"
@@ -7,8 +7,10 @@
 #include "factor/gnssXY_factor.h"
 #include "s-graph/floorMap.h"
 #include "scan_context/Scancontext.h"
-#include "map_optimization.h"
-#include "ros_utils.h"
+#include "lidarBA.h"
+#include "global_graph.h"
+#include "debug/result_writer.h"
+#include "ros/ros_utils.h"
 
 #include <cmath>
 #include <algorithm>
@@ -19,6 +21,9 @@
 #include <utility>
 #include <unordered_set>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <thread>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Pose3.h>
@@ -50,79 +55,8 @@
 using namespace gtsam;
 using namespace std;
 
-using symbol_shorthand::X; // Pose3 (x,y,z,r,p,y)
-
-// gtsam
-NonlinearFactorGraph gtSAMgraph;
-Values initialEstimate;
-ISAM2 *isam;
-Values isamCurrentEstimate;
-Eigen::MatrixXd poseCovariance;
-
-Pcl2Publisher pubKeyPoses;
-PathPublisher pubPath;
-PathPublisher pubGlobalPath;
-
-Pcl2Publisher pubLaserCloudGlobal;
-
-Pcl2Publisher pubRecentKeyFrame;
-MarkerArrayPublisher pubLoopConstraintEdge;
-MarkerArrayPublisher pubKeyFrameYawMarkers;
-#ifdef USE_ROS1
-std::shared_ptr<tf::TransformBroadcaster> samTfBroadcaster;
-#elif defined(USE_ROS2)
-std::shared_ptr<tf2_ros::TransformBroadcaster> samTfBroadcaster;
-#endif
-
-pcl::PointCloud<PointTypeIndex>::Ptr cloudKeyPoses3D; // Store keyframe poses and indexes 
-pcl::PointCloud<PointTypePose>::Ptr cloudKeyPoses6D;
-pcl::PointCloud<PointTypePose>::Ptr cloudKeyOdomPoses6D;
-std::vector<PointTypePose> cloudKeyBAPoses6D;
-
-PathMsg globalPath;
-FloorMap floorMap;
-SCManager sc_manager;
-std::mutex gravityAxisMutex;
-Eigen::Vector3d gravityUpAxis = Eigen::Vector3d::UnitZ();
-bool mapOdomInitialized = false;
-
-std::mutex mtxKeyframe;
-std::mutex mtxLoopFactor;
-std::atomic<bool> loopDone{false};
-
-bool graphUpdate = false;
-bool loopIsClosed = false;
-bool gnssGraphUpdated = false;
-std::unordered_set<int> loopUsedKeys;
-std::vector<std::pair<int, int>> loopEdges;
-std::deque<LoopFactor> loopQueue;
-Eigen::Vector3d last_fpos = Eigen::Vector3d::Zero();
-bool has_fpos = false;
-
-static double yawToMap(double yaw)
-{
-    const Eigen::Vector3d heading_enu(std::cos(yaw), std::sin(yaw), 0.0);
-    const Eigen::Vector3d heading_map = R_enu_map.transpose() * heading_enu;
-    return normalizeYaw(std::atan2(heading_map.y(), heading_map.x()));
-}
-
-void correctPoses();
-
-void setGravityUp(const Eigen::Vector3d &gravity_up)
-{
-    std::lock_guard<std::mutex> lock(gravityAxisMutex);
-    gravityUpAxis = gravity_up.normalized();
-}
-
-Eigen::Vector3d getGravityUp()
-{
-    std::lock_guard<std::mutex> lock(gravityAxisMutex);
-    return gravityUpAxis.normalized();
-}
-
-pcl::VoxelGrid<PointTypeIndex> downSizeFilterICP;
-
-vector<pcl::PointCloud<PointTypeIndex>::Ptr> featCloudKeyFrames;
+std::mutex GlobalGraph::gravityAxisMutex;
+Eigen::Vector3d GlobalGraph::gravityUpAxis = Eigen::Vector3d::UnitZ();
 
 Eigen::Affine3f pclPointToAffine3f(PointTypePose thisPoint)
 { 
@@ -145,6 +79,10 @@ float pointDistance(PointTypeIndex p1, PointTypeIndex p2)
 {
     return sqrt((p1.x-p2.x)*(p1.x-p2.x) + (p1.y-p2.y)*(p1.y-p2.y) + (p1.z-p2.z)*(p1.z-p2.z));
 }
+
+pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(
+    pcl::PointCloud<PointTypeIndex>::Ptr cloudIn,
+    const Eigen::Affine3f &transCur);
 
 pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTypeIndex>::Ptr cloudIn, const PointTypePose *transformIn)
 {
@@ -177,55 +115,52 @@ pcl::PointCloud<PointTypeIndex>::Ptr transformPointCloud(pcl::PointCloud<PointTy
     return cloudOut;
 }
 
-void allocateMemory()
+void GlobalGraph::allocateMemory()
 {
     cloudKeyPoses3D.reset(new pcl::PointCloud<PointTypeIndex>());
     cloudKeyPoses6D.reset(new pcl::PointCloud<PointTypePose>());
     cloudKeyOdomPoses6D.reset(new pcl::PointCloud<PointTypePose>());
 }
 
-void MapOptimizationInit()
+void GlobalGraph::Initialize()
 {
+    floorMap = std::make_unique<FloorMap>();
     cloudKeyBAPoses6D.clear();
     loopDone.store(!loopClosureEnableFlag);
     gnss_aligned.store(false);
-    R_enu_map = Eigen::Matrix3d::Identity();
-    t_enu_map = Eigen::Vector3d::Zero();
+    RosManager::instance().setEnuMap(
+        Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
     last_fpos.setZero();
     has_fpos = false;
-    mapOdomInitialized = false;
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
     parameters.relinearizeSkip = 1;
     parameters.factorization = ISAM2Params::QR;
-    isam = new ISAM2(parameters);
+    isam.reset(new ISAM2(parameters));
 
-    setGravityUp(Eigen::Vector3d::UnitZ());
+    GlobalGraph::SetGravityUp(Eigen::Vector3d::UnitZ());
 
     init_ros_node();
     
-    pubKeyPoses = create_publisher<PointCloud2Msg>("lio_sam/trajectory", 1);
-    pubPath = create_publisher<PathMsg>("lio_sam/mapping/path", 1);
-    pubGlobalPath = create_publisher<PathMsg>("/global_path", 1);
-    pubLaserCloudGlobal = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_global", 1);
-    pubRecentKeyFrame = create_publisher<PointCloud2Msg>("lio_sam/mapping/cloud_recent_keyframe", 1);
-    pubLoopConstraintEdge = create_publisher<MarkerArrayMsg>("lio_sam/loop_closure_constraints", 1);
-    pubKeyFrameYawMarkers = create_publisher<MarkerArrayMsg>("lio_sam/mapping/keyframe_yaw", 1);
-#ifdef USE_ROS1
-    samTfBroadcaster = std::make_shared<tf::TransformBroadcaster>();
-#elif defined(USE_ROS2)
-    samTfBroadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(get_ros_node());
-#endif
-
     downSizeFilterICP.setLeafSize(mappingICPSize, mappingICPSize, mappingICPSize);
 
     allocateMemory();
 }
 
-std::vector<std::pair<int, int>> getLoopSearchRanges(
+double GlobalGraph::yawToMap(double yaw) const
+{
+    const Eigen::Vector3d heading_enu(std::cos(yaw), std::sin(yaw), 0.0);
+    Eigen::Matrix3d R_enu_map;
+    Eigen::Vector3d t_enu_map;
+    RosManager::instance().getEnuMap(R_enu_map, t_enu_map);
+    const Eigen::Vector3d heading_map = R_enu_map.transpose() * heading_enu;
+    return normalizeYaw(std::atan2(heading_map.y(), heading_map.x()));
+}
+
+std::vector<std::pair<int, int>> GlobalGraph::getLoopSearchRanges(
     int loopKeyCur,
-    const std::vector<FloorRange> &floorRanges)
+    const std::vector<FloorRange> &floorRanges) const
 {
     std::vector<std::pair<int, int>> ranges;
     ranges.reserve(floorRanges.size());
@@ -244,7 +179,7 @@ std::vector<std::pair<int, int>> getLoopSearchRanges(
     return ranges;
 }
 
-std::vector<std::pair<int, float>> detectLoopKeys(
+std::vector<std::pair<int, float>> GlobalGraph::detectLoopKeys(
     int loopKeyCur,
     const std::vector<PointTypePose> &poses6D,
     const std::vector<FloorRange> &floorRanges)
@@ -322,7 +257,7 @@ std::vector<std::pair<int, float>> detectLoopKeys(
     return loopKeys;
 }
 
-void performLoopICP(
+void GlobalGraph::performLoopICP(
     int loopKeyCur,
     const std::vector<std::pair<int, float>> &loopKeys,
     const std::vector<FloorRange> &floorRanges,
@@ -458,7 +393,7 @@ void performLoopICP(
     }
 }
 
-void performLoopClosure(
+void GlobalGraph::performLoopClosure(
     int loopKeyCur,
     const std::vector<PointTypePose> &poses6D,
     const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds)
@@ -469,7 +404,7 @@ void performLoopClosure(
     std::vector<FloorRange> floorRanges;
     if (sceneEnableFlag)
     {
-        if (!floorMap.getRanges(loopKeyCur, floorRanges))
+        if (!floorMap->getRanges(loopKeyCur, floorRanges))
             return;
     }
     else
@@ -482,7 +417,7 @@ void performLoopClosure(
         performLoopICP(loopKeyCur, loopKeys, floorRanges, poses6D, clouds);
 }
 
-void addOdomFactor(const PointTypePose &odomPose,
+void GlobalGraph::addOdomFactor(const PointTypePose &odomPose,
                   const PointTypePose &baPose)
 {
     if (cloudKeyPoses3D->points.empty())
@@ -494,6 +429,10 @@ void addOdomFactor(const PointTypePose &odomPose,
             noiseModel::Diagonal::Variances(priorVariance);
         const gtsam::Pose3 poseTo = [&]() {
             const gtsam::Pose3 poseOdom = pclPointTogtsamPose3(baPose);
+            Eigen::Matrix3d R_map_odom;
+            Eigen::Vector3d t_map_odom;
+            RosManager::instance().getMapOdom(
+                R_map_odom, t_map_odom);
             const Eigen::Matrix3d R_map_body = R_map_odom * poseOdom.rotation().matrix();
             const Eigen::Vector3d t_map_body = R_map_odom *
                 Eigen::Vector3d(poseOdom.translation().x(),
@@ -523,7 +462,7 @@ void addOdomFactor(const PointTypePose &odomPose,
     }
 }
 
-void addLoopFactor()
+void GlobalGraph::addLoopFactor()
 {
     if (!loopClosureEnableFlag)
         return;
@@ -559,7 +498,7 @@ void addLoopFactor()
     graphUpdate = true;
 }
 
-void poseGraphUpdate()
+void GlobalGraph::poseGraphUpdate()
 {
     addLoopFactor();
     if (gtSAMgraph.empty())
@@ -577,7 +516,7 @@ void poseGraphUpdate()
     correctPoses();
 }
 
-void performGnssMatching()
+void GlobalGraph::performGnssMatching()
 {
     if (!gnssEnableFlag || !gnss_aligned.load())
         return;
@@ -606,7 +545,12 @@ void performGnssMatching()
 
         const PointTypePose &keyPose = keyPoses6D[keyIndex];
         const Eigen::Matrix3d R_map_body = poseRotation(keyPose);
-        const Eigen::Vector3d p_map_ant = R_enu_map.transpose() * (gnssPos.position - t_enu_map);
+        Eigen::Matrix3d R_enu_map;
+        Eigen::Vector3d t_enu_map;
+        RosManager::instance().getEnuMap(
+            R_enu_map, t_enu_map);
+        const Eigen::Vector3d p_map_ant = R_enu_map.transpose() *
+            (gnssPos.position - t_enu_map);
         Eigen::Vector3d gnssPosition = p_map_ant - R_map_body * p_gnss->leverArm;
         const Eigen::Vector3d positionDelta = gnssPosition - last_fpos;
         const double positionDistance = useGnssElevation
@@ -672,7 +616,7 @@ void performGnssMatching()
     }
 }
 
-void updatePath(const PointTypePose& pose_in)
+void GlobalGraph::updatePath(const PointTypePose& pose_in)
 {
     PoseStampedMsg pose_stamped;
     pose_stamped.header.stamp = get_ros_time(pose_in.time);
@@ -685,11 +629,15 @@ void updatePath(const PointTypePose& pose_in)
     globalPath.poses.push_back(pose_stamped);
 }
 
-void KeyframeToGlobal(
-    const PointTypePose &odomPose,
-    const PointTypePose &baPose,
-    const pcl::PointCloud<pcl::PointXYZI>::Ptr &frameCloud)
+namespace
 {
+PointTypePose poseFromIsometry(const Eigen::Isometry3d &transform, double timestamp);
+}
+
+void GlobalGraph::KeyframeToGlobal(const BAFramePtr &frame)
+{
+    const PointTypePose odomPose = poseFromIsometry(frame->odom_pose, frame->timestamp);
+    const PointTypePose baPose = poseFromIsometry(frame->optimized_pose, frame->timestamp);
     const gtsam::Key latestPoseKey=static_cast<gtsam::Key>(cloudKeyPoses3D->size());
     addOdomFactor(odomPose,baPose);
     addLoopFactor();
@@ -705,9 +653,8 @@ void KeyframeToGlobal(
     PointTypePose pose6; pose6.x=pose3.x; pose6.y=pose3.y; pose6.z=pose3.z; pose6.intensity=pose3.intensity;
     pose6.roll=estimate.rotation().roll(); pose6.pitch=estimate.rotation().pitch(); pose6.yaw=estimate.rotation().yaw(); pose6.time=odomPose.time;
 
-    pcl::PointCloud<PointTypeIndex>::Ptr cloud(new pcl::PointCloud<PointTypeIndex>());
-    cloud->reserve(frameCloud ? frameCloud->size() : 0);
-    if(frameCloud) for(const auto &pt: frameCloud->points) { PointTypeIndex q; q.x=pt.x;q.y=pt.y;q.z=pt.z;q.intensity=pt.intensity;cloud->push_back(q); }
+    pcl::PointCloud<PointTypeIndex>::Ptr cloud = frame->cloud;
+    if (!cloud) cloud.reset(new pcl::PointCloud<PointTypeIndex>());
     {
         std::lock_guard<std::mutex> lock(mtxKeyframe);
         cloudKeyPoses3D->push_back(pose3); cloudKeyPoses6D->push_back(pose6);
@@ -716,55 +663,32 @@ void KeyframeToGlobal(
         if(loopClosureEnableFlag && scanContextEnableFlag) sc_manager.makeAndSaveScancontextAndKeys(*cloud);
     }
     if (loopClosureEnableFlag) loopDone.store(false);
-    if(sceneEnableFlag) floorMap.update(static_cast<int>(latestPoseKey),odomPose);
+    if(sceneEnableFlag) floorMap->update(static_cast<int>(latestPoseKey),odomPose);
     updatePath(pose6);
     poseCovariance=isam->marginalCovariance(latestPoseKey);
 
     if(keyframe_export_en) {
-        pcl::PointCloud<pcl::PointXYZINormal> exportCloud;
-        if(frameCloud) for(const auto &pt:frameCloud->points){pcl::PointXYZINormal q;q.x=pt.x;q.y=pt.y;q.z=pt.z;q.intensity=pt.intensity;exportCloud.push_back(q);}
-        const std::string stamp=format_unix_time(pose6.time);
-        pcl::PCDWriter writer; writer.writeBinary(keyframe_frames_dir+"scans/"+stamp+".pcd",exportCloud);
+        ResultWriter::instance().saveKeyframeCloud(frame->cloud, pose6.time);
     }
 }
 
-void shutdownMapOptimization()
+void GlobalGraph::Cleanup()
 {
-#ifdef USE_ROS1
-    pubKeyPoses.shutdown();
-    pubPath.shutdown();
-    pubGlobalPath.shutdown();
-    pubLaserCloudGlobal.shutdown();
-    pubRecentKeyFrame.shutdown();
-    pubLoopConstraintEdge.shutdown();
-    pubKeyFrameYawMarkers.shutdown();
-#elif defined(USE_ROS2)
-    pubKeyPoses.reset();
-    pubPath.reset();
-    pubGlobalPath.reset();
-    pubLaserCloudGlobal.reset();
-    pubRecentKeyFrame.reset();
-    pubLoopConstraintEdge.reset();
-    pubKeyFrameYawMarkers.reset();
-#endif
-    samTfBroadcaster.reset();
-
-    if (isam != nullptr)
-    {
-        delete isam;
-        isam = nullptr;
-    }
+    isam.reset();
 }
 
-void correctPoses()
+void GlobalGraph::correctPoses()
 {
-    if (cloudKeyPoses3D->points.empty())
-        return;
-
+    bool hasReference = false;
+    PointTypePose mapReference;
+    PointTypePose odomReference;
     if (graphUpdate)
     {
         {
             std::lock_guard<std::mutex> lock(mtxKeyframe);
+            if (cloudKeyPoses3D == nullptr || cloudKeyPoses6D == nullptr ||
+                cloudKeyOdomPoses6D == nullptr || cloudKeyPoses3D->points.empty())
+                return;
 
             // clear path
             globalPath.poses.clear();
@@ -790,16 +714,21 @@ void correctPoses()
 
                 updatePath(cloudKeyPoses6D->points[i]);
             }
+
+            if (!cloudKeyOdomPoses6D->points.empty() &&
+                cloudKeyOdomPoses6D->points.size() == cloudKeyPoses6D->points.size())
+            {
+                mapReference = cloudKeyPoses6D->points.back();
+                odomReference = cloudKeyOdomPoses6D->points.back();
+                hasReference = true;
+            }
         }
     }
 
-    if ((!mapOdomInitialized || loopIsClosed || gnssGraphUpdated) &&
-        !cloudKeyOdomPoses6D->points.empty() &&
-        cloudKeyOdomPoses6D->points.size() == cloudKeyPoses6D->points.size())
+    if (graphUpdate && hasReference)
     {
-        const size_t ref = cloudKeyPoses6D->points.size() - 1;
-        const gtsam::Pose3 pose_map_ref = pclPointTogtsamPose3(cloudKeyPoses6D->points[ref]);
-        const gtsam::Pose3 pose_odom_ref = pclPointTogtsamPose3(cloudKeyOdomPoses6D->points[ref]);
+        const gtsam::Pose3 pose_map_ref = pclPointTogtsamPose3(mapReference);
+        const gtsam::Pose3 pose_odom_ref = pclPointTogtsamPose3(odomReference);
         const Eigen::Matrix3d R_map_odom =
             pose_map_ref.rotation().matrix() * pose_odom_ref.rotation().matrix().transpose();
         const Eigen::Vector3d t_map_odom =
@@ -809,8 +738,7 @@ void correctPoses()
             R_map_odom * Eigen::Vector3d(pose_odom_ref.translation().x(),
                                              pose_odom_ref.translation().y(),
                                              pose_odom_ref.translation().z());
-        setMapOdom(R_map_odom, t_map_odom);
-        mapOdomInitialized = true;
+        RosManager::instance().setMapOdom(R_map_odom, t_map_odom);
     }
 
     graphUpdate = false;
@@ -818,7 +746,7 @@ void correctPoses()
     gnssGraphUpdated = false;
 }
 
-void publishSamMsg()
+void GlobalGraph::publishSamMsg()
 {
     std::vector<PointTypeIndex> poses3D;
     std::vector<PointTypePose> poses6D;
@@ -851,21 +779,22 @@ void publishSamMsg()
     }
 
     // publish key poses
-    publishCloud(pubKeyPoses, keyPosesCloud, stamp, map_frame);
-    if (ros_subscription_count(pubPath) != 0)
+    auto &ros = RosManager::instance();
+    publishCloud(ros.pubKeyPoses, keyPosesCloud, stamp, map_frame);
+    if (ros_subscription_count(ros.pubGraphPath) != 0)
     {
         globalPath.header.stamp = stamp;
         globalPath.header.frame_id = map_frame;
-        ros_publish(pubPath, globalPath);
+        ros.publish(ros.pubGraphPath, globalPath);
     }
-    if (ros_subscription_count(pubGlobalPath) != 0)
+    if (ros_subscription_count(ros.pubGlobalPath) != 0)
     {
         globalPath.header.stamp = stamp;
         globalPath.header.frame_id = map_frame;
-        ros_publish(pubGlobalPath, globalPath);
+        ros.publish(ros.pubGlobalPath, globalPath);
     }
 
-    if (ros_subscription_count(pubKeyFrameYawMarkers) != 0)
+    if (ros_subscription_count(ros.pubKeyFrameYawMarkers) != 0)
     {
         MarkerArrayMsg markerArray;
 
@@ -900,19 +829,19 @@ void publishSamMsg()
             markerArray.markers.push_back(marker);
         }
 
-        ros_publish(pubKeyFrameYawMarkers, markerArray);
+        ros.publish(ros.pubKeyFrameYawMarkers, markerArray);
     }
 
-    if (ros_subscription_count(pubRecentKeyFrame) != 0)
+    if (ros_subscription_count(ros.pubRecentKeyFrame) != 0)
     {
         pcl::PointCloud<PointTypeIndex>::Ptr cloudOut(new pcl::PointCloud<PointTypeIndex>());
         PointTypePose thisPose6D = poses6D.back();
         *cloudOut += *transformPointCloud(clouds.back(), &thisPose6D);
-        publishCloud(pubRecentKeyFrame, cloudOut, stamp, map_frame);
+        publishCloud(ros.pubRecentKeyFrame, cloudOut, stamp, map_frame);
     }
 }
 
-void visualizeLoopClosure()
+void GlobalGraph::visualizeLoopClosure()
 {
     std::vector<std::pair<int, int>> loop_edges;
     std::vector<PointTypePose> keyposes;
@@ -978,74 +907,287 @@ void visualizeLoopClosure()
 
     markerArray.markers.push_back(markerNode);
     markerArray.markers.push_back(markerEdge);
-    ros_publish(pubLoopConstraintEdge, markerArray);
+    RosManager::instance().publish(
+        RosManager::instance().pubLoopConstraintEdge, markerArray);
 }
 
-void loopClosureThread()
+namespace
 {
-    if (!loopClosureEnableFlag)
-        return;
+PointTypePose poseFromIsometry(const Eigen::Isometry3d &transform, double timestamp)
+{
+    PointTypePose pose;
+    const Eigen::Vector3d rpy = transform.linear().eulerAngles(2, 1, 0);
+    pose.x = transform.translation().x();
+    pose.y = transform.translation().y();
+    pose.z = transform.translation().z();
+    pose.roll = rpy(2);
+    pose.pitch = rpy(1);
+    pose.yaw = rpy(0);
+    pose.time = timestamp;
+    return pose;
+}
+} // namespace
 
-    RateType rate(loopClosureFrequency);
-    int nextKey = 1;
-
-    while (ros_ok() && !flg_exit)
+bool GlobalGraph::processPendingLoopChecks(int &nextKey)
+{
+    if (!loopClosureEnableFlag || loopCurNum <= 0)
     {
-        rate.sleep();
+        loopDone.store(true);
+        return false;
+    }
 
-        std::vector<PointTypePose> poses6D;
-        std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
+    std::vector<PointTypePose> poses6D;
+    std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
+    {
+        std::lock_guard<std::mutex> lock(mtxKeyframe);
+        if (cloudKeyPoses6D == nullptr || cloudKeyPoses6D->points.size() < 6 ||
+            featCloudKeyFrames.size() < 6)
         {
-            std::lock_guard<std::mutex> lock(mtxKeyframe);
-            if (cloudKeyPoses6D == nullptr ||
-                cloudKeyPoses6D->points.size() < 6 ||
-                featCloudKeyFrames.size() < 6)
+            loopDone.store(true);
+            return false;
+        }
+        poses6D.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
+        clouds = featCloudKeyFrames;
+    }
+
+    const int readyKey = static_cast<int>(poses6D.size()) - 1;
+    if (nextKey > readyKey)
+    {
+        loopDone.store(true);
+        return false;
+    }
+
+    loopDone.store(false);
+    for (int processed = 0; processed < loopCurNum && nextKey <= readyKey; ++processed, ++nextKey)
+        performLoopClosure(nextKey, poses6D, clouds);
+    loopDone.store(nextKey > readyKey);
+    return true;
+}
+
+bool GlobalGraph::InsertKeyFrame(const BAFramePtr &frame)
+{
+    if (!frame || !frame->keyframe || !frame->finalized.load(std::memory_order_acquire))
+        return false;
+    {
+        std::lock_guard<std::mutex> lock(mMutexNewKFs);
+        if (mbFinishRequested)
+            return false;
+        mlNewKeyFrames.push_back(frame);
+    }
+    mNewKfCV.notify_one();
+    return true;
+}
+
+void GlobalGraph::Shutdown()
+{
+    {
+        std::lock_guard<std::mutex> lock(mMutexNewKFs);
+        mbFinishRequested = true;
+    }
+    mNewKfCV.notify_all();
+    mVisualizationCV.notify_all();
+    if (mWorker.joinable())
+        mWorker.join();
+    if (mVisualizationWorker.joinable())
+        mVisualizationWorker.join();
+}
+
+std::vector<PointTypePose> GlobalGraph::GetKeyframePoses() const
+{
+    std::lock_guard<std::mutex> lock(mtxKeyframe);
+    if (!cloudKeyPoses6D)
+        return {};
+    return std::vector<PointTypePose>(
+        cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
+}
+
+bool GlobalGraph::SaveGlobalCloud(const std::string &filename) const
+{
+    std::vector<PointTypePose> poses;
+    std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> clouds;
+    {
+        std::lock_guard<std::mutex> lock(mtxKeyframe);
+        if (!cloudKeyPoses6D || featCloudKeyFrames.empty())
+            return false;
+        poses.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
+        clouds = featCloudKeyFrames;
+    }
+
+    pcl::PointCloud<PointTypeIndex> globalCloud;
+    const size_t count = std::min(poses.size(), clouds.size());
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (clouds[i])
+            globalCloud += *transformPointCloud(clouds[i], &poses[i]);
+    }
+    pcl::PCDWriter writer;
+    return writer.writeBinary(filename, globalCloud) == 0;
+}
+
+void GlobalGraph::Run()
+{
+    int nextLoopKey = 1;
+    auto nextLoopTime = std::chrono::steady_clock::now();
+    const double loopPeriodSec = loopClosureFrequency > 0.0
+        ? 1.0 / loopClosureFrequency : 1.0;
+    size_t processedKeyframes = 0;
+    auto globalGraphWindowStart = std::chrono::steady_clock::now();
+    size_t globalGraphOperations = 0;
+    double globalGraphProcessingMs = 0.0;
+
+    for (;;)
+    {
+        BAFramePtr frame;
+        size_t batchCount = 0;
+        while (batchCount < 8)
+        {
             {
-                loopDone.store(true);
-                continue;
+                std::unique_lock<std::mutex> lock(mMutexNewKFs);
+                if (batchCount == 0)
+                    mNewKfCV.wait_for(lock, std::chrono::milliseconds(30), [this] {
+                        return mbFinishRequested || !mlNewKeyFrames.empty();
+                    });
+                if (mlNewKeyFrames.empty())
+                    break;
+                frame = std::move(mlNewKeyFrames.front());
+                mlNewKeyFrames.pop_front();
             }
-
-            poses6D.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
-            clouds = featCloudKeyFrames;
+            if (frame->keyframe)
+            {
+                const auto operationStart = std::chrono::steady_clock::now();
+                KeyframeToGlobal(frame);
+                correctPoses();
+                publishSamMsg();
+                globalGraphProcessingMs += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - operationStart).count();
+                ++globalGraphOperations;
+            }
+            ++batchCount;
+            ++processedKeyframes;
         }
 
-        const int readyKey = static_cast<int>(poses6D.size()) - 1;
+        performGnssMatching();
 
-        if (nextKey > readyKey)
+        const auto now = std::chrono::steady_clock::now();
+        bool stopping;
         {
+            std::lock_guard<std::mutex> lock(mMutexNewKFs);
+            stopping = mbFinishRequested && mlNewKeyFrames.empty();
+        }
+        if (loopClosureEnableFlag &&
+            (now >= nextLoopTime || stopping) && loopCurNum > 0)
+        {
+            const auto loopStart = std::chrono::steady_clock::now();
+            processPendingLoopChecks(nextLoopKey);
+            globalGraphProcessingMs += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - loopStart).count();
+            ++globalGraphOperations;
+            nextLoopTime = now + std::chrono::duration_cast<
+                std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(loopPeriodSec));
+        }
+
+        bool hasQueuedLoopFactors = false;
+        {
+            std::lock_guard<std::mutex> lock(mtxLoopFactor);
+            hasQueuedLoopFactors = !loopQueue.empty();
+        }
+        if (!gtSAMgraph.empty() || hasQueuedLoopFactors || gnssGraphUpdated)
+        {
+            const auto operationStart = std::chrono::steady_clock::now();
+            poseGraphUpdate();
+            publishSamMsg();
+            globalGraphProcessingMs += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - operationStart).count();
+            ++globalGraphOperations;
+        }
+
+        if (loopClosureEnableFlag && loopCurNum <= 0)
             loopDone.store(true);
-            continue;
-        }
-
-        loopDone.store(false);
-
-        if (loopCurNum <= 0)
+        if (globalGraphOperations >= 20)
         {
-            loopDone.store(true);
-            continue;
+            ROS_PRINT_INFO("GlobalGraph average processing: %.2f ms over %zu operations (%zu keyframes)",
+                           globalGraphProcessingMs / globalGraphOperations,
+                           globalGraphOperations, processedKeyframes);
+            globalGraphProcessingMs = 0.0;
+            globalGraphOperations = 0;
         }
-
-        nextKey = std::max(nextKey, readyKey - loopCurNum + 1);
-        // ROS_PRINT_INFO(
-        //     "[LOOP] range next=%d ready=%d latest=%zu",
-        //     nextKey,
-        //     readyKey,
-        //     poses6D.size() - 1);
-
-        for (int processed = 0; processed < loopCurNum && nextKey <= readyKey; )
+        if (processedKeyframes >= 100)
         {
-            performLoopClosure(nextKey, poses6D, clouds);
-
-            ++nextKey;
-            ++processed;
+            const double elapsed_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - globalGraphWindowStart).count();
+            ROS_PRINT_INFO("GlobalGraph throughput: %zu keyframes in %.1f ms", processedKeyframes, elapsed_ms);
+            processedKeyframes = 0;
+            globalGraphWindowStart = std::chrono::steady_clock::now();
         }
 
-        loopDone.store(nextKey > readyKey);
+        {
+            std::lock_guard<std::mutex> lock(mMutexNewKFs);
+            stopping = mbFinishRequested;
+        }
+        const bool loopsDrained = !loopClosureEnableFlag ||
+                                  loopCurNum <= 0 || loopDone.load();
+        if (stopping && loopsDrained)
+        {
+            performGnssMatching();
+            if (!gtSAMgraph.empty() || gnssGraphUpdated)
+            {
+                poseGraphUpdate();
+                publishSamMsg();
+            }
+            correctPoses();
+            publishSamMsg();
+            visualizeLoopClosure();
+            publishGlobalMap();
+            break;
+        }
     }
 }
 
-void publishGlobalMap() {
-    if (ros_subscription_count(pubLaserCloudGlobal) == 0)
+void GlobalGraph::VisualizationRun()
+{
+    std::unique_lock<std::mutex> lock(mMutexNewKFs);
+    while (!mbFinishRequested)
+    {
+        if (mVisualizationCV.wait_for(lock, std::chrono::seconds(5), [this] {
+                return mbFinishRequested;
+            }))
+            break;
+        lock.unlock();
+        publishGlobalMap();
+        visualizeLoopClosure();
+        lock.lock();
+    }
+}
+
+GlobalGraph::GlobalGraph()
+{
+    Initialize();
+    mWorker = std::thread(&GlobalGraph::Run, this);
+    mVisualizationWorker = std::thread(&GlobalGraph::VisualizationRun, this);
+}
+
+GlobalGraph::~GlobalGraph()
+{
+    Shutdown();
+    Cleanup();
+}
+
+void GlobalGraph::SetGravityUp(const Eigen::Vector3d &gravity_up)
+{
+    std::lock_guard<std::mutex> lock(gravityAxisMutex);
+    gravityUpAxis = gravity_up.normalized();
+}
+
+Eigen::Vector3d GlobalGraph::GetGravityUp()
+{
+    std::lock_guard<std::mutex> lock(gravityAxisMutex);
+    return gravityUpAxis.normalized();
+}
+
+void GlobalGraph::publishGlobalMap() {
+    auto &ros = RosManager::instance();
+    if (ros_subscription_count(ros.pubLaserCloudGlobal) == 0)
         return;
 
     pcl::PointCloud<PointTypeIndex>::Ptr keyPoses3D(new pcl::PointCloud<PointTypeIndex>());
@@ -1111,15 +1253,6 @@ void publishGlobalMap() {
     downSizeFilterGlobalMapKeyFrames.setLeafSize(globalMapVisualizationLeafSize, globalMapVisualizationLeafSize, globalMapVisualizationLeafSize); // for global map visualization
     downSizeFilterGlobalMapKeyFrames.setInputCloud(globalMapKeyFrames);
     downSizeFilterGlobalMapKeyFrames.filter(*globalMapKeyFramesDS);
-    publishCloud(pubLaserCloudGlobal, globalMapKeyFramesDS, stamp, map_frame);
+    publishCloud(ros.pubLaserCloudGlobal, globalMapKeyFramesDS, stamp, map_frame);
 }
 
-void visualizeGlobalMapThread()
-{
-    RateType rate(0.2);
-    while (ros_ok() && !flg_exit){
-        rate.sleep();
-        publishGlobalMap();
-        visualizeLoopClosure();
-    }
-}

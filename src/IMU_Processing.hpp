@@ -11,7 +11,7 @@
 #include <Eigen/Eigen>
 #include <Eigen/Geometry>
 #include <common_lib.h>
-#include <ros_utils.h>
+#include <ros/ros_utils.h>
 #include <pcl/common/io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -23,7 +23,7 @@
 #include "simple_EKF/simple_ekf.hpp"
 #include "preprocess.h"
 #include "posebuffer.h"
-#include "map_optimization.h"
+#include "global_graph.h"
 #include "lidarBA.h"
 
 /// *************Preconfiguration
@@ -338,7 +338,7 @@ void ImuProcess::IMU_init(const MeasureGroup &meas, SimpleEKF &kf_state, int &N)
   }
   else init_gravity = -mean_acc / mean_acc.norm() * G_m_s2;
 
-  setGravityUp((-init_gravity).normalized());
+  GlobalGraph::SetGravityUp((-init_gravity).normalized());
   
   //state_inout.rot = Eye3d; // Exp(mean_acc.cross(V3D(0, 0, -1 / scale_gravity)));
   init_state.bg  = mean_gyr;

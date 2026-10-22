@@ -11,9 +11,10 @@
 #include <string>
 #include <vector>
 
-#include "ros_utils.h"
-#include "map_optimization.h"
+#include "ros/ros_utils.h"
+#include "global_graph.h"
 #include "posebuffer.h"
+#include "ros/ros_manager.h"
 #include <pcl/common/transforms.h>
 
 #include "utility.h"
@@ -161,18 +162,17 @@ inline Eigen::Vector3d transformPoint(const Eigen::Vector3d &p_old,
     return R_new_old * p_old + t_new_old;
 }
 
-extern Eigen::Matrix3d R_map_odom;
-extern Eigen::Vector3d t_map_odom;
 extern Eigen::Matrix3d R_prior_odom;
 extern Eigen::Vector3d t_prior_odom;
-extern Eigen::Matrix3d R_enu_map;
-extern Eigen::Vector3d t_enu_map;
 
 inline void composeMapPose(const Eigen::Matrix3d &R_odom_body,
                            const Eigen::Vector3d &t_odom_body,
                            Eigen::Matrix3d &R_map_body,
                            Eigen::Vector3d &t_map_body)
 {
+    Eigen::Matrix3d R_map_odom;
+    Eigen::Vector3d t_map_odom;
+    RosManager::instance().getMapOdom(R_map_odom, t_map_odom);
     R_map_body = R_map_odom * R_odom_body;
     t_map_body = R_map_odom * t_odom_body + t_map_odom;
 }
@@ -182,17 +182,16 @@ inline void composeOdomPose(const Eigen::Matrix3d &R_map_body,
                             Eigen::Matrix3d &R_odom_body,
                             Eigen::Vector3d &t_odom_body)
 {
+    Eigen::Matrix3d R_map_odom;
+    Eigen::Vector3d t_map_odom;
+    RosManager::instance().getMapOdom(R_map_odom, t_map_odom);
     const Eigen::Matrix3d R_odom_map = R_map_odom.transpose();
     R_odom_body = R_odom_map * R_map_body;
     t_odom_body = R_odom_map * (t_map_body - t_map_odom);
 }
 
-void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
-                const Eigen::Vector3d &t_map_odom_);
 void setPriorOdom(const Eigen::Matrix3d &R_prior_odom_,
                   const Eigen::Vector3d &t_prior_odom_);
-void publishEnuToMapTf(const TimeType& stamp);
-
 inline void transformPoseStamped(PoseStampedMsg &pose,
                                  const Eigen::Matrix3d &R_new_old,
                                  const Eigen::Vector3d &t_new_old)

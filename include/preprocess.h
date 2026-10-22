@@ -3,7 +3,7 @@
 
 #include <algorithm>
 #include <pcl_conversions/pcl_conversions.h>
-#include "ros_utils.h"
+#include "ros/ros_utils.h"
 
 using namespace std;
 
@@ -174,7 +174,6 @@ class Preprocess
   double blind;
   bool feature_enabled, given_offset_time;
     
-  Pcl2Publisher pub_full, pub_surf, pub_corn;
 
   private:
   void avia_handler(const LivoxCustomMsgConstPtr &msg);

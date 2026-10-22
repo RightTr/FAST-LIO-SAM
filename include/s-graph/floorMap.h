@@ -1,7 +1,7 @@
 #ifndef FLOOR_MAP_H
 #define FLOOR_MAP_H
 
-#include "map_optimization.h"
+#include "global_graph.h"
 
 #include <deque>
 #include <mutex>

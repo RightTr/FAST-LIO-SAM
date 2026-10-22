@@ -1,28 +1,26 @@
+#include "ros/ros_parameters.h"
 #include "utility.h"
 #include "lidarBA.h"
-#include "ros_utils.h"
+#include "ros/ros_utils.h"
+#include "preprocess.h"
 
-#include <algorithm>
+#include <cmath>
 
-using namespace std;
-
-// CPU Params
+// Shared configuration state used by the frontend and backend.
 int numberOfCores;
 
-// Surrounding map
-float surroundingkeyframeAddingDistThreshold; 
-float surroundingkeyframeAddingAngleThreshold; 
+float surroundingkeyframeAddingDistThreshold;
+float surroundingkeyframeAddingAngleThreshold;
 float surroundingKeyframeDensity;
 float surroundingKeyframeSearchRadius;
 
-// Loop closure
-bool  loopClosureEnableFlag;
-bool  scanContextEnableFlag;
+bool loopClosureEnableFlag;
+bool scanContextEnableFlag;
 float loopClosureFrequency;
-int   surroundingKeyframeSize;
+int surroundingKeyframeSize;
 float historyKeyframeSearchRadius;
 float historyKeyframeSearchTimeDiff;
-int   historyKeyframeSearchNum;
+int historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
 float icpMaxCorrDistance;
 double priorVar = 1e-4;
@@ -30,16 +28,13 @@ double odomRotVar = 1e-3;
 double odomPosVar = 1e-3;
 double loopRotVar = 0.1;
 double loopPosVar = 0.1;
-int   loopCurNum;
-int   loopPreNum;
+int loopCurNum;
+int loopPreNum;
 
-// global map visualization radius
 float globalMapVisualizationSearchRadius;
 float globalMapVisualizationPoseDensity;
 float globalMapVisualizationLeafSize;
-
 float mappingICPSize;
-
 int ikdtreeSearchNeighborNum;
 
 bool keyframe_export_en = false;
@@ -103,6 +98,66 @@ void set_mapping_mode()
             use_prior_map = false;
             return;
     }
+}
+
+void read_mapping_params(Preprocess &preprocess, int &lidarType)
+{
+    rosparam_get("sam_enable", sam_enable, false);
+    rosparam_get("publish/path_en", path_en, true);
+    rosparam_get("publish/scan_publish_en", scan_pub_en, true);
+    rosparam_get("publish/dense_publish_en", dense_pub_en, true);
+    rosparam_get("publish/scan_bodyframe_pub_en", scan_body_pub_en, true);
+    rosparam_get("publish/feature_pub_en", feature_pub_en, false);
+    rosparam_get("publish/effect_pub_en", effect_pub_en, false);
+    rosparam_get("max_iteration", NUM_MAX_ITERATIONS, 4);
+    rosparam_get("map_file_path", map_file_path, std::string(""));
+    rosparam_get("common/lid_topic", lid_topic, std::string("/livox/lidar"));
+    rosparam_get("common/imu_topic", imu_topic, std::string("/livox/imu"));
+    rosparam_get("common/map_frame", map_frame, std::string("map"));
+    rosparam_get("common/odom_frame", odom_frame, std::string("odom"));
+    rosparam_get("common/base_frame", base_frame, std::string("base_link"));
+    rosparam_get("common/high_freq_base_frame", high_freq_base_frame,
+                 std::string("base_link_hf"));
+    rosparam_get("reloc/reloc_topic", reloc_topic, std::string("/reloc/manual"));
+    rosparam_get("common/time_sync_en", time_sync_en, false);
+    rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
+    rosparam_get("common/flip_en", flip_en, false);
+    rosparam_get("common/grav_align", grav_align, false);
+    rosparam_get("common/mode", mapping_mode, 1);
+    rosparam_get("mapping/imu_dt", imu_dt, 0.005);
+    rosparam_get("mapping/timeRepair", timeRepair, true);
+    rosparam_get("prior_map/prior_tree_path", prior_tree_path, std::string(""));
+    rosparam_get("prior_map/prior_init", prior_init_en, false);
+    rosparam_get("prior_map/prior_lidar_cov", prior_lidar_cov, 0.001);
+    rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
+    rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
+    rosparam_get("filter_size_map", filter_size_map_min, 0.5);
+    rosparam_get("cube_side_length", cube_len, 200.0);
+    rosparam_get("mapping/det_range", DET_RANGE, 300.f);
+    rosparam_get("mapping/fov_degree", fov_deg, 180.0);
+    rosparam_get("mapping/gyr_cov", gyr_cov, 0.1);
+    rosparam_get("mapping/acc_cov", acc_cov, 0.1);
+    rosparam_get("mapping/b_gyr_cov", b_gyr_cov, 0.0001);
+    rosparam_get("mapping/b_acc_cov", b_acc_cov, 0.0001);
+    rosparam_get("mapping/point2point", point2point, false);
+    rosparam_get("geo_map/enable", geo_map_enable, false);
+    rosparam_get("geo_map/debug", geo_map_debug, false);
+    rosparam_get("geo_map/support", geo_support, 0.15);
+    rosparam_get("geo_map/plane_dist", geo_plane_dist, 0.05);
+    rosparam_get("preprocess/blind", preprocess.blind, 0.01);
+    rosparam_get("preprocess/lidar_type", lidarType, (int)AVIA);
+    rosparam_get("preprocess/scan_line", preprocess.N_SCANS, 16);
+    rosparam_get("preprocess/timestamp_unit", preprocess.time_unit, (int)US);
+    rosparam_get("preprocess/scan_rate", preprocess.SCAN_RATE, 10);
+    rosparam_get("point_filter_num", preprocess.point_filter_num, 2);
+    rosparam_get("feature_extract_enable", preprocess.feature_enabled, false);
+    rosparam_get("result_save/imu_state_save_en", imu_state_save_en, false);
+    rosparam_get("result_save/scan_frame_save_en", scan_frame_save_en, false);
+    rosparam_get("result_save/ikdtree_output_save_en", ikdtree_output_save_en, false);
+    rosparam_get("result_save/feat_accum_save_en", feat_accum_save_en, false);
+    rosparam_get("result_save/interval", res_save_interval, -1);
+    rosparam_get("mapping/extrinsic_T", extrinT, std::vector<double>());
+    rosparam_get("mapping/extrinsic_R", extrinR, std::vector<double>());
 }
 
 void read_liosam_params() {

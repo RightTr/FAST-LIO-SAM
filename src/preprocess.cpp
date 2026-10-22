@@ -1,6 +1,7 @@
 #include "preprocess.h"
 #include "utility.h"
-#include "ros_utils.h"
+#include "ros/ros_utils.h"
+#include "ros/ros_manager.h"
 
 #define RETURN0     0x00
 #define RETURN0AND1 0x10
@@ -622,7 +623,7 @@ void Preprocess::airy_handler(const Pcl2MsgConstPtr& msg) {
       pl_surf.points.push_back(added_pt);
     }
   }
-  pub_func(pub_surf, pl_surf, msg->header.stamp);
+  pub_func(RosManager::instance().pubSurfFeature, pl_surf, msg->header.stamp);
   // pub_func(pub_corn, pl_corn, msg->header.stamp);
 }
 
@@ -1056,7 +1057,7 @@ void Preprocess::pub_func(const Pcl2Publisher& pub, PointCloudXYZI &pl, const Ti
   pcl::toROSMsg(pl_pub, output);
   output.header.frame_id = "lidar";
   output.header.stamp = ct;
-  ros_publish(pub, output);
+  RosManager::instance().publish(pub, output);
 }
 
 int Preprocess::plane_judge(const PointCloudXYZI &pl, vector<orgtype> &types, uint i_cur, uint &i_nex, Eigen::Vector3d &curr_direct)

@@ -28,8 +28,12 @@
 #include "ikd-Tree/ikdtree_public.h"
 #include <atomic>
 #include "posebuffer.h"
-#include "ros_utils.h"
-#include "map_optimization.h"
+#include "ros/ros_utils.h"
+#include "ros/ros_manager.h"
+#include "ros/ros_parameters.h"
+#include "debug/debug_info.h"
+#include "debug/result_writer.h"
+#include "global_graph.h"
 #include "lidarBA.h"
 #include "balm/tools.hpp"
 #include "utility.h"
@@ -81,38 +85,20 @@ int    feats_down_size = 0, NUM_MAX_ITERATIONS = 0, res_save_interval = -1;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_EKF_inited;
 std::atomic<bool> flg_exit(false);
-Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
-Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
-std::mutex mtx_map_odom;
-std::atomic<bool> map_odom_updated{true};
 Eigen::Matrix3d R_prior_odom = Eigen::Matrix3d::Identity();
 Eigen::Vector3d t_prior_odom = Eigen::Vector3d::Zero();
-Eigen::Matrix3d R_enu_map = Eigen::Matrix3d::Identity();
-Eigen::Vector3d t_enu_map = Eigen::Vector3d::Zero();
 bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool sam_enable = false;
 float transformTobeMapped[6]{};
 std::unique_ptr<LidarBA> lidarBA;
-std::unordered_map<int, BAFrame> lidarBAFramesById;
-std::unordered_map<int, PointTypePose> lidarBAOdomPosesById;
-std::vector<PointTypePose> lidarBAPoses;
-PointTypePose lastOdomPose{};
-int nextLidarBAFrameId = 0;
-int keyFrameCount = 0;
-int baFrameCount = 0;
-struct LidarBAMapFrame
-{
-    double timestamp = 0.0;
-    bool keyframe = false;
-    Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
-    pcl::PointCloud<PointType>::Ptr cloud;
-    size_t downsampleCount = 0;
-};
-std::unordered_map<int, LidarBAMapFrame> lidarBAMapFrames;
 bool useBAMap()
 {
     return lidarBAConfig.enable && lidarBAConfig.feedback_to_ekf && use_online_map;
 }
+std::unique_ptr<GlobalGraph> globalGraph;
+PointTypePose lastOdomPose{};
+int nextLidarBAFrameId = 0;
+int keyFrameCount = 0;
 bool grav_align = false;
 int lidar_type;
 std::string prior_tree_path;
@@ -122,36 +108,6 @@ bool prior_init_done = false;
 std::atomic<int64_t> last_input_time{-1};
 
 std::shared_ptr<GnssProcess> p_gnss = std::make_shared<GnssProcess>();
-PathPublisher pubGnssPath;
-#ifdef USE_ROS1
-std::shared_ptr<tf::TransformBroadcaster> laserTfBroadcaster;
-#elif defined(USE_ROS2)
-std::shared_ptr<tf2_ros::TransformBroadcaster> laserTfBroadcaster;
-#endif
-
-static void updateMapOdom(const Eigen::Matrix3d &R_map_body,
-                          const Eigen::Vector3d &t_map_body,
-                          const Eigen::Matrix3d &R_odom_body,
-                          const Eigen::Vector3d &t_odom_body)
-{
-    std::lock_guard<std::mutex> lock(mtx_map_odom);
-
-    R_map_odom = R_map_body * R_odom_body.transpose();
-    t_map_odom = t_map_body - R_map_odom * t_odom_body;
-
-    map_odom_updated.store(true, std::memory_order_release);
-}
-
-void setMapOdom(const Eigen::Matrix3d &R_map_odom_,
-                const Eigen::Vector3d &t_map_odom_)
-{
-    std::lock_guard<std::mutex> lock(mtx_map_odom);
-
-    R_map_odom = R_map_odom_;
-    t_map_odom = t_map_odom_;
-
-    map_odom_updated.store(true, std::memory_order_release);
-}
 
 void setPriorOdom(const Eigen::Matrix3d &R_prior_odom_,
                   const Eigen::Vector3d &t_prior_odom_)
@@ -212,10 +168,7 @@ V3D pos_lid;
 PathMsg path;
 PathMsg odomPath;
 PathMsg lidarBAPath;
-PathPublisher pubLidarBAPath;
-PathPublisher pubOdomPath;
 MarkerArrayMsg baFrameMarkers;
-MarkerArrayPublisher pubBAFrameMarkers;
 PathMsg gnssPath;
 OdomMsg odomAftMapped;
 QuaternionMsg geoQuat;
@@ -225,7 +178,6 @@ int    scan_frame_idx = 0;
 std::ofstream scan_frame_pose_file;
 std::ofstream imu_pose_file;
 std::ofstream keyframe_pose_file;
-pcl::PointCloud<PointTypeIndex>::Ptr keyframe_global_cloud(new pcl::PointCloud<PointTypeIndex>());
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
@@ -238,6 +190,37 @@ struct MatchObservation
     double residual = 0.0;
     double row_scale = 1.0;
 };
+
+void nearestSearch(const PointType &point, PointVector &near,
+                   std::vector<float> &sqDistances)
+{
+    PointVector fixed, window;
+    std::vector<float> fixedD, windowD;
+    if (ikdtree.Root_Node)
+        ikdtree.Nearest_Search(point, NUM_MATCH_POINTS, fixed, fixedD);
+    if (ikdtree_window.Root_Node)
+        ikdtree_window.Nearest_Search(point, NUM_MATCH_POINTS, window, windowD);
+
+    std::vector<std::pair<float, PointType>> candidates;
+    for (size_t i = 0; i < fixed.size(); ++i) candidates.emplace_back(fixedD[i], fixed[i]);
+    for (size_t i = 0; i < window.size(); ++i) candidates.emplace_back(windowD[i], window[i]);
+    std::sort(candidates.begin(), candidates.end(),
+              [](const auto &a, const auto &b) { return a.first < b.first; });
+    near.clear();
+    sqDistances.clear();
+    for (const auto &candidate : candidates)
+    {
+        bool duplicate = false;
+        for (const auto &kept : near)
+            if (calc_dist(candidate.second, kept) < 1e-4f) { duplicate = true; break; }
+        if (!duplicate)
+        {
+            near.push_back(candidate.second);
+            sqDistances.push_back(candidate.first);
+            if (near.size() == NUM_MATCH_POINTS) break;
+        }
+    }
+}
 
 bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
                              const PointVector *points_near,
@@ -256,10 +239,9 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
 
     if (use_tree_search)
     {
-        if (tree == nullptr)
-            return false;
-
         vector<float> point_search_sq_dis(NUM_MATCH_POINTS);
+        if (tree == nullptr || tree->Root_Node == nullptr)
+            return false;
         tree->Nearest_Search(point_world, NUM_MATCH_POINTS, near_local,
                              point_search_sq_dis);
 
@@ -308,47 +290,6 @@ bool build_point_observation(KD_TREE_PUBLIC<PointType> *tree,
     obs_out.residual = std::fabs(pd2);
     obs_out.row_scale = row_scale;
     return true;
-}
-
-void nearestSearch(const PointType &point, PointVector &near,
-                         std::vector<float> &sqDistances)
-{
-    PointVector fixedPoints, windowPoints;
-    std::vector<float> fixedDistances, windowDistances;
-    if (ikdtree.Root_Node)
-        ikdtree.Nearest_Search(point, NUM_MATCH_POINTS, fixedPoints, fixedDistances);
-    if (ikdtree_window.Root_Node)
-        ikdtree_window.Nearest_Search(point, NUM_MATCH_POINTS, windowPoints, windowDistances);
-
-    std::vector<std::pair<float, PointType>> candidates;
-    candidates.reserve(fixedPoints.size() + windowPoints.size());
-    for (size_t i = 0; i < fixedPoints.size(); ++i)
-        candidates.emplace_back(fixedDistances[i], fixedPoints[i]);
-    for (size_t i = 0; i < windowPoints.size(); ++i)
-        candidates.emplace_back(windowDistances[i], windowPoints[i]);
-    std::sort(candidates.begin(), candidates.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
-
-    near.clear();
-    sqDistances.clear();
-    for (const auto &candidate : candidates)
-    {
-        bool duplicate = false;
-        for (const PointType &kept : near)
-        {
-            if (calc_dist(candidate.second, kept) < 1e-4f)
-            {
-                duplicate = true;
-                break;
-            }
-        }
-        if (duplicate)
-            continue;
-        near.push_back(candidate.second);
-        sqDistances.push_back(candidate.first);
-        if (near.size() == NUM_MATCH_POINTS)
-            break;
-    }
 }
 
 bool coveredByPrior(const PointType &point_odom)
@@ -508,26 +449,6 @@ void save_scan_frame(const string& scan_frames_dir)
               << q_lid.coeffs()[2] << " " << q_lid.coeffs()[3] << "\n";
 
     scan_frame_idx++;
-}
-
-void save_ikdtree_cloud(const string& ikdtree_cloud_path)
-{
-    if (ikdtree.Root_Node == nullptr)
-        return;
-
-    PointVector tree_points;
-    ikdtree.flatten(ikdtree.Root_Node, tree_points, NOT_RECORD);
-    if (tree_points.empty())
-        return;
-
-    PointCloudXYZI tree_cloud;
-    tree_cloud.points = tree_points;
-    tree_cloud.width = tree_cloud.points.size();
-    tree_cloud.height = 1;
-    tree_cloud.is_dense = true;
-
-    pcl::PCDWriter pcd_writer;
-    pcd_writer.writeBinary(ikdtree_cloud_path, tree_cloud);
 }
 
 void SigHandle(int)
@@ -947,83 +868,47 @@ bool sync_packages(MeasureGroup &meas)
     return true;
 }
 
-void map_incremental(pcl::PointCloud<PointType> *acceptedCloud = nullptr,
-                     size_t *downsampleCount = nullptr)
+void map_incremental(PointCloudXYZI::Ptr acceptedCloud = nullptr)
 {
     geo_map_dropped->clear();
-
-    if (acceptedCloud)
-        acceptedCloud->clear();
-    if (downsampleCount)
-        *downsampleCount = 0;
-
+    if (acceptedCloud) acceptedCloud->clear();
     if (!use_online_map)
         return;
 
     PointVector PointToAdd;
     PointVector PointNoNeedDownsample;
-    PointVector noDownsampleBody;
     PointToAdd.reserve(feats_down_size);
     PointNoNeedDownsample.reserve(feats_down_size);
 
     for (int i = 0; i < feats_down_size; ++i)
-    {
         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
-    }
 
     if (geo_map_enable)
     {
         for (int i = 0; i < feats_down_size; ++i)
         {
             const PointType &point = feats_down_world->points[i];
-
             if (coveredByPrior(point))
                 continue;
 
             const PointVector &points_near = Nearest_Points[i];
-            bool keep = false;
-
-            if (!flg_EKF_inited || points_near.size() < NUM_MATCH_POINTS)
-            {
-                keep = true;
-            }
-            else if (std::sqrt(calc_dist(
-                         point,
-                         points_near[NUM_MATCH_POINTS - 1])) >
-                     geo_support)
-            {
-                keep = true;
-            }
-            else
+            bool keep = !flg_EKF_inited || points_near.size() < NUM_MATCH_POINTS ||
+                        std::sqrt(calc_dist(point, points_near[NUM_MATCH_POINTS - 1])) > geo_support;
+            if (!keep)
             {
                 VF(4) plane;
-
-                if (!esti_plane(plane, points_near, 0.1f))
-                {
-                    keep = true;
-                }
-                else
-                {
-                    const double residual = std::fabs(
-                        plane(0) * point.x +
-                        plane(1) * point.y +
-                        plane(2) * point.z +
-                        plane(3));
-
-                    keep = residual > geo_plane_dist;
-                }
+                keep = !esti_plane(plane, points_near, 0.1f) ||
+                       std::fabs(plane(0) * point.x + plane(1) * point.y +
+                                 plane(2) * point.z + plane(3)) > geo_plane_dist;
             }
 
             if (keep)
             {
                 PointToAdd.push_back(point);
-                if (acceptedCloud)
-                    acceptedCloud->push_back(feats_down_body->points[i]);
+                if (acceptedCloud) acceptedCloud->push_back(feats_down_body->points[i]);
             }
             else if (geo_map_debug)
-            {
                 geo_map_dropped->push_back(point);
-            }
         }
     }
     else
@@ -1031,33 +916,21 @@ void map_incremental(pcl::PointCloud<PointType> *acceptedCloud = nullptr,
         for (int i = 0; i < feats_down_size; ++i)
         {
             const PointType &point = feats_down_world->points[i];
-
             if (coveredByPrior(point))
                 continue;
 
             if (Nearest_Points[i].empty() || !flg_EKF_inited)
             {
                 PointToAdd.push_back(point);
-                if (acceptedCloud)
-                    acceptedCloud->push_back(feats_down_body->points[i]);
+                if (acceptedCloud) acceptedCloud->push_back(feats_down_body->points[i]);
                 continue;
             }
 
             const PointVector &points_near = Nearest_Points[i];
             PointType mid_point;
-            mid_point.x =
-                floor(point.x / filter_size_map_min) *
-                    filter_size_map_min +
-                0.5 * filter_size_map_min;
-            mid_point.y =
-                floor(point.y / filter_size_map_min) *
-                    filter_size_map_min +
-                0.5 * filter_size_map_min;
-            mid_point.z =
-                floor(point.z / filter_size_map_min) *
-                    filter_size_map_min +
-                0.5 * filter_size_map_min;
-
+            mid_point.x = floor(point.x / filter_size_map_min) * filter_size_map_min + 0.5 * filter_size_map_min;
+            mid_point.y = floor(point.y / filter_size_map_min) * filter_size_map_min + 0.5 * filter_size_map_min;
+            mid_point.z = floor(point.z / filter_size_map_min) * filter_size_map_min + 0.5 * filter_size_map_min;
             if (fabs(points_near[0].x - mid_point.x) >
                     0.5 * filter_size_map_min &&
                 fabs(points_near[0].y - mid_point.y) >
@@ -1066,18 +939,14 @@ void map_incremental(pcl::PointCloud<PointType> *acceptedCloud = nullptr,
                     0.5 * filter_size_map_min)
             {
                 PointNoNeedDownsample.push_back(point);
-                if (acceptedCloud)
-                    noDownsampleBody.push_back(feats_down_body->points[i]);
+                if (acceptedCloud) acceptedCloud->push_back(feats_down_body->points[i]);
                 continue;
             }
 
             const float dist = calc_dist(point, mid_point);
             bool need_add = true;
-
-            for (int j = 0;
-                 j < NUM_MATCH_POINTS &&
-                 j < static_cast<int>(points_near.size());
-                 ++j)
+            for (int j = 0; j < NUM_MATCH_POINTS &&
+                            j < static_cast<int>(points_near.size()); ++j)
             {
                 if (calc_dist(points_near[j], mid_point) < dist)
                 {
@@ -1085,26 +954,16 @@ void map_incremental(pcl::PointCloud<PointType> *acceptedCloud = nullptr,
                     break;
                 }
             }
-
             if (need_add)
             {
                 PointToAdd.push_back(point);
-                if (acceptedCloud)
-                    acceptedCloud->push_back(feats_down_body->points[i]);
+                if (acceptedCloud) acceptedCloud->push_back(feats_down_body->points[i]);
             }
         }
     }
 
-    if (downsampleCount && acceptedCloud)
-        *downsampleCount = acceptedCloud->size();
-    if (acceptedCloud)
-        acceptedCloud->points.insert(acceptedCloud->points.end(),
-                                     noDownsampleBody.begin(), noDownsampleBody.end());
-
     const double st_time = omp_get_wtime();
     auto &mapTree = useBAMap() ? ikdtree_window : ikdtree;
-
-    // Add_Points assumes a root with a STATIC_ROOT_NODE parent.
     if (mapTree.Root_Node == nullptr)
     {
         PointToAdd.insert(PointToAdd.end(),
@@ -1112,13 +971,7 @@ void map_incremental(pcl::PointCloud<PointType> *acceptedCloud = nullptr,
                           PointNoNeedDownsample.end());
         add_point_size = PointToAdd.size();
         if (!PointToAdd.empty())
-        {
-            if (useBAMap())
-                mapTree.Rebuild(std::move(PointToAdd));
-            else
-                mapTree.Build(PointToAdd);
-        }
-
+            mapTree.Build(PointToAdd);
         kdtree_incremental_time = omp_get_wtime() - st_time;
         return;
     }
@@ -1129,12 +982,8 @@ void map_incremental(pcl::PointCloud<PointType> *acceptedCloud = nullptr,
     if (!geo_map_enable && !PointNoNeedDownsample.empty())
         mapTree.Add_Points(PointNoNeedDownsample, false);
 
-    add_point_size =
-        PointToAdd.size() +
-        PointNoNeedDownsample.size();
-
-    kdtree_incremental_time =
-        omp_get_wtime() - st_time;
+    add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
+    kdtree_incremental_time = omp_get_wtime() - st_time;
 }
 
 PointCloudXYZI::Ptr pcl_wait_save(new PointCloudXYZI());
@@ -1148,6 +997,34 @@ void getCurrPose(const SimpleEKF::State& curr_state) {
     transformTobeMapped[3] = curr_state.pos(0);
     transformTobeMapped[4] = curr_state.pos(1);
     transformTobeMapped[5] = curr_state.pos(2);
+}
+
+bool applyBA(bool optimized, const Eigen::Isometry3d &pose,
+                     double &rotationCorrectionDeg,
+                     double &positionCorrectionMeters)
+{
+    if (!lidarBAConfig.enable || !lidarBAConfig.feedback_to_ekf || !optimized)
+        return false;
+
+    const SimpleEKF::State before = kf.state();
+    const Eigen::Matrix3d relativeRotation =
+        before.rot.transpose() * pose.linear();
+    rotationCorrectionDeg =
+        Eigen::AngleAxisd(relativeRotation).angle() * 180.0 / M_PI;
+    positionCorrectionMeters =
+        (pose.translation() - before.pos).norm();
+    kf.setPose(pose.linear(), pose.translation());
+    p_imu->syncPose(relativeRotation, kf.gravity());
+    state_point = kf.state();
+    euler_cur = state_point.rot.eulerAngles(0, 1, 2);
+    pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+    const Eigen::Quaterniond q_state(state_point.rot);
+    geoQuat.x = q_state.x();
+    geoQuat.y = q_state.y();
+    geoQuat.z = q_state.z();
+    geoQuat.w = q_state.w();
+    getCurrPose(state_point);
+    return true;
 }
 
 PointTypePose currentFrontendPose(double timestamp)
@@ -1184,67 +1061,114 @@ bool isKeyframe()
              std::sqrt(x*x + y*y + z*z) < surroundingkeyframeAddingDistThreshold);
 }
 
-int addLidarBAFrame(pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud,
-                    pcl::PointCloud<PointType>::Ptr mapCloud,
-                    size_t downsampleCount,
-                    double timestamp, bool keyFrame,
-                    std::vector<int> &windowIds,
-                    std::vector<Eigen::Matrix4d> &windowPoses,
-                    bool &windowOptimized)
+void publishLidarBA(const BAFramePtr &frame);
+
+PointVector frameMapPoints(const BAFramePtr &frame, const Eigen::Isometry3d &pose)
 {
-    if (!lidarBA)
-        lidarBA.reset(new LidarBA(lidarBAConfig));
-
-    const PointTypePose framePose = currentFrontendPose(timestamp);
-    if (keyFrame)
+    PointVector points;
+    if (!frame || !frame->map_cloud) return points;
+    points.reserve(frame->map_cloud->size());
+    for (const auto &src : frame->map_cloud->points)
     {
-        lastOdomPose = framePose;
-        ++keyFrameCount;
+        const Eigen::Vector3d p = pose * Eigen::Vector3d(src.x, src.y, src.z);
+        PointType point;
+        point.x = p.x(); point.y = p.y(); point.z = p.z();
+        point.intensity = src.intensity;
+        if (coveredByPrior(point)) continue;
+        if (Localmap_Initialized &&
+            (p.x() < LocalMap_Points.vertex_min[0] || p.x() > LocalMap_Points.vertex_max[0] ||
+             p.y() < LocalMap_Points.vertex_min[1] || p.y() > LocalMap_Points.vertex_max[1] ||
+             p.z() < LocalMap_Points.vertex_min[2] || p.z() > LocalMap_Points.vertex_max[2]))
+            continue;
+        points.push_back(point);
     }
+    return points;
+}
 
-    BAFrame frame;
-    frame.id = nextLidarBAFrameId++;
-    frame.timestamp = timestamp;
-    frame.keyframe = keyFrame;
-    lidarBAOdomPosesById.emplace(frame.id, framePose);
-    frame.odom_pose = Eigen::Isometry3d::Identity();
-    frame.odom_pose.linear() = poseRotation(framePose);
-    frame.odom_pose.translation() = poseTranslation(framePose);
-    frame.velocity = kf.state().vel;
-    frame.bg = kf.state().bg;
-    frame.ba = kf.state().ba;
-    frame.gravity_odom = kf.gravity();
-    ImuMsgConstPtr right_imu;
+void rebuildBAMap()
+{
+    if (!useBAMap() || !lidarBA || !Localmap_Initialized) return;
+    PointVector points;
+    std::unordered_map<lidar_ba::VOXEL_LOC, size_t> voxelIndices;
+    const double leaf = std::max(filter_size_map_min, 0.01);
+    for (const BAFramePtr &frame : lidarBA->ActiveFrames())
     {
-        std::lock_guard<std::mutex> lock(mtx_buffer);
-        if (!imu_buffer.empty()) right_imu = imu_buffer.front();
-    }
-    frame.imu = p_imu->takeBAImuInterval(timestamp, right_imu);
-    if (lidarBAConfig.enable && lidarBAConfig.feedback_to_ekf)
-    {
-        LidarBAMapFrame mapFrame;
-        mapFrame.timestamp = timestamp;
-        mapFrame.keyframe = keyFrame;
-        mapFrame.pose = frame.odom_pose;
-        mapFrame.cloud.reset(new pcl::PointCloud<PointType>());
-        if (use_online_map && mapCloud) *mapFrame.cloud = *mapCloud;
-        mapFrame.downsampleCount = std::min(downsampleCount, mapFrame.cloud->size());
-        lidarBAMapFrames.emplace(frame.id, std::move(mapFrame));
-        if (!use_online_map)
+        PointVector framePoints = frameMapPoints(frame, frame->optimized_pose);
+        for (const PointType &point : framePoints)
         {
-            while (lidarBAMapFrames.size() >
-                   static_cast<size_t>(lidarBAConfig.window_size))
+            const Eigen::Vector3d world(point.x, point.y, point.z);
+            if (!world.allFinite()) continue;
+            const lidar_ba::VOXEL_LOC voxel(
+                static_cast<int64_t>(std::floor(point.x / leaf)),
+                static_cast<int64_t>(std::floor(point.y / leaf)),
+                static_cast<int64_t>(std::floor(point.z / leaf)));
+            const auto [it, inserted] = voxelIndices.emplace(voxel, points.size());
+            if (inserted) points.push_back(point);
+            else
             {
-                const auto oldest = std::min_element(
-                    lidarBAMapFrames.begin(), lidarBAMapFrames.end(),
-                    [](const auto &a, const auto &b) { return a.first < b.first; });
-                if (oldest == lidarBAMapFrames.end()) break;
-                lidarBAMapFrames.erase(oldest);
+                const Eigen::Vector3d center((voxel.x + 0.5) * leaf,
+                                             (voxel.y + 0.5) * leaf,
+                                             (voxel.z + 0.5) * leaf);
+                const PointType &old = points[it->second];
+                if ((world - center).squaredNorm() <
+                    (Eigen::Vector3d(old.x, old.y, old.z) - center).squaredNorm())
+                    points[it->second] = point;
             }
         }
     }
-    frame.cloud.reset(new pcl::PointCloud<pcl::PointXYZI>());
-    frame.cloud->reserve(cloud ? cloud->size() : 0);
+    ikdtree_window.Rebuild(std::move(points));
+    kdtree_size_st = ikdtree.size() + ikdtree_window.size();
+}
+
+bool processBAFrame(
+    pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud,
+    PointCloudXYZI::Ptr mapCloud, double timestamp, bool keyFrame,
+    Eigen::Isometry3d &pose,
+    std::vector<BAFramePtr> &finalized)
+{
+    if (!lidarBA)
+    {
+        lidarBA.reset(new LidarBA(lidarBAConfig, kf.gravity()));
+    }
+
+    const PointTypePose framePose = currentFrontendPose(timestamp);
+
+    BAFramePtr frame(new BAFrame());
+    frame->id = nextLidarBAFrameId++;
+    frame->timestamp = timestamp;
+    frame->keyframe = keyFrame;
+    frame->odom_pose = Eigen::Isometry3d::Identity();
+    frame->odom_pose.linear() = poseRotation(framePose);
+    frame->odom_pose.translation() = poseTranslation(framePose);
+    frame->velocity = kf.state().vel;
+    frame->bg = kf.state().bg;
+    frame->ba = kf.state().ba;
+
+    frame->map_cloud.reset(new pcl::PointCloud<pcl::PointXYZI>());
+    frame->map_cloud->reserve(mapCloud ? mapCloud->size() : 0);
+    if (mapCloud) for (const auto &point : mapCloud->points)
+    {
+        const Eigen::Vector3d body = Lidar_R_wrt_IMU.cast<double>() *
+            Eigen::Vector3d(point.x, point.y, point.z) +
+            Lidar_T_wrt_IMU.cast<double>();
+        pcl::PointXYZI converted;
+        converted.x = body.x(); converted.y = body.y(); converted.z = body.z();
+        converted.intensity = point.intensity;
+        frame->map_cloud->push_back(converted);
+    }
+
+    if (lidarBAConfig.imu_enable)
+    {
+        ImuMsgConstPtr right_imu;
+        {
+            std::lock_guard<std::mutex> lock(mtx_buffer);
+            if (!imu_buffer.empty()) right_imu = imu_buffer.front();
+        }
+        frame->imu = p_imu->takeBAImuInterval(timestamp, right_imu);
+    }
+
+    frame->cloud.reset(new pcl::PointCloud<pcl::PointXYZI>());
+    frame->cloud->reserve(cloud ? cloud->size() : 0);
     if (cloud)
     {
         for (const auto &point : cloud->points)
@@ -1255,21 +1179,26 @@ int addLidarBAFrame(pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud,
             pcl::PointXYZI converted;
             converted.x = body.x(); converted.y = body.y(); converted.z = body.z();
             converted.intensity = point.intensity;
-            frame.cloud->push_back(converted);
+            frame->cloud->push_back(converted);
         }
     }
 
-    lidarBAFramesById.emplace(frame.id, frame);
-    ++baFrameCount;
-    if (lidarBAConfig.enable && lidarBAConfig.feedback_to_ekf)
-        lidarBA->pushAndWait(std::move(frame), windowIds, windowPoses, windowOptimized);
-    else
-        lidarBA->push(std::move(frame));
-    return nextLidarBAFrameId - 1;
+    return lidarBA->Process(std::move(frame), pose, finalized);
 }
 
-void publishLidarBA(const PointTypePose &pose)
+void publishLidarBA(const BAFramePtr &frame)
 {
+    Eigen::Affine3f baAffine = Eigen::Affine3f::Identity();
+    baAffine.linear() = frame->optimized_pose.linear().cast<float>();
+    baAffine.translation() = frame->optimized_pose.translation().cast<float>();
+    float x, y, z, roll, pitch, yaw;
+    pcl::getTranslationAndEulerAngles(baAffine, x, y, z, roll, pitch, yaw);
+
+    PointTypePose pose;
+    pose.x = x; pose.y = y; pose.z = z;
+    pose.roll = roll; pose.pitch = pitch; pose.yaw = yaw;
+    pose.time = frame->timestamp;
+
     if (baFrameMarkers.markers.empty())
     {
         MarkerMsg marker;
@@ -1311,267 +1240,38 @@ void publishLidarBA(const PointTypePose &pose)
     const size_t frameCount = lidarBAPath.poses.size();
     if (frameCount == 1 || frameCount % 10 == 0)
     {
-        ros_publish(pubLidarBAPath, lidarBAPath);
-        ros_publish(pubBAFrameMarkers, baFrameMarkers);
+        RosManager::instance().publish(
+            RosManager::instance().pubLidarBAPath, lidarBAPath);
+        RosManager::instance().publish(
+            RosManager::instance().pubBAFrameMarkers, baFrameMarkers);
     }
 }
 
-bool handleLidarBA()
+void handleFinalized(const std::vector<BAFramePtr> &finalizedFrames)
 {
-    if (!lidarBA)
-        return false;
-    bool windowChanged = false;
-    int id;
-    Eigen::Isometry3d baTransform;
-    while (lidarBA->tryPop(id, baTransform))
+    for (const BAFramePtr &frame : finalizedFrames)
     {
-        const auto frameIt = lidarBAFramesById.find(id);
-        if (frameIt == lidarBAFramesById.end())
+        if (!frame)
             continue;
-        BAFrame frame = std::move(frameIt->second);
-        lidarBAFramesById.erase(frameIt);
-        const auto odomPoseIt = lidarBAOdomPosesById.find(id);
-        const bool hasOdomPose = odomPoseIt != lidarBAOdomPosesById.end();
-        PointTypePose odomPose;
-        if (hasOdomPose)
-            odomPose = odomPoseIt->second;
-        lidarBAOdomPosesById.erase(id);
-        if (baFrameCount > 0)
-            --baFrameCount;
-
-        Eigen::Affine3f baAffine = Eigen::Affine3f::Identity();
-        baAffine.linear() = baTransform.linear().cast<float>();
-        baAffine.translation() = baTransform.translation().cast<float>();
-        float x, y, z, roll, pitch, yaw;
-        pcl::getTranslationAndEulerAngles(baAffine, x, y, z, roll, pitch, yaw);
-        PointTypePose baPose;
-        baPose.x = x; baPose.y = y; baPose.z = z;
-        baPose.roll = roll; baPose.pitch = pitch; baPose.yaw = yaw;
-        baPose.time = frame.timestamp;
-
         if (useBAMap())
         {
-            const auto mapFrame = lidarBAMapFrames.find(id);
-            if (mapFrame != lidarBAMapFrames.end())
+            PointVector points = frameMapPoints(frame, frame->optimized_pose);
+            if (!points.empty())
             {
-                PointVector downsampledPoints, fullResolutionPoints;
-                if (mapFrame->second.cloud)
-                {
-                    const auto &stored = mapFrame->second;
-                    for (size_t i = 0; i < stored.cloud->size(); ++i)
-                    {
-                        const PointType &bodyPoint = stored.cloud->points[i];
-                        const Eigen::Vector3d lidar(bodyPoint.x, bodyPoint.y,
-                                                    bodyPoint.z);
-                        const Eigen::Vector3d world = baTransform.linear() *
-                            (Lidar_R_wrt_IMU.cast<double>() * lidar +
-                             Lidar_T_wrt_IMU.cast<double>()) +
-                            baTransform.translation();
-                        bool inside = true;
-                        if (Localmap_Initialized)
-                        {
-                            for (int axis = 0; axis < 3; ++axis)
-                                inside = inside &&
-                                    world[axis] >= LocalMap_Points.vertex_min[axis] &&
-                                    world[axis] <= LocalMap_Points.vertex_max[axis];
-                        }
-                        if (!inside)
-                            continue;
-                        PointType point = bodyPoint;
-                        point.x = world.x();
-                        point.y = world.y();
-                        point.z = world.z();
-                        if (coveredByPrior(point))
-                            continue;
-                        if (i < stored.downsampleCount)
-                            downsampledPoints.push_back(point);
-                        else
-                            fullResolutionPoints.push_back(point);
-                    }
-                }
-                if (ikdtree.Root_Node == nullptr)
-                {
-                    downsampledPoints.insert(downsampledPoints.end(),
-                                             fullResolutionPoints.begin(),
-                                             fullResolutionPoints.end());
-                    if (!downsampledPoints.empty())
-                        ikdtree.Rebuild(std::move(downsampledPoints));
-                }
-                else
-                {
-                    if (!downsampledPoints.empty())
-                        ikdtree.Add_Points(downsampledPoints, true);
-                    if (!fullResolutionPoints.empty())
-                        ikdtree.Add_Points(fullResolutionPoints, false);
-                }
-                lidarBAMapFrames.erase(mapFrame);
-                windowChanged = true;
+                if (!ikdtree.Root_Node) ikdtree.Build(points);
+                else ikdtree.Add_Points(points, true);
             }
         }
-        publishLidarBA(baPose);
-        if (sam_enable)
+        publishLidarBA(frame);
+        if (sam_enable && frame->keyframe && globalGraph &&
+            !globalGraph->InsertKeyFrame(frame))
         {
-            if (frame.keyframe && hasOdomPose)
-            {
-                KeyframeToGlobal(odomPose, baPose, frame.cloud);
-                correctPoses();
-                publishSamMsg();
-            }
+            ROS_PRINT_ERROR("GlobalGraph rejected finalized BA keyframe %d", frame->id);
         }
-        else
-        {
-            lidarBAPoses.push_back(baPose);
-        }
+        if (!frame->keyframe)
+            frame->cloud.reset();
+        frame->map_cloud.reset();
     }
-    return windowChanged;
-}
-
-bool applyLidarBAWindow(const std::vector<int> &windowIds,
-                        const std::vector<Eigen::Matrix4d> &windowPoses,
-                        int currentFrameId)
-{
-    bool currentPoseUpdated = false;
-    for (size_t i = 0; i < windowIds.size() && i < windowPoses.size(); ++i)
-    {
-        const auto frameIt = lidarBAMapFrames.find(windowIds[i]);
-        if (frameIt == lidarBAMapFrames.end())
-            continue;
-        frameIt->second.pose = Eigen::Isometry3d(windowPoses[i]);
-
-        for (PoseStampedMsg &pathPose : odomPath.poses)
-        {
-            if (std::abs(get_ros_time_sec(pathPose.header.stamp) - frameIt->second.timestamp) > 1e-4)
-                continue;
-            const Eigen::Matrix3d R = frameIt->second.pose.linear();
-            const Eigen::Vector3d rpy = R.eulerAngles(2, 1, 0);
-            pathPose.pose.position.x = frameIt->second.pose.translation().x();
-            pathPose.pose.position.y = frameIt->second.pose.translation().y();
-            pathPose.pose.position.z = frameIt->second.pose.translation().z();
-            pathPose.pose.orientation = quaternion_from_rpy(rpy(2), rpy(1), rpy(0));
-        }
-
-        if (windowIds[i] == currentFrameId)
-        {
-            const Eigen::Matrix3d rotationDelta =
-                frameIt->second.pose.linear() * state_point.rot.transpose();
-            kf.setPose(frameIt->second.pose.linear(), frameIt->second.pose.translation());
-            p_imu->syncPose(rotationDelta, kf.gravity());
-            state_point = kf.state();
-            euler_cur = state_point.rot.eulerAngles(0, 1, 2);
-            pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
-            const Eigen::Quaterniond q(state_point.rot);
-            geoQuat.x = q.x(); geoQuat.y = q.y(); geoQuat.z = q.z(); geoQuat.w = q.w();
-            getCurrPose(state_point);
-            // map->odom must reference the pose actually published after feedback.
-            const auto odomPoseIt = lidarBAOdomPosesById.find(currentFrameId);
-            if (odomPoseIt != lidarBAOdomPosesById.end())
-                odomPoseIt->second = currentFrontendPose(frameIt->second.timestamp);
-            if (frameIt->second.keyframe)
-                lastOdomPose = currentFrontendPose(frameIt->second.timestamp);
-            currentPoseUpdated = true;
-        }
-    }
-
-    if (!use_online_map)
-    {
-        for (auto it = lidarBAMapFrames.begin(); it != lidarBAMapFrames.end();)
-        {
-            if (std::find(windowIds.begin(), windowIds.end(), it->first) == windowIds.end())
-                it = lidarBAMapFrames.erase(it);
-            else
-                ++it;
-        }
-    }
-
-    if (currentPoseUpdated)
-        ros_publish(pubOdomPath, odomPath);
-    return currentPoseUpdated;
-}
-
-void rebuildLidarBAWindowMap()
-{
-    if (!useBAMap() || !Localmap_Initialized)
-        return;
-
-    std::vector<int> frameIds;
-    frameIds.reserve(lidarBAMapFrames.size());
-    for (const auto &entry : lidarBAMapFrames)
-        frameIds.push_back(entry.first);
-    std::sort(frameIds.begin(), frameIds.end());
-
-    PointVector mapPoints;
-    std::unordered_map<lidar_ba::VOXEL_LOC, size_t> voxelIndices;
-    const double leaf = std::max(filter_size_map_min, 0.01);
-    for (int frameId : frameIds)
-    {
-        const auto frameIt = lidarBAMapFrames.find(frameId);
-        if (frameIt == lidarBAMapFrames.end() || !frameIt->second.cloud)
-            continue;
-
-        const Eigen::Matrix3d rotation = frameIt->second.pose.linear();
-        const Eigen::Vector3d translation = frameIt->second.pose.translation();
-        for (const PointType &bodyPoint : frameIt->second.cloud->points)
-        {
-            const Eigen::Vector3d lidar(bodyPoint.x, bodyPoint.y, bodyPoint.z);
-            const Eigen::Vector3d world = rotation *
-                (Lidar_R_wrt_IMU.cast<double>() * lidar + Lidar_T_wrt_IMU.cast<double>()) +
-                translation;
-            if (!world.allFinite() ||
-                world.x() < LocalMap_Points.vertex_min[0] || world.x() > LocalMap_Points.vertex_max[0] ||
-                world.y() < LocalMap_Points.vertex_min[1] || world.y() > LocalMap_Points.vertex_max[1] ||
-                world.z() < LocalMap_Points.vertex_min[2] || world.z() > LocalMap_Points.vertex_max[2])
-                continue;
-            PointType point = bodyPoint;
-            point.x = world.x();
-            point.y = world.y();
-            point.z = world.z();
-            if (coveredByPrior(point))
-                continue;
-
-            const lidar_ba::VOXEL_LOC voxel(
-                static_cast<int64_t>(std::floor(world.x() / leaf)),
-                static_cast<int64_t>(std::floor(world.y() / leaf)),
-                static_cast<int64_t>(std::floor(world.z() / leaf)));
-            const auto [it, inserted] = voxelIndices.emplace(voxel, mapPoints.size());
-            if (inserted)
-            {
-                mapPoints.push_back(point);
-            }
-            else
-            {
-                const Eigen::Vector3d center(
-                    (voxel.x + 0.5) * leaf,
-                    (voxel.y + 0.5) * leaf,
-                    (voxel.z + 0.5) * leaf);
-                const PointType &old = mapPoints[it->second];
-                if ((world - center).squaredNorm() <
-                    (Eigen::Vector3d(old.x, old.y, old.z) - center).squaredNorm())
-                    mapPoints[it->second] = point;
-            }
-        }
-    }
-
-    ikdtree_window.Rebuild(std::move(mapPoints));
-    kdtree_size_st = ikdtree.size() + ikdtree_window.size();
-}
-
-void finishLidarBA()
-{
-    if (!lidarBA)
-        return;
-    lidarBA->finish();
-    if (handleLidarBA())
-        rebuildLidarBAWindowMap();
-    if (!lidarBAPath.poses.empty())
-    {
-        ros_publish(pubLidarBAPath, lidarBAPath);
-        ros_publish(pubBAFrameMarkers, baFrameMarkers);
-    }
-}
-
-bool lidarBAFramesDone()
-{
-    return baFrameCount == 0;
 }
 
 void fillTransformMsg(TransformStampedMsg& tf_msg, const Eigen::Matrix3d& R, const Eigen::Vector3d& t)
@@ -1619,7 +1319,8 @@ void publishGnssPath(const GnssPositionData &pos)
     gnssPath.header.stamp = gnss_pose.header.stamp;
     gnssPath.header.frame_id = "enu";
     gnssPath.poses.push_back(gnss_pose);
-    ros_publish(pubGnssPath, gnssPath);
+    RosManager::instance().publish(RosManager::instance().pubGnssPath,
+                                   gnssPath);
 }
 
 void publishGnssLinkTf()
@@ -1644,13 +1345,7 @@ void publishGnssLinkTf()
         Eigen::AngleAxisd(yaw.yaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
     fillTransformMsg(tf_msg, R_enu_gnss, pos.position);
 
-#ifdef USE_ROS1
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(tf_msg);
-#elif defined(USE_ROS2)
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(tf_msg);
-#endif
+    RosManager::instance().sendTf(tf_msg);
 }
 
 bool initGnssMap(double lidar_stamp_sec)
@@ -1665,42 +1360,15 @@ bool initGnssMap(double lidar_stamp_sec)
 
     const double map_yaw = std::atan2(R_map_body(1, 0), R_map_body(0, 0));
     const double dyaw = normalizeYaw(heading.yaw - map_yaw);
-    R_enu_map = Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    const Eigen::Matrix3d R_enu_map_local =
+        Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
     const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->leverArm;
-    t_enu_map = gnss_pos.position - R_enu_map * p_map_ant;
+    const Eigen::Vector3d t_enu_map_local = gnss_pos.position - R_enu_map_local * p_map_ant;
+    RosManager::instance().setEnuMap(R_enu_map_local, t_enu_map_local);
 
     gnss_aligned.store(true);
-    publishEnuToMapTf(get_ros_time(lidar_stamp_sec));
+    RosManager::instance().publishEnuToMapTf(get_ros_time(lidar_stamp_sec));
     return true;
-}
-
-void publishEnuToMapTf(const TimeType& stamp)
-{
-    if (!gnss_aligned.load())
-        return;
-
-    TransformStampedMsg enu_to_map_msg;
-    enu_to_map_msg.header.stamp = stamp;
-    enu_to_map_msg.header.frame_id = "enu";
-    enu_to_map_msg.child_frame_id = map_frame;
-    enu_to_map_msg.transform.translation.x = t_enu_map.x();
-    enu_to_map_msg.transform.translation.y = t_enu_map.y();
-    enu_to_map_msg.transform.translation.z = t_enu_map.z();
-
-    Eigen::Quaterniond q_enu_map(R_enu_map);
-    q_enu_map.normalize();
-    enu_to_map_msg.transform.rotation.x = q_enu_map.x();
-    enu_to_map_msg.transform.rotation.y = q_enu_map.y();
-    enu_to_map_msg.transform.rotation.z = q_enu_map.z();
-    enu_to_map_msg.transform.rotation.w = q_enu_map.w();
-
-#ifdef USE_ROS1
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(enu_to_map_msg);
-#elif defined(USE_ROS2)
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(enu_to_map_msg);
-#endif
 }
 
 bool refinePriorPointToPlane(Eigen::Matrix3d &R_map_odom_,
@@ -1790,13 +1458,13 @@ bool priorInitAlign()
         return false;
 
     setPriorOdom(R_map_odom_refined, t_map_odom_refined);
-    setMapOdom(R_map_odom_refined, t_map_odom_refined);
+    RosManager::instance().setMapOdom(R_map_odom_refined, t_map_odom_refined);
     prior_init_done = true;
 
     return true;
 }
 
-void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
+void publish_frame_world()
 {
     if(scan_pub_en)
     {
@@ -1814,7 +1482,7 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
         laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
         laserCloudmsg.header.frame_id = map_frame;
-        ros_publish(pubLaserCloudFull, laserCloudmsg);
+        RosManager::instance().publish(RosManager::instance().pubLaserCloudFull, laserCloudmsg);
     }
 
     /**************** save accumulated feature scans ****************/
@@ -1848,7 +1516,7 @@ void publish_frame_world(const Pcl2Publisher & pubLaserCloudFull)
     }
 }
 
-void publish_frame_body(const Pcl2Publisher & pubLaserCloudFull_body)
+void publish_frame_body()
 {
     int size = feats_undistort->points.size();
     PointCloudXYZI::Ptr laserCloudIMUBody(new PointCloudXYZI(size, 1));
@@ -1863,10 +1531,10 @@ void publish_frame_body(const Pcl2Publisher & pubLaserCloudFull_body)
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
     laserCloudmsg.header.stamp = get_ros_time(lidar_end_time);
     laserCloudmsg.header.frame_id = base_frame;
-    ros_publish(pubLaserCloudFull_body, laserCloudmsg);
+    RosManager::instance().publish(RosManager::instance().pubLaserCloudFullBody, laserCloudmsg);
 }
 
-void publish_effect_world(const Pcl2Publisher & pubLaserCloudEffect)
+void publish_effect_world()
 {
     PointCloudXYZI::Ptr laserCloudWorld( \
                     new PointCloudXYZI(effct_feat_num, 1));
@@ -1879,14 +1547,14 @@ void publish_effect_world(const Pcl2Publisher & pubLaserCloudEffect)
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
     laserCloudFullRes3.header.stamp = get_ros_time(lidar_end_time);
     laserCloudFullRes3.header.frame_id = map_frame;
-    ros_publish(pubLaserCloudEffect, laserCloudFullRes3);
+    RosManager::instance().publish(RosManager::instance().pubLaserCloudEffect, laserCloudFullRes3);
 }
 
-void publish_map(const Pcl2Publisher & pubLaserCloudMap)
+void publish_map()
 {
     PointVector mapPoints;
-    ikdtree.flatten(ikdtree.Root_Node, mapPoints, NOT_RECORD);
-    if (useBAMap())
+    if (ikdtree.Root_Node) ikdtree.flatten(ikdtree.Root_Node, mapPoints, NOT_RECORD);
+    if (useBAMap() && ikdtree_window.Root_Node)
         ikdtree_window.flatten(ikdtree_window.Root_Node, mapPoints, NOT_RECORD);
     featsFromMap->points = std::move(mapPoints);
     Pcl2Msg laserCloudMap;
@@ -1895,10 +1563,10 @@ void publish_map(const Pcl2Publisher & pubLaserCloudMap)
     // featsFromMap is maintained in the local odom frame by the frontend map.
     // Let TF apply map->odom for visualization instead of relabeling it as map.
     laserCloudMap.header.frame_id = odom_frame;
-    ros_publish(pubLaserCloudMap, laserCloudMap);
+    RosManager::instance().publish(RosManager::instance().pubLaserCloudMap, laserCloudMap);
 }
 
-void publish_geo_map_debug(const Pcl2Publisher &pubGeoMapDebug)
+void publish_geo_map_debug()
 {
     if (!geo_map_enable || !geo_map_debug || geo_map_dropped->empty())
         return;
@@ -1907,10 +1575,10 @@ void publish_geo_map_debug(const Pcl2Publisher &pubGeoMapDebug)
     pcl::toROSMsg(*geo_map_dropped, geoMapDroppedMsg);
     geoMapDroppedMsg.header.stamp = get_ros_time(lidar_end_time);
     geoMapDroppedMsg.header.frame_id = odom_frame;
-    ros_publish(pubGeoMapDebug, geoMapDroppedMsg);
+    RosManager::instance().publish(RosManager::instance().pubGeoMapDebug, geoMapDroppedMsg);
 }
 
-void publish_prior_map(const Pcl2Publisher & pubLaserCloudPriorMap)
+void publish_prior_map()
 {
     if (featsFromPriorMap->empty())
         return;
@@ -1919,11 +1587,10 @@ void publish_prior_map(const Pcl2Publisher & pubLaserCloudPriorMap)
     pcl::toROSMsg(*featsFromPriorMap, laserCloudPriorMap);
     laserCloudPriorMap.header.stamp = get_ros_time(lidar_end_time);
     laserCloudPriorMap.header.frame_id = map_frame;
-    ros_publish(pubLaserCloudPriorMap, laserCloudPriorMap);
+    RosManager::instance().publish(RosManager::instance().pubLaserCloudPriorMap, laserCloudPriorMap);
 }
 
-void publish_odometryhighfreq(PoseBuffer& pbuffer,
-                              const OdomPublisher& pubOdomHighFreqLocal)
+void publish_odometryhighfreq(PoseBuffer& pbuffer)
 {
     Eigen::Matrix3d R_map_odom_hf = Eigen::Matrix3d::Identity();
     Eigen::Vector3d t_map_odom_hf = Eigen::Vector3d::Zero();
@@ -1938,16 +1605,8 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
         OdomMsg msg_local;
         const auto stamp = get_ros_time(pose._timestamp);
 
-        if (map_odom_updated.load(std::memory_order_acquire))
-        {
-            std::unique_lock<std::mutex> lock(mtx_map_odom, std::try_to_lock);
-            if (lock.owns_lock())
-            {
-                R_map_odom_hf = R_map_odom;
-                t_map_odom_hf = t_map_odom;
-                map_odom_updated.store(false, std::memory_order_release);
-            }
-        }
+        RosManager::instance().tryTakeMapOdomUpdate(R_map_odom_hf,
+                                                   t_map_odom_hf);
 
         TransformStampedMsg map_to_odom_msg;
         map_to_odom_msg.header.stamp = stamp;
@@ -1955,13 +1614,7 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
         map_to_odom_msg.child_frame_id = odom_frame;
         fillTransformMsg(map_to_odom_msg, R_map_odom_hf, t_map_odom_hf);
 
-#ifdef USE_ROS1
-        if (laserTfBroadcaster)
-            laserTfBroadcaster->sendTransform(map_to_odom_msg);
-#elif defined(USE_ROS2)
-        if (laserTfBroadcaster)
-            laserTfBroadcaster->sendTransform(map_to_odom_msg);
-#endif
+        RosManager::instance().sendTf(map_to_odom_msg);
 
         const Eigen::Matrix3d R_odom_base = Eigen::Quaterniond(pose._qw, pose._qx, pose._qy, pose._qz).toRotationMatrix();
         const Eigen::Vector3d t_odom_base(pose._x, pose._y, pose._z);
@@ -1986,15 +1639,9 @@ void publish_odometryhighfreq(PoseBuffer& pbuffer,
         tf_msg.child_frame_id = high_freq_base_frame;
         fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
-        ros_publish(pubOdomHighFreqLocal, msg_local);
+        RosManager::instance().publish(RosManager::instance().pubOdomHighFreq, msg_local);
 
-#ifdef USE_ROS1
-        if (laserTfBroadcaster)
-            laserTfBroadcaster->sendTransform(tf_msg);
-#elif defined(USE_ROS2)
-        if (laserTfBroadcaster)
-            laserTfBroadcaster->sendTransform(tf_msg);
-#endif
+        RosManager::instance().sendTf(tf_msg);
 
         saveImuPose(pose);
     }
@@ -2018,7 +1665,7 @@ void set_posestamp(T & out)
     
 }
 
-void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
+void publish_odometry()
 {
     const auto stamp = get_ros_time(lidar_end_time);
 
@@ -2048,18 +1695,12 @@ void publish_odometry(const OdomPublisher & pubOdomAftMappedLocal)
     tf_msg.child_frame_id  = base_frame;
     fillTransformMsg(tf_msg, R_odom_base, t_odom_base);
 
-    ros_publish(pubOdomAftMappedLocal, odomAftMapped);
-    publishEnuToMapTf(stamp);
-#ifdef USE_ROS1
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(tf_msg);
-#elif defined(USE_ROS2)
-    if (laserTfBroadcaster)
-        laserTfBroadcaster->sendTransform(tf_msg);
-#endif
+    RosManager::instance().publish(RosManager::instance().pubOdom, odomAftMapped);
+    RosManager::instance().publishEnuToMapTf(stamp);
+    RosManager::instance().sendTf(tf_msg);
 }
 
-void publish_path(const PathPublisher pubPath, const PathPublisher pubOdomPath)
+void publish_path()
 {
     const PointTypePose pose = currentFrontendPose(lidar_end_time);
     msg_body_pose.header.stamp = get_ros_time(pose.time);
@@ -2095,8 +1736,8 @@ void publish_path(const PathPublisher pubPath, const PathPublisher pubOdomPath)
         path.poses.push_back(mapPose);
         path.header.stamp = msg_body_pose.header.stamp;
         path.header.frame_id = map_frame;
-        ros_publish(pubPath, path);
-        ros_publish(pubOdomPath, odomPath);
+        RosManager::instance().publish(RosManager::instance().pubPath, path);
+        RosManager::instance().publish(RosManager::instance().pubOdomPath, odomPath);
     }
 }
 
@@ -2109,6 +1750,7 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
     laserCloudOri->clear(); 
     corr_normvect->clear(); 
     total_residual = 0.0; 
+    res_mean_last = 0.0;
 
     if (feats_down_size < 1)
     {
@@ -2153,26 +1795,22 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
             {
                 if (useBAMap())
                 {
-                    std::vector<float> sqDistances;
-                    nearestSearch(point_world, Nearest_Points[i], sqDistances);
-                    onlineMatch = Nearest_Points[i].size() >= NUM_MATCH_POINTS &&
-                        sqDistances.back() <= 5.0f &&
-                        build_point_observation(nullptr, &Nearest_Points[i],
-                                                point_body, point_world, 1.0,
-                                                false, nullptr, online_candidates[i],
-                                                point2point);
+                    std::vector<float> distances;
+                    nearestSearch(point_world, Nearest_Points[i], distances);
+                    onlineMatch = build_point_observation(
+                        nullptr, &Nearest_Points[i], point_body, point_world,
+                        1.0, false, nullptr, online_candidates[i], point2point) &&
+                        !distances.empty() && distances.back() <= 5.0f;
                 }
                 else
-                {
                     onlineMatch = build_point_observation(
                         &ikdtree, nullptr, point_body, point_world, 1.0, true,
                         &Nearest_Points[i], online_candidates[i], point2point);
-                }
             }
             if (onlineMatch)
             {
-                online_valid[i] = 1;
                 point_selected_surf[i] = true;
+                online_valid[i] = 1;
                 normvec->points[i] = online_candidates[i].normal;
                 res_last[i] = online_candidates[i].residual;
             }
@@ -2183,9 +1821,11 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
         }
         else if (use_online_map && point_selected_surf[i])
         {
-            if (build_point_observation(nullptr, &Nearest_Points[i], point_body,
+            const bool onlineMatch = i < static_cast<int>(Nearest_Points.size()) &&
+                build_point_observation(nullptr, &Nearest_Points[i], point_body,
                                         point_world, 1.0, false, nullptr,
-                                        online_candidates[i], point2point))
+                                        online_candidates[i], point2point);
+            if (onlineMatch)
             {
                 online_valid[i] = 1;
                 normvec->points[i] = online_candidates[i].normal;
@@ -2301,7 +1941,7 @@ bool buildLidarMeasurement(const SimpleEKF::State &s,
         total_residual += matches[i].residual;
     }
 
-    if (online_feat_num > 0)
+        if (online_feat_num > 0)
         res_mean_last = online_residual_sum / online_feat_num;
     match_time  += omp_get_wtime() - match_start;
     double solve_start_  = omp_get_wtime();
@@ -2364,69 +2004,17 @@ int main(int argc, char** argv)
     init_ros_node(rclcpp::Node::make_shared("fast_lio_sam"));
     #endif
 
-    // Load parameters (unified ROS1/ROS2)
-    rosparam_get("sam_enable", sam_enable, false);
-    rosparam_get("publish/path_en", path_en, true);
-    rosparam_get("publish/scan_publish_en", scan_pub_en, true);
-    rosparam_get("publish/dense_publish_en", dense_pub_en, true);
-    rosparam_get("publish/scan_bodyframe_pub_en", scan_body_pub_en, true);
-    rosparam_get("publish/feature_pub_en", feature_pub_en, false);
-    rosparam_get("publish/effect_pub_en", effect_pub_en, false);
-    rosparam_get("max_iteration", NUM_MAX_ITERATIONS, 4);
-    rosparam_get("map_file_path", map_file_path, std::string(""));
-    rosparam_get("common/lid_topic", lid_topic, std::string("/livox/lidar"));
-    rosparam_get("common/imu_topic", imu_topic, std::string("/livox/imu"));
-    rosparam_get("common/map_frame", map_frame, std::string("map"));
-    rosparam_get("common/odom_frame", odom_frame, std::string("odom"));
-    rosparam_get("common/base_frame", base_frame, std::string("base_link"));
-    rosparam_get("common/high_freq_base_frame", high_freq_base_frame, std::string("base_link_hf"));
-    rosparam_get("reloc/reloc_topic", reloc_topic, std::string("/reloc/manual"));
-    rosparam_get("common/time_sync_en", time_sync_en, false);
-    rosparam_get("common/time_offset_lidar_to_imu", time_diff_lidar_to_imu, 0.0);
-    rosparam_get("common/flip_en", flip_en, false);
-    rosparam_get("common/grav_align", grav_align, false);
-    rosparam_get("common/mode", mapping_mode, 1);
-    rosparam_get("mapping/imu_dt", imu_dt, 0.005);
-    rosparam_get("mapping/timeRepair", timeRepair, true);
+    read_mapping_params(*p_pre, lidar_type);
     set_mapping_mode();
-    rosparam_get("prior_map/prior_tree_path", prior_tree_path, std::string(""));
-    rosparam_get("prior_map/prior_init", prior_init_en, false);
-    rosparam_get("prior_map/prior_lidar_cov", prior_lidar_cov, 0.001);
-    rosparam_get("filter_size_corner", filter_size_corner_min, 0.5);
-    rosparam_get("filter_size_surf", filter_size_surf_min, 0.5);
-    rosparam_get("filter_size_map", filter_size_map_min, 0.5);
     ikdtree.set_downsample_param(filter_size_map_min);
     ikdtree_window.set_downsample_param(filter_size_map_min);
-    rosparam_get("cube_side_length", cube_len, 200.0);
-    rosparam_get("mapping/det_range", DET_RANGE, 300.f);
-    rosparam_get("mapping/fov_degree", fov_deg, 180.0);
-    rosparam_get("mapping/gyr_cov", gyr_cov, 0.1);
-    rosparam_get("mapping/acc_cov", acc_cov, 0.1);
-    rosparam_get("mapping/b_gyr_cov", b_gyr_cov, 0.0001);
-    rosparam_get("mapping/b_acc_cov", b_acc_cov, 0.0001);
-    rosparam_get("mapping/point2point", point2point, false);
-    rosparam_get("geo_map/enable", geo_map_enable, false);
-    rosparam_get("geo_map/debug", geo_map_debug, false);
-    rosparam_get("geo_map/support", geo_support, 0.15);
-    rosparam_get("geo_map/plane_dist", geo_plane_dist, 0.05);
-    rosparam_get("preprocess/blind", p_pre->blind, 0.01);
-    rosparam_get("preprocess/lidar_type", lidar_type, (int)AVIA);
-    rosparam_get("preprocess/scan_line", p_pre->N_SCANS, 16);
-    rosparam_get("preprocess/timestamp_unit", p_pre->time_unit, (int)US);
-    rosparam_get("preprocess/scan_rate", p_pre->SCAN_RATE, 10);
-    rosparam_get("point_filter_num", p_pre->point_filter_num, 2);
-    rosparam_get("feature_extract_enable", p_pre->feature_enabled, false);
-    rosparam_get("result_save/imu_state_save_en", imu_state_save_en, false);
-    rosparam_get("result_save/scan_frame_save_en", scan_frame_save_en, false);
-    rosparam_get("result_save/ikdtree_output_save_en", ikdtree_output_save_en, false);
-    rosparam_get("result_save/feat_accum_save_en", feat_accum_save_en, false);
-    rosparam_get("result_save/interval", res_save_interval, -1);
-    rosparam_get("mapping/extrinsic_T", extrinT, std::vector<double>());
-    rosparam_get("mapping/extrinsic_R", extrinR, std::vector<double>());
+
     path.header.stamp = get_ros_now();
     path.header.frame_id = map_frame;
 
     read_lidar_ba_params();
+    lidarBAConfig.imu_enable = false;
+    lidarBAConfig.gravity_optimize = false;
     lidarBAConfig.gyr_cov = gyr_cov;
     lidarBAConfig.acc_cov = acc_cov;
     lidarBAConfig.bg_cov = b_gyr_cov;
@@ -2489,99 +2077,31 @@ int main(int argc, char** argv)
     prepareResultDirs();
 
     {
-    /*** ROS subscribe initialization ***/
-    std::shared_ptr<void> sub_pcl;
-#ifdef USE_ROS1
-    if (p_pre->lidar_type == AVIA) {
-        sub_pcl = keep_subscriber(
-            create_subscriber<LivoxMsg>(lid_topic, 200000, livox_pcl_cbk));
-    } else {
-        sub_pcl = keep_subscriber(
-            create_subscriber<PointCloud2Msg>(lid_topic, 200000, standard_pcl_cbk));
-    }
-#elif defined(USE_ROS2)
-    auto lidarCallbackGroup = get_ros_node()->create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
-    auto imuCallbackGroup = get_ros_node()->create_callback_group(
-        rclcpp::CallbackGroupType::MutuallyExclusive);
-    if (p_pre->lidar_type == AVIA) {
-        sub_pcl = keep_subscriber(
-            create_sensor_subscriber<LivoxMsg>(lid_topic, 1000, livox_pcl_cbk,
-                                               lidarCallbackGroup));
-    } else {
-        sub_pcl = keep_subscriber(
-            create_sensor_subscriber<PointCloud2Msg>(lid_topic, 1000,
-                                                      standard_pcl_cbk,
-                                                      lidarCallbackGroup));
-    }
-#endif
-    
-    auto sub_reloc = create_subscriber<PoseStampedMsg>(reloc_topic, 10, reloc_cbk);
-#ifdef USE_ROS1
-    auto sub_imu = create_subscriber<ImuMsg>(imu_topic, 200000, imu_cbk);
-#elif defined(USE_ROS2)
-    auto sub_imu = create_sensor_subscriber<ImuMsg>(
-        imu_topic, 80000, imu_cbk, imuCallbackGroup);
-#endif
-    auto sub_gnss = create_subscriber<GnssFixMsg>(gnss_topic, 10, gnss_cbk);
-    auto sub_gnss_heading = create_subscriber<OdometryMsg>(gnss_heading_topic, 10, gnss_heading_cbk);
-    auto pubLaserCloudFull = create_publisher<PointCloud2Msg>("/cloud_registered", 5);
-    auto pubLaserCloudFull_body = create_publisher<PointCloud2Msg>("/cloud_registered_body", 5);
-    auto pubLaserCloudEffect = create_publisher<PointCloud2Msg>("/cloud_effected", 5);
-    auto pubLaserCloudMap = create_publisher<PointCloud2Msg>("/Laser_map", 1);
-    auto pubLaserCloudPriorMap = create_publisher<PointCloud2Msg>("/Laser_map_prior", 1);
-    auto pubGeoMapDebug = create_publisher<PointCloud2Msg>(
-        "/geo_map/dropped", 100000);
-    #ifdef USE_ROS1
-    int best_qos = 0;  // ROS1 ignores this parameter
-    int reliable_qos = 0;
-    #elif defined(USE_ROS2)
-    auto best_qos = rclcpp::QoS(10).best_effort(); // avoid latency caused by QoS reliability in ROS2
-    auto reliable_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
-    #endif
-    auto pubOdomAftMapped = create_publisher_qos<OdometryMsg>("/Odometry", reliable_qos);
-    auto pubPath = create_publisher_qos<PathMsg>("/path", reliable_qos);
-    pubOdomPath = create_publisher_qos<PathMsg>("/odom_path", reliable_qos);
-    pubLidarBAPath = create_publisher_qos<PathMsg>("/ba_path", reliable_qos);
-    pubBAFrameMarkers = create_publisher_qos<MarkerArrayMsg>("/ba_frames", reliable_qos);
-    pubGnssPath = create_publisher_qos<PathMsg>("/gnss_path", reliable_qos);
-    auto pubOdomHighFreq = create_publisher_qos<OdometryMsg>("/OdometryHighFreq", best_qos);
-    p_pre->pub_corn = create_publisher<PointCloud2Msg>("/corn_feature", 100000);
-    p_pre->pub_surf = create_publisher<PointCloud2Msg>("/surf_feature", 100000);
+    RosManager::SubscriberOptions rosOptions;
+    rosOptions.avia = p_pre->lidar_type == AVIA;
+    rosOptions.lidarTopic = lid_topic;
+    rosOptions.imuTopic = imu_topic;
+    rosOptions.relocTopic = reloc_topic;
+    rosOptions.gnssTopic = gnss_topic;
+    rosOptions.gnssHeadingTopic = gnss_heading_topic;
+    rosOptions.livoxCallback = livox_pcl_cbk;
+    rosOptions.cloudCallback = standard_pcl_cbk;
+    rosOptions.relocCallback = reloc_cbk;
+    rosOptions.imuCallback = imu_cbk;
+    rosOptions.gnssCallback = gnss_cbk;
+    rosOptions.headingCallback = gnss_heading_cbk;
+    RosManager::instance().initPublishers(
+        lidarBAConfig.enable, sam_enable, gnssPathVis);
+    RosManager::instance().initSubscribers(rosOptions);
 
-    if (sam_enable) MapOptimizationInit();
+    if (sam_enable)
+        globalGraph.reset(new GlobalGraph());
     nextLidarBAFrameId = 0;
     keyFrameCount = 0;
-    baFrameCount = 0;
     lastOdomPose = PointTypePose{};
-    lidarBAFramesById.clear();
-    lidarBAOdomPosesById.clear();
-    lidarBAMapFrames.clear();
-    lidarBAPoses.clear();
-    if (keyframe_en)
-        lidarBA.reset(new LidarBA(lidarBAConfig));
-#ifdef USE_ROS1
-        laserTfBroadcaster = std::make_shared<tf::TransformBroadcaster>();
-#elif defined(USE_ROS2)
-        laserTfBroadcaster =
-            std::make_shared<tf2_ros::TransformBroadcaster>(
-                get_ros_node());
-#endif
-
         std::thread odomhighthread([&](){
-            publish_odometryhighfreq(p_imu->pbuffer, pubOdomHighFreq);
+            publish_odometryhighfreq(p_imu->pbuffer);
         });
-
-        std::thread loopthread;
-        std::thread globalthread;
-        if (sam_enable)
-        {
-            globalthread = std::thread(&visualizeGlobalMapThread);
-            if (loopClosureEnableFlag)
-            {
-                loopthread = std::thread(&loopClosureThread);
-            }
-        }
 
 //------------------------------------------------------------------------------------------------------
         signal(SIGINT, SigHandle);
@@ -2593,16 +2113,18 @@ int main(int argc, char** argv)
 #endif
         RateType rate(5000);
         bool input_finished = false;
-        bool lidar_ba_finished = false;
+        DebugInfo debugInfo(100);
+        const auto lidarBacklog = [] {
+            {
+                std::lock_guard<std::mutex> lock(mtx_buffer);
+                return lidar_buffer.size();
+            }
+        };
         while (ros_ok() && !flg_exit)
         {
 #ifdef USE_ROS1
             spin_once();
 #endif
-            if (handleLidarBA())
-                rebuildLidarBAWindowMap();
-            performGnssMatching();
-
         // relocalization trigger
         if(relocalize_flag.load())
         {
@@ -2618,13 +2140,15 @@ int main(int argc, char** argv)
             const Eigen::Matrix3d R_map_base = reloc_rot.toRotationMatrix();
             const Eigen::Matrix3d R_odom_base = state_point.rot;
             const Eigen::Vector3d t_odom_base = state_point.pos;
-            updateMapOdom(R_map_base, reloc_pos, R_odom_base, t_odom_base);
+            RosManager::instance().updateMapOdom(
+                R_map_base, reloc_pos, R_odom_base, t_odom_base);
 
             relocalize_flag.store(false);
         }
 
-        if(sync_packages(Measures)) 
+        if(!input_finished && sync_packages(Measures))
         {
+            const auto tracking_scan_start = std::chrono::steady_clock::now();
             if (flg_first_scan)
             {
                 first_lidar_time = Measures.lidar_beg_time;
@@ -2637,7 +2161,8 @@ int main(int argc, char** argv)
             solve_time = 0;
 
             p_imu->Process(Measures, kf, feats_undistort);
-            p_imu->accumulateBAImu(Measures.imu);
+            if (lidarBAConfig.imu_enable)
+                p_imu->accumulateBAImu(Measures.imu);
             state_point = kf.state();
             pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU; // LiDAR position in the world coordinate frame
 
@@ -2657,83 +2182,92 @@ int main(int argc, char** argv)
 
             if (scan_frame_save_en) save_scan_frame(scan_frames_dir);
 
+            const bool globalReady = ikdtree.Root_Node != nullptr ||
+                (useBAMap() && ikdtree_window.Root_Node != nullptr);
+
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
             /*** Segment the map in lidar FOV ***/
-            if (use_online_map)
+            if (use_online_map && globalReady)
                 lasermap_fov_segment();
 
             /*** downsample the feature points in a scan ***/
             downSizeFilterSurf.setInputCloud(feats_undistort);
             downSizeFilterSurf.filter(*feats_down_body);
             feats_down_size = feats_down_body->points.size();
-            const bool baMapEnabled = useBAMap();
-            // The EKF can track a repaired IMU timestamp, but the transition
-            // scan must not alter the BA window or its feedback map.
-            pcl::PointCloud<PointType>::Ptr acceptedMapCloud;
-            size_t acceptedDownsampleCount = 0;
             if (imuRollbackScan && use_online_map && !use_prior_map &&
-                ikdtree.Root_Node == nullptr && ikdtree_window.Root_Node == nullptr)
+                !globalReady)
                 continue;
             /*** initialize the online map kdtree ***/
-            if (!imuRollbackScan && use_online_map && ikdtree.Root_Node == nullptr &&
-                (!baMapEnabled || ikdtree_window.Root_Node == nullptr))
+            if (!imuRollbackScan && use_online_map && !use_prior_map &&
+                !globalReady)
             {
                 if(feats_down_size > 5)
                 {
                     feats_down_world->resize(feats_down_size);
-                    PointVector bootstrapPoints;
-                    if (baMapEnabled)
-                        bootstrapPoints.reserve(feats_down_size);
                     for(int i = 0; i < feats_down_size; i++)
-                    {
-                        pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
-                        if (baMapEnabled && !coveredByPrior(feats_down_world->points[i]))
-                        {
-                            if (!acceptedMapCloud)
-                            {
-                                acceptedMapCloud.reset(new pcl::PointCloud<PointType>());
-                                acceptedMapCloud->reserve(feats_down_size);
-                            }
-                            bootstrapPoints.push_back(feats_down_world->points[i]);
-                            acceptedMapCloud->push_back(feats_down_body->points[i]);
-                        }
-                    }
-                    if (baMapEnabled)
-                    {
-                        if (!bootstrapPoints.empty())
-                        {
-                            ikdtree_window.Rebuild(std::move(bootstrapPoints));
-                            acceptedDownsampleCount = acceptedMapCloud->size();
-                        }
-                    }
-                    else
-                        ikdtree.Build(feats_down_world->points);
+                        pointBodyToWorld(&(feats_down_body->points[i]),
+                                         &(feats_down_world->points[i]));
+                    if (useBAMap()) ikdtree_window.Build(feats_down_world->points);
+                    else ikdtree.Build(feats_down_world->points);
                 }
-                if (!use_prior_map)
+                bool baOptimized = false;
+                Eigen::Isometry3d baPose = Eigen::Isometry3d::Identity();
+                std::vector<BAFramePtr> finalizedFrames;
+                double ba_ms = 0.0;
+                double feedback_dR = 0.0;
+                double feedback_dP = 0.0;
+                bool baFrameSubmitted = false;
+                bool submittedKeyFrame = false;
+                if (lidarBAConfig.enable && feats_down_size >= 5)
                 {
-                    if (acceptedMapCloud)
-                    {
-                        getCurrPose(state_point);
-                        const bool keyFrame = sam_enable && isKeyframe();
-                        std::vector<int> windowIds;
-                        std::vector<Eigen::Matrix4d> windowPoses;
-                        bool windowOptimized = false;
-                        const int frameId = addLidarBAFrame(
-                            feats_undistort, acceptedMapCloud,
-                            acceptedDownsampleCount, lidar_end_time, keyFrame,
-                            windowIds, windowPoses, windowOptimized);
-                        if (windowOptimized)
-                            applyLidarBAWindow(windowIds, windowPoses, frameId);
-                        const bool windowChanged = handleLidarBA();
-                        if (windowOptimized || windowChanged)
-                            rebuildLidarBAWindowMap();
-                    }
-                    continue;
+                    getCurrPose(state_point);
+                    const bool keyFrame = sam_enable && isKeyframe();
+                    submittedKeyFrame = keyFrame;
+                    const auto ba_start = std::chrono::steady_clock::now();
+                    baOptimized = processBAFrame(
+                        feats_undistort, feats_down_body, lidar_end_time, keyFrame,
+                        baPose, finalizedFrames);
+                    ba_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - ba_start).count();
+                    baFrameSubmitted = true;
                 }
+                else if (keyframe_en && ikdtree.Root_Node != nullptr)
+                {
+                    getCurrPose(state_point);
+                    const bool keyFrame = sam_enable && isKeyframe();
+                    if (keyFrame)
+                    {
+                        submittedKeyFrame = true;
+                        const auto ba_start = std::chrono::steady_clock::now();
+                        baOptimized = processBAFrame(
+                            feats_undistort, feats_down_body, lidar_end_time, true,
+                            baPose, finalizedFrames);
+                        ba_ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - ba_start).count();
+                        baFrameSubmitted = true;
+                    }
+                }
+                bool feedbackApplied = false;
+                if (baFrameSubmitted) {
+                    feedbackApplied = applyBA(
+                        baOptimized, baPose, feedback_dR, feedback_dP);
+                    handleFinalized(finalizedFrames);
+                    rebuildBAMap();
+                    if (submittedKeyFrame) {
+                        lastOdomPose = currentFrontendPose(lidar_end_time);
+                        ++keyFrameCount;
+                    }
+                }
+                const double scan_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - tracking_scan_start).count();
+                debugInfo.record({0.0, ba_ms, scan_ms, baOptimized,
+                                  feedbackApplied, feedback_dR, feedback_dP,
+                                  lidarBacklog(), false, 0.0});
+                continue;
             }
-            kdtree_size_st = use_online_map ?
-                ikdtree.size() + (baMapEnabled ? ikdtree_window.size() : 0) : 0;
+            kdtree_size_st = use_online_map ? ikdtree.size() +
+                (useBAMap() ? ikdtree_window.size() : 0) : 0;
 
             /*** ICP and iterated Kalman filter update ***/
             if (feats_down_size < 5)
@@ -2748,19 +2282,17 @@ int main(int argc, char** argv)
 
             /*** iterated state estimation ***/
             double solve_H_time = 0;
+            double ekf_ms = 0.0;
             if (use_prior_map && prior_init_en && !prior_init_done)
             {
+                const auto ekf_start = std::chrono::steady_clock::now();
                 if (!priorInitAlign())
                 {
                     ROS_PRINT_WARN("prior init alignment failed, retry on next scan");
-                    if (acceptedMapCloud)
-                        ikdtree_window.Rebuild(PointVector());
                     continue;
                 }
-            }
-            else
-            {
-                kf.updateLidar(buildLidarMeasurement, LASER_POINT_COV);
+                ekf_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - ekf_start).count();
                 state_point = kf.state();
                 euler_cur = state_point.rot.eulerAngles(0, 1, 2);
                 pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
@@ -2769,6 +2301,28 @@ int main(int argc, char** argv)
                 geoQuat.y = q_state.y();
                 geoQuat.z = q_state.z();
                 geoQuat.w = q_state.w();
+                getCurrPose(state_point);
+            }
+            else
+            {
+                const SimpleEKF::MeasurementBuilder measurementBuilder =
+                    [](const SimpleEKF::State &state, bool rematch,
+                       Eigen::MatrixXd &H, Eigen::VectorXd &residual) {
+                        return buildLidarMeasurement(state, rematch, H, residual);
+                    };
+                const auto ekf_start = std::chrono::steady_clock::now();
+                kf.updateLidar(measurementBuilder, LASER_POINT_COV);
+                ekf_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - ekf_start).count();
+                state_point = kf.state();
+                euler_cur = state_point.rot.eulerAngles(0, 1, 2);
+                pos_lid = state_point.pos + state_point.rot * Lidar_T_wrt_IMU;
+                const Eigen::Quaterniond q_state(state_point.rot);
+                geoQuat.x = q_state.x();
+                geoQuat.y = q_state.y();
+                geoQuat.z = q_state.z();
+                geoQuat.w = q_state.w();
+                getCurrPose(state_point);
             }
 
             bool keyFrame = false;
@@ -2780,55 +2334,57 @@ int main(int argc, char** argv)
             }
 
             if (imuRollbackScan)
-            {
                 geo_map_dropped->clear();
-            }
-            bool updateWindowMap = static_cast<bool>(acceptedMapCloud);
-            if (baMapEnabled && !imuRollbackScan)
+
+            PointCloudXYZI::Ptr acceptedMapCloud;
+            if (useBAMap() && !imuRollbackScan)
             {
-                if (!acceptedMapCloud)
-                {
-                    acceptedMapCloud.reset(new pcl::PointCloud<PointType>());
-                    map_incremental(acceptedMapCloud.get(), &acceptedDownsampleCount);
-                }
+                acceptedMapCloud.reset(new PointCloudXYZI());
+                map_incremental(acceptedMapCloud);
             }
 
+            bool baOptimized = false;
+            Eigen::Isometry3d baPose = Eigen::Isometry3d::Identity();
+            std::vector<BAFramePtr> finalizedFrames;
+            double ba_ms = 0.0;
+            double feedback_dR = 0.0;
+            double feedback_dP = 0.0;
+            bool feedbackApplied = false;
             if (!imuRollbackScan && (lidarBAConfig.enable || keyFrame))
             {
-                std::vector<int> windowIds;
-                std::vector<Eigen::Matrix4d> windowPoses;
-                bool windowOptimized = false;
-                const int currentBAFrameId = addLidarBAFrame(
+                getCurrPose(state_point);
+                const auto ba_start = std::chrono::steady_clock::now();
+                baOptimized = processBAFrame(
                     feats_undistort,
-                    baMapEnabled ? acceptedMapCloud : feats_down_body,
-                    baMapEnabled ? acceptedDownsampleCount : feats_down_body->size(),
+                    acceptedMapCloud ? acceptedMapCloud : feats_down_body,
                     lidar_end_time, keyFrame,
-                    windowIds, windowPoses, windowOptimized);
-                if (lidarBAConfig.enable && lidarBAConfig.feedback_to_ekf && windowOptimized)
+                    baPose, finalizedFrames);
+                ba_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - ba_start).count();
+                feedbackApplied = applyBA(
+                    baOptimized, baPose, feedback_dR, feedback_dP);
+                handleFinalized(finalizedFrames);
+                if (keyFrame)
                 {
-                    applyLidarBAWindow(windowIds, windowPoses, currentBAFrameId);
-                    updateWindowMap = baMapEnabled;
+                    lastOdomPose = currentFrontendPose(lidar_end_time);
+                    ++keyFrameCount;
                 }
-                if (handleLidarBA())
-                    updateWindowMap = baMapEnabled;
             }
 
-            if (updateWindowMap)
-                rebuildLidarBAWindowMap();
-
-            /******* Publish odometry *******/
-            publish_odometry(pubOdomAftMapped);
-
             /*** add the feature points to map kdtree ***/
-            if (!baMapEnabled && !imuRollbackScan)
+            if (use_online_map && !imuRollbackScan && !useBAMap())
                 map_incremental();
-            publish_geo_map_debug(pubGeoMapDebug);
+            rebuildBAMap();
+            publish_geo_map_debug();
+
+            /******* Publish odometry after BA feedback and map update *******/
+            publish_odometry();
             
             /******* Publish points *******/
-            if (path_en)                         publish_path(pubPath, pubOdomPath);
-            if (scan_pub_en || feat_accum_save_en)      publish_frame_world(pubLaserCloudFull);
-            if (scan_pub_en && scan_body_pub_en) publish_frame_body(pubLaserCloudFull_body);
-            if (effect_pub_en) publish_effect_world(pubLaserCloudEffect);
+            if (path_en)                         publish_path();
+            if (scan_pub_en || feat_accum_save_en)      publish_frame_world();
+            if (scan_pub_en && scan_body_pub_en) publish_frame_body();
+            if (effect_pub_en) publish_effect_world();
             if (feature_pub_en && use_online_map)
             {
                 static double lastMapPublishTime = -1.0;
@@ -2836,12 +2392,17 @@ int main(int argc, char** argv)
                     lidar_end_time - lastMapPublishTime >= 1.0 ||
                     lidar_end_time < lastMapPublishTime)
                 {
-                    publish_map(pubLaserCloudMap);
+                    publish_map();
                     lastMapPublishTime = lidar_end_time;
                 }
             }
-            if (feature_pub_en && use_prior_map) publish_prior_map(pubLaserCloudPriorMap);
-            /*** Debug variables ***/
+            if (feature_pub_en && use_prior_map) publish_prior_map();
+            const double scan_time_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - tracking_scan_start).count();
+            debugInfo.record({ekf_ms, ba_ms, scan_time_ms, baOptimized,
+                              feedbackApplied, feedback_dR, feedback_dP,
+                              lidarBacklog(), effct_feat_num > 0 && ekf_ms > 0.0,
+                              res_mean_last});
         }
         
             const int64_t input_time = last_input_time.load();
@@ -2851,128 +2412,63 @@ int main(int argc, char** argv)
             }
 
             if (input_finished)
-            {
-                const bool loop_done = !sam_enable || !loopClosureEnableFlag || loopDone.load();
-                if (keyframe_en && loop_done && !lidar_ba_finished)
-                {
-                    finishLidarBA();
-                    lidar_ba_finished = true;
-                }
-                const bool loop_drained = !sam_enable || !loopClosureEnableFlag || loopDone.load();
-                if (loop_drained && lidarBAFramesDone())
-                    break;
-            }
+                break;
             rate.sleep();
         }
 
-#ifdef USE_ROS2
+#ifdef USE_ROS1
+        // Drain callbacks already queued before stopping Tracking submissions.
+        spin_once();
+#elif defined(USE_ROS2)
         callbackExecutor.cancel();
         callbackThread.join();
 #endif
-        if (keyframe_en)
+
+        if (lidarBA)
         {
-            finishLidarBA();
-        }
-        if (sam_enable)
-        {
-            performGnssMatching();
-            RateType drainRate(500);
-            while (ros_ok() && !flg_exit &&
-                   (loopClosureEnableFlag && !loopDone.load()))
+            const std::vector<BAFramePtr> finalizedFrames = lidarBA->Finish();
+            handleFinalized(finalizedFrames);
+            if (!lidarBAPath.poses.empty())
             {
-#ifdef USE_ROS1
-                spin_once();
-#endif
-                handleLidarBA();
-                performGnssMatching();
-                drainRate.sleep();
+                RosManager::instance().publish(
+                    RosManager::instance().pubLidarBAPath, lidarBAPath);
+                RosManager::instance().publish(
+                    RosManager::instance().pubBAFrameMarkers, baFrameMarkers);
             }
         }
+        if (globalGraph)
+            globalGraph->Shutdown();
         flg_exit = true;
         if (odomhighthread.joinable()) {
             odomhighthread.join();
         }
-        if (loopthread.joinable()) {
-            loopthread.join();
-        }
-        if (globalthread.joinable()) {
-            globalthread.join();
-        }
-        if (sam_enable)
-        {
-            handleLidarBA();
-            performGnssMatching();
-            poseGraphUpdate();
-            correctPoses();
-            publishSamMsg();
-            visualizeLoopClosure();
-            publishGlobalMap();
-        }
 
     if (pcl_wait_save->size() > 0 && feat_accum_save_en)
     {
-        const std::string stamp_str = format_unix_time(lidar_end_time);
-        const std::string file_name = stamp_str + string(".pcd");
-        const std::string all_points_dir = string(string(ROOT_DIR) + "PCD/") + file_name;
-        pcl::PCDWriter pcd_writer;
-        cout << "current accumulated feature cloud saved to /PCD/" << file_name<<endl;
-        pcd_writer.writeBinary(all_points_dir, *pcl_wait_save);
+        ResultWriter::instance().saveAccumulatedCloud(*pcl_wait_save, lidar_end_time);
     }
 
     if (sam_enable && keyframe_export_en && keyframe_pose_file.is_open())
     {
-        for (int i = 0; i < cloudKeyPoses6D->points.size(); ++i)
-        {
-            PointTypePose thisPose6D = cloudKeyPoses6D->points[i];
-            keyframe_pose_file << thisPose6D.time << " "
-                       << thisPose6D.x << " " << thisPose6D.y << " " << thisPose6D.z << " "
-                       << thisPose6D.roll << " " << thisPose6D.pitch << " " << thisPose6D.yaw << "\n";
-        }
-        keyframe_pose_file.close();
+        ResultWriter::instance().saveKeyframePoses(
+            globalGraph ? globalGraph->GetKeyframePoses()
+                        : std::vector<PointTypePose>{},
+            keyframe_pose_file);
     }
 
     if (sam_enable && keyframe_global_pcd_en)
     {
-        string global_keyframe_path = keyframe_frames_dir + "global.pcd";
-        pcl::PCDWriter pcd_writer;
-        cout << "current global keyframe map saved to " << global_keyframe_path << endl;
-
-        for (int i = 0; i < featCloudKeyFrames.size(); ++i)
-        {
-            *keyframe_global_cloud += *transformPointCloud(featCloudKeyFrames[i], &cloudKeyPoses6D->points[i]);
-        }
-
-        pcd_writer.writeBinary(global_keyframe_path, *keyframe_global_cloud);
+        ResultWriter::instance().saveGlobalCloud(globalGraph.get());
     }
 
         if (ikdtree_output_save_en && use_online_map && ikdtree.Root_Node != nullptr)
         {
-            save_ikdtree_cloud(ikdtree_output_dir + "prior_cloud.pcd");
-            const string ikdtree_path = ikdtree_output_dir + "prior_tree.bin";
-            if (ikdtree.SaveIkdtree(ikdtree_path))
-                ROS_PRINT_INFO("saved final ikdtree to %s", ikdtree_path.c_str());
-            else
-                ROS_PRINT_WARN("failed to save final ikdtree to %s", ikdtree_path.c_str());
+            ResultWriter::instance().saveTree(ikdtree);
         }
 
-        shutdownMapOptimization();
         lidarBA.reset();
-#ifdef USE_ROS1
-        pubGnssPath.shutdown();
-        pubLidarBAPath.shutdown();
-        pubOdomPath.shutdown();
-        pubBAFrameMarkers.shutdown();
-        p_pre->pub_corn.shutdown();
-        p_pre->pub_surf.shutdown();
-#elif defined(USE_ROS2)
-        pubGnssPath.reset();
-        pubLidarBAPath.reset();
-        pubOdomPath.reset();
-        pubBAFrameMarkers.reset();
-        p_pre->pub_corn.reset();
-        p_pre->pub_surf.reset();
-#endif
-        laserTfBroadcaster.reset();
+        globalGraph.reset();
+        RosManager::instance().reset();
     }
 
 #ifdef USE_ROS2
