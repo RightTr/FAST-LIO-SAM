@@ -45,13 +45,17 @@ int    kdtree_size_st = 0, add_point_size = 0, kdtree_delete_counter = 0;
 bool   feat_accum_save_en = false, time_sync_en = false, path_en = true;
 bool   imu_state_save_en = false, scan_frame_save_en = false, ikdtree_output_save_en = false;
 
-bool feature_pub_en = false, effect_pub_en = false;
+bool effect_pub_en = false;
 std::mutex mapDisplayMutex;
 std::condition_variable mapDisplayCondition;
 std::thread mapDisplayThread;
 PointVector mapDisplayPoints;
-double mapDisplayStamp = 0.0;
+PointVector baMapDisplayPoints;
+double displayStamp = 0.0;
+double latestMapTime = 0.0;
+bool mapTimeUpdated = false;
 bool mapDisplayPending = false;
+bool mapDisplayCloudRequested = false;
 bool mapDisplayStopping = false;
 
 float DET_RANGE = 300.0f;
@@ -536,7 +540,7 @@ void map_incremental(PointCloudXYZI::Ptr acceptedCloud = nullptr)
                                    filter_size_map_min))
                 continue;
 
-            const PointVector &points_near = mapManager.onlineNearestPoints()[i];
+            const PointVector &points_near = mapManager.onlineNearestPoints[i];
             bool keep = !flg_EKF_inited || points_near.size() < NUM_MATCH_POINTS ||
                         std::sqrt(calc_dist(point, points_near[NUM_MATCH_POINTS - 1])) > geo_support;
             if (!keep)
@@ -565,14 +569,14 @@ void map_incremental(PointCloudXYZI::Ptr acceptedCloud = nullptr)
                                    filter_size_map_min))
                 continue;
 
-            if (mapManager.onlineNearestPoints()[i].empty() || !flg_EKF_inited)
+            if (mapManager.onlineNearestPoints[i].empty() || !flg_EKF_inited)
             {
                 PointToAdd.push_back(point);
                 if (acceptedCloud) acceptedCloud->push_back(feats_down_body->points[i]);
                 continue;
             }
 
-            const PointVector &points_near = mapManager.onlineNearestPoints()[i];
+            const PointVector &points_near = mapManager.onlineNearestPoints[i];
             PointType mid_point;
             mid_point.x = floor(point.x / filter_size_map_min) * filter_size_map_min + 0.5 * filter_size_map_min;
             mid_point.y = floor(point.y / filter_size_map_min) * filter_size_map_min + 0.5 * filter_size_map_min;
@@ -609,7 +613,7 @@ void map_incremental(PointCloudXYZI::Ptr acceptedCloud = nullptr)
     }
 
     const double st_time = omp_get_wtime();
-    if (!mapManager.hasOnlineTree(useBAMap()))
+    if (!mapManager.hasTree(useBAMap()))
     {
         PointToAdd.insert(PointToAdd.end(),
                           PointNoNeedDownsample.begin(),
@@ -662,7 +666,7 @@ bool applyBA(bool optimized, const Eigen::Isometry3d &pose)
     return true;
 }
 
-PointTypePose currentFrontendPose(double timestamp)
+PointTypePose currentOdomPose(double timestamp)
 {
     PointTypePose pose;
     pose.x = transformTobeMapped[3];
@@ -757,14 +761,14 @@ bool processBAFrame(
     pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloud,
     PointCloudXYZI::Ptr mapCloud, double timestamp, bool keyFrame,
     Eigen::Isometry3d &pose,
-    std::vector<BAFramePtr> &finalized)
+    std::vector<BAFramePtr> &baFrames)
 {
     if (!lidarBA)
     {
         lidarBA.reset(new LidarBA(lidarBAConfig, kf.gravity()));
     }
 
-    const PointTypePose framePose = currentFrontendPose(timestamp);
+    const PointTypePose framePose = currentOdomPose(timestamp);
 
     BAFramePtr frame(new BAFrame());
     frame->id = nextLidarBAFrameId++;
@@ -816,7 +820,7 @@ bool processBAFrame(
         }
     }
 
-    return lidarBA->Process(std::move(frame), pose, finalized);
+    return lidarBA->Process(std::move(frame), pose, baFrames);
 }
 
 void publishLidarBA(const BAFramePtr &frame)
@@ -880,9 +884,9 @@ void publishLidarBA(const BAFramePtr &frame)
     }
 }
 
-void handleFinalized(const std::vector<BAFramePtr> &finalizedFrames)
+void processBAFrames(const std::vector<BAFramePtr> &baFrames)
 {
-    for (const BAFramePtr &frame : finalizedFrames)
+    for (const BAFramePtr &frame : baFrames)
     {
         if (!frame)
             continue;
@@ -898,7 +902,7 @@ void handleFinalized(const std::vector<BAFramePtr> &finalizedFrames)
         if (sam_enable && frame->keyframe && globalGraph &&
             !globalGraph->InsertKeyFrame(frame))
         {
-            ROS_PRINT_ERROR("GlobalGraph rejected finalized BA keyframe %d", frame->id);
+            ROS_PRINT_ERROR("GlobalGraph rejected BA keyframe %d", frame->id);
         }
         if (!frame->keyframe)
             frame->cloud.reset();
@@ -1127,44 +1131,100 @@ void publish_effect_world()
 
 void display_map_loop()
 {
+    double lastMapPublishTime = -1.0;
     while (true)
     {
         PointVector points;
+        PointVector baPoints;
         double stamp;
         {
             std::unique_lock<std::mutex> lock(mapDisplayMutex);
+            mapDisplayCondition.wait(lock, [&] {
+                return mapTimeUpdated || mapDisplayStopping;
+            });
+            if (mapDisplayStopping) return;
+
+            mapTimeUpdated = false;
+            const double scanTime = latestMapTime;
+            if (lastMapPublishTime >= 0.0 &&
+                scanTime - lastMapPublishTime < 1.0 &&
+                scanTime >= lastMapPublishTime)
+                continue;
+
+            lastMapPublishTime = scanTime;
+            mapDisplayCloudRequested = true;
+            mapDisplayCondition.notify_all();
             mapDisplayCondition.wait(lock, [] {
                 return mapDisplayPending || mapDisplayStopping;
             });
             if (mapDisplayStopping) return;
             points.swap(mapDisplayPoints);
-            stamp = mapDisplayStamp;
+            baPoints.swap(baMapDisplayPoints);
+            stamp = displayStamp;
             mapDisplayPending = false;
         }
 
         PointCloudXYZI cloud;
-        cloud.points = std::move(points);
-        cloud.width = cloud.points.size();
         cloud.height = 1;
-        Pcl2Msg message;
-        pcl::toROSMsg(cloud, message);
-        message.header.stamp = get_ros_time(stamp);
-        message.header.frame_id = odom_frame;
-        ros_manager.publish(ros_manager.pubLaserCloudMap, message);
+        if (online_tree_pub_en)
+        {
+            cloud.points = std::move(points);
+            cloud.width = cloud.points.size();
+            Pcl2Msg message;
+            pcl::toROSMsg(cloud, message);
+            message.header.stamp = get_ros_time(stamp);
+            message.header.frame_id = odom_frame;
+            ros_manager.publish(ros_manager.pubLaserCloudMap, message);
+        }
+        if (ba_tree_pub_en)
+        {
+            cloud.points = std::move(baPoints);
+            cloud.width = cloud.points.size();
+            Pcl2Msg message;
+            pcl::toROSMsg(cloud, message);
+            message.header.stamp = get_ros_time(stamp);
+            message.header.frame_id = odom_frame;
+            ros_manager.publish(ros_manager.pubLaserCloudBAMap, message);
+        }
     }
 }
 
-void publish_map()
+void update_map_display_time(double stamp)
 {
-    PointVector mapPoints;
-    mapManager.flattenOnline(mapPoints, useBAMap());
     {
         std::lock_guard<std::mutex> lock(mapDisplayMutex);
-        mapDisplayPoints = std::move(mapPoints);
-        mapDisplayStamp = lidar_end_time;
-        mapDisplayPending = true;
+        latestMapTime = stamp;
+        mapTimeUpdated = true;
     }
     mapDisplayCondition.notify_one();
+}
+
+void prepare_map_display_cloud()
+{
+    double stamp;
+    {
+        std::lock_guard<std::mutex> lock(mapDisplayMutex);
+        if (!mapDisplayCloudRequested || mapDisplayStopping)
+            return;
+        mapDisplayCloudRequested = false;
+        stamp = lidar_end_time;
+    }
+
+    PointVector mapPoints, baMapPoints;
+    if (online_tree_pub_en)
+        mapManager.flattenTree(mapPoints, false);
+    if (ba_tree_pub_en)
+        mapManager.flattenTree(baMapPoints, true);
+    {
+        std::lock_guard<std::mutex> lock(mapDisplayMutex);
+        if (mapDisplayStopping)
+            return;
+        mapDisplayPoints = std::move(mapPoints);
+        baMapDisplayPoints = std::move(baMapPoints);
+        displayStamp = stamp;
+        mapDisplayPending = true;
+    }
+    mapDisplayCondition.notify_all();
 }
 
 void publish_geo_map()
@@ -1305,7 +1365,7 @@ void publish_odometry()
 
 void publish_path()
 {
-    const PointTypePose pose = currentFrontendPose(lidar_end_time);
+    const PointTypePose pose = currentOdomPose(lidar_end_time);
     msg_body_pose.header.stamp = get_ros_time(pose.time);
     msg_body_pose.header.frame_id = odom_frame;
     msg_body_pose.pose.position.x = pose.x;
@@ -1531,7 +1591,7 @@ int main(int argc, char** argv)
     ros_manager.initPublishers(
         lidarBAConfig.enable, sam_enable, gnssPathVis);
     ros_manager.initSubscribers(rosOptions);
-    if (feature_pub_en && use_online_map)
+    if ((online_tree_pub_en || ba_tree_pub_en) && use_online_map)
         mapDisplayThread = std::thread(display_map_loop);
 
     if (sam_enable)
@@ -1617,7 +1677,8 @@ int main(int argc, char** argv)
                     *feats_undistort, lidar_end_time, state_point.rot,
                     state_point.pos, Lidar_R_wrt_IMU, Lidar_T_wrt_IMU);
 
-            const bool globalReady = mapManager.hasOnlineMap(useBAMap());
+            const bool globalReady = mapManager.hasTree(false) ||
+                (useBAMap() && mapManager.hasTree(true));
 
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
@@ -1651,7 +1712,7 @@ int main(int argc, char** argv)
                 }
                 bool baOptimized = false;
                 Eigen::Isometry3d baPose = Eigen::Isometry3d::Identity();
-                std::vector<BAFramePtr> finalizedFrames;
+                std::vector<BAFramePtr> baFrames;
                 bool baFrameProcessed = false;
                 bool keyFrameAdded = false;
                 if (lidarBAConfig.enable && feats_down_size >= 5)
@@ -1661,7 +1722,7 @@ int main(int argc, char** argv)
                     keyFrameAdded = keyFrame;
                     baOptimized = processBAFrame(
                         feats_undistort, feats_down_body, lidar_end_time, keyFrame,
-                        baPose, finalizedFrames);
+                        baPose, baFrames);
                     baFrameProcessed = true;
                 }
                 else if (keyframe_en && mapManager.hasFixedOnlineMap())
@@ -1673,16 +1734,16 @@ int main(int argc, char** argv)
                         keyFrameAdded = true;
                         baOptimized = processBAFrame(
                             feats_undistort, feats_down_body, lidar_end_time, true,
-                            baPose, finalizedFrames);
+                            baPose, baFrames);
                         baFrameProcessed = true;
                     }
                 }
                 if (baFrameProcessed) {
                     applyBA(baOptimized, baPose);
-                    handleFinalized(finalizedFrames);
+                    processBAFrames(baFrames);
                     rebuildBAMap();
                     if (keyFrameAdded) {
-                        lastOdomPose = currentFrontendPose(lidar_end_time);
+                        lastOdomPose = currentOdomPose(lidar_end_time);
                         ++keyFrameCount;
                     }
                 }
@@ -1758,7 +1819,7 @@ int main(int argc, char** argv)
 
             bool baOptimized = false;
             Eigen::Isometry3d baPose = Eigen::Isometry3d::Identity();
-            std::vector<BAFramePtr> finalizedFrames;
+            std::vector<BAFramePtr> baFrames;
             if (!imuRollbackScan && (lidarBAConfig.enable || keyFrame))
             {
                 getCurrPose(state_point);
@@ -1766,12 +1827,12 @@ int main(int argc, char** argv)
                     feats_undistort,
                     acceptedMapCloud ? acceptedMapCloud : feats_down_body,
                     lidar_end_time, keyFrame,
-                    baPose, finalizedFrames);
+                    baPose, baFrames);
                 applyBA(baOptimized, baPose);
-                handleFinalized(finalizedFrames);
+                processBAFrames(baFrames);
                 if (keyFrame)
                 {
-                    lastOdomPose = currentFrontendPose(lidar_end_time);
+                    lastOdomPose = currentOdomPose(lidar_end_time);
                     ++keyFrameCount;
                 }
             }
@@ -1791,18 +1852,13 @@ int main(int argc, char** argv)
                 publish_frame_world(resultWriter);
             if (scan_pub_en && scan_body_pub_en) publish_frame_body();
             if (effect_pub_en) publish_effect_world();
-            if (feature_pub_en && use_online_map)
+            if ((online_tree_pub_en || ba_tree_pub_en) && use_online_map)
             {
-                static double lastMapPublishTime = -1.0;
-                if (lastMapPublishTime < 0.0 ||
-                    lidar_end_time - lastMapPublishTime >= 1.0 ||
-                    lidar_end_time < lastMapPublishTime)
-                {
-                    publish_map();
-                    lastMapPublishTime = lidar_end_time;
-                }
+                update_map_display_time(lidar_end_time);
+                prepare_map_display_cloud();
             }
-            if (feature_pub_en && use_prior_map) publish_prior_map();
+            if ((online_tree_pub_en || ba_tree_pub_en) && use_prior_map)
+                publish_prior_map();
         }
         
             const int64_t input_time = last_input_time.load();
@@ -1832,8 +1888,8 @@ int main(int argc, char** argv)
 
         if (lidarBA)
         {
-            const std::vector<BAFramePtr> finalizedFrames = lidarBA->Finish();
-            handleFinalized(finalizedFrames);
+            const std::vector<BAFramePtr> baFrames = lidarBA->Finish();
+            processBAFrames(baFrames);
             if (!lidarBAPath.poses.empty())
             {
                 ros_manager.publish(

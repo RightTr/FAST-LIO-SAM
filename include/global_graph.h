@@ -115,7 +115,7 @@ private:
     void correctPoses();
     void publishSamMsg();
     void visualizeLoopClosure();
-    bool processPendingLoopChecks(int &nextKey);
+    bool processLoopChecks(int &nextKey);
     void publishGlobalMap();
 
     gtsam::NonlinearFactorGraph gtSAMgraph;

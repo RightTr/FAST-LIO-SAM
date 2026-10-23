@@ -6,6 +6,8 @@
 #include <cmath>
 
 // Shared configuration state used by the frontend and backend.
+bool online_tree_pub_en = false;
+bool ba_tree_pub_en = false;
 int numberOfCores;
 
 float surroundingkeyframeAddingDistThreshold;
@@ -22,7 +24,8 @@ float historyKeyframeSearchTimeDiff;
 int historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
 float icpMaxCorrDistance;
-double priorVar = 1e-4;
+double priorRotVar = 1e-4;
+double priorPosVar = 1e-4;
 double odomRotVar = 1e-3;
 double odomPosVar = 1e-3;
 double loopRotVar = 0.1;
@@ -106,7 +109,8 @@ void read_mapping_params(Preprocess &preprocess, int &lidarType)
     rosparam_get("publish/scan_publish_en", scan_pub_en, true);
     rosparam_get("publish/dense_publish_en", dense_pub_en, true);
     rosparam_get("publish/scan_bodyframe_pub_en", scan_body_pub_en, true);
-    rosparam_get("publish/feature_pub_en", feature_pub_en, false);
+    rosparam_get("publish/online_tree_pub_en", online_tree_pub_en, false);
+    rosparam_get("publish/ba_tree_pub_en", ba_tree_pub_en, false);
     rosparam_get("publish/effect_pub_en", effect_pub_en, false);
     rosparam_get("max_iteration", NUM_MAX_ITERATIONS, 4);
     rosparam_get("map_file_path", map_file_path, std::string(""));
@@ -179,7 +183,8 @@ void read_liosam_params() {
     rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
     rosparam_get("lio_sam/icpMaxCorrDistance", icpMaxCorrDistance, 2.0f);
-    rosparam_get("lio_sam/priorVar", priorVar, 1e-4);
+    rosparam_get("lio_sam/priorRotVar", priorRotVar, 1e-4);
+    rosparam_get("lio_sam/priorPosVar", priorPosVar, 1e-4);
     rosparam_get("lio_sam/odomRotVar", odomRotVar, 1e-3);
     rosparam_get("lio_sam/odomPosVar", odomPosVar, 1e-3);
     rosparam_get("lio_sam/loopRotVar", loopRotVar, 0.1);

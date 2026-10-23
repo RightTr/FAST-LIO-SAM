@@ -15,7 +15,7 @@ void Map::setDownsampleParam(double size)
 
 void Map::prepareScan(size_t point_count)
 {
-    onlineNearestPoints_.resize(point_count);
+    onlineNearestPoints.resize(point_count);
     priorNearestPoints_.resize(point_count);
     onlineSelected_.resize(point_count, 0);
     priorSelected_.resize(point_count, 0);
@@ -131,22 +131,15 @@ void Map::collectRemovedPoints(PointVector &points)
     onlineTree_.acquire_removed_points(points);
 }
 
-void Map::flattenOnline(PointVector &points, bool include_window)
+void Map::flattenTree(PointVector &points, bool use_window)
 {
     points.clear();
-    if (onlineTree_.Root_Node)
-        onlineTree_.flatten(onlineTree_.Root_Node, points, NOT_RECORD);
-    if (include_window && windowTree_.Root_Node)
-        windowTree_.flatten(windowTree_.Root_Node, points, NOT_RECORD);
+    auto &tree = use_window ? windowTree_ : onlineTree_;
+    if (tree.Root_Node)
+        tree.flatten(tree.Root_Node, points, NOT_RECORD);
 }
 
-bool Map::hasOnlineMap(bool include_window) const
-{
-    return onlineTree_.Root_Node != nullptr ||
-           (include_window && windowTree_.Root_Node != nullptr);
-}
-
-bool Map::hasOnlineTree(bool use_window) const
+bool Map::hasTree(bool use_window) const
 {
     return (use_window ? windowTree_ : onlineTree_).Root_Node != nullptr;
 }
@@ -369,15 +362,15 @@ std::vector<point_obs::MatchObservation> Map::buildObservations(
                 if (options.use_window)
                 {
                     std::vector<float> distances;
-                    onlineNearestPoints_[i].clear();
+                    onlineNearestPoints[i].clear();
                     point_obs::nearestSearch(world, onlineTree_,
-                                             onlineNearestPoints_[i], distances,
+                                             onlineNearestPoints[i], distances,
                                              options.match_point_count);
                     point_obs::nearestSearch(world, windowTree_,
-                                             onlineNearestPoints_[i], distances,
+                                             onlineNearestPoints[i], distances,
                                              options.match_point_count);
                     online_valid[i] = point_obs::buildPointObservation(
-                        nullptr, &onlineNearestPoints_[i], body, world, 1.0,
+                        nullptr, &onlineNearestPoints[i], body, world, 1.0,
                         false, nullptr, online_observations[i],
                         options.point_to_point, options.match_point_count,
                         options.max_neighbor_sq_distance) &&
@@ -388,7 +381,7 @@ std::vector<point_obs::MatchObservation> Map::buildObservations(
                 {
                     online_valid[i] = point_obs::buildPointObservation(
                         &onlineTree_, nullptr, body, world, 1.0, true,
-                        &onlineNearestPoints_[i], online_observations[i],
+                        &onlineNearestPoints[i], online_observations[i],
                         options.point_to_point, options.match_point_count,
                         options.max_neighbor_sq_distance);
                 }
@@ -397,7 +390,7 @@ std::vector<point_obs::MatchObservation> Map::buildObservations(
             else if (onlineSelected_[i])
             {
                 online_valid[i] = point_obs::buildPointObservation(
-                    nullptr, &onlineNearestPoints_[i], body, world, 1.0,
+                    nullptr, &onlineNearestPoints[i], body, world, 1.0,
                     false, nullptr, online_observations[i],
                     options.point_to_point, options.match_point_count,
                     options.max_neighbor_sq_distance);

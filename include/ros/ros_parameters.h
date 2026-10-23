@@ -11,7 +11,8 @@ class Preprocess;
 
 // Runtime configuration shared by ROS parameter loading and mapping modules.
 extern bool sam_enable, path_en, scan_pub_en, dense_pub_en, scan_body_pub_en;
-extern bool feature_pub_en, effect_pub_en, time_sync_en, grav_align, timeRepair;
+extern bool online_tree_pub_en, ba_tree_pub_en;
+extern bool effect_pub_en, time_sync_en, grav_align, timeRepair;
 extern bool prior_init_en, point2point, geo_map_enable;
 extern int NUM_MAX_ITERATIONS, lidar_type, res_save_interval, feats_down_size;
 extern double time_diff_lidar_to_imu, imu_dt, prior_lidar_cov;
@@ -31,7 +32,7 @@ extern bool loopClosureEnableFlag, scanContextEnableFlag;
 extern float loopClosureFrequency, historyKeyframeSearchRadius;
 extern float historyKeyframeSearchTimeDiff, historyKeyframeFitnessScore, icpMaxCorrDistance;
 extern int surroundingKeyframeSize, historyKeyframeSearchNum, loopCurNum, loopPreNum;
-extern double priorVar, odomRotVar, odomPosVar, loopRotVar, loopPosVar;
+extern double priorRotVar, priorPosVar, odomRotVar, odomPosVar, loopRotVar, loopPosVar;
 extern float globalMapVisualizationSearchRadius, globalMapVisualizationPoseDensity;
 extern float globalMapVisualizationLeafSize, mappingICPSize;
 extern int ikdtreeSearchNeighborNum;

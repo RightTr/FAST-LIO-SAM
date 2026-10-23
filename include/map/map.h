@@ -21,6 +21,8 @@ struct ObservationOptions
 class Map
 {
 public:
+    std::vector<PointVector> onlineNearestPoints;
+
     KD_TREE_PUBLIC<PointType> &onlineTree() { return onlineTree_; }
     KD_TREE_PUBLIC<PointType> &windowTree() { return windowTree_; }
     KD_TREE_PUBLIC<PointType> &priorTree() { return priorTree_; }
@@ -39,20 +41,16 @@ public:
                        bool include_window);
     bool hasLocalMap() const { return localMapInitialized_; }
     bool containsInLocalMap(const Eigen::Vector3d &point) const;
-    void flattenOnline(PointVector &points, bool include_window);
-    bool hasOnlineMap(bool include_window) const;
-    bool hasOnlineTree(bool use_window) const;
+    void flattenTree(PointVector &points, bool use_window);
+    bool hasTree(bool use_window) const;
     bool hasFixedOnlineMap() const { return onlineTree_.Root_Node != nullptr; }
     size_t onlineSize(bool include_window);
     bool hasPriorMap() const { return priorTree_.Root_Node != nullptr; }
     int priorSize() { return priorTree_.validnum(); }
     bool loadPriorTree(const std::string &path, PointCloudXYZI &cloud);
 
-    std::vector<PointVector> &onlineNearestPoints() { return onlineNearestPoints_; }
     void setPriorTransform(const Eigen::Matrix3d &rotation,
                            const Eigen::Vector3d &translation);
-    const Eigen::Matrix3d &priorRotation() const { return priorRotation_; }
-    const Eigen::Vector3d &priorTranslation() const { return priorTranslation_; }
 
     bool coveredByPrior(const PointType &point_odom,
                         bool enabled,
@@ -90,7 +88,6 @@ private:
     KD_TREE_PUBLIC<PointType> onlineTree_;
     KD_TREE_PUBLIC<PointType> windowTree_;
     KD_TREE_PUBLIC<PointType> priorTree_;
-    std::vector<PointVector> onlineNearestPoints_;
     std::vector<PointVector> priorNearestPoints_;
     std::vector<uint8_t> onlineSelected_;
     std::vector<uint8_t> priorSelected_;

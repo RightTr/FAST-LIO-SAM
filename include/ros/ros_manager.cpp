@@ -86,6 +86,7 @@ void RosManager::initPublishers(bool enableLocalBA, bool enableGlobalGraph,
     pubLaserCloudFullBody = create_publisher<PointCloud2Msg>("/cloud_registered_body", 5);
     pubLaserCloudEffect = create_publisher<PointCloud2Msg>("/cloud_effected", 5);
     pubLaserCloudMap = create_publisher<PointCloud2Msg>("/Laser_map", 1);
+    pubLaserCloudBAMap = create_publisher<PointCloud2Msg>("/Laser_map_ba", 1);
     pubLaserCloudPriorMap = create_publisher<PointCloud2Msg>("/Laser_map_prior", 1);
     pubGeoMapDropped = create_publisher<PointCloud2Msg>("/geo_map/dropped", 100000);
     pubOdom = create_publisher_qos<OdometryMsg>("/Odometry", reliableQos);
@@ -134,6 +135,7 @@ void RosManager::reset()
     pubLaserCloudFullBody.shutdown();
     pubLaserCloudEffect.shutdown();
     pubLaserCloudMap.shutdown();
+    pubLaserCloudBAMap.shutdown();
     pubLaserCloudPriorMap.shutdown();
     pubGeoMapDropped.shutdown();
     pubCornFeature.shutdown();
@@ -157,6 +159,7 @@ void RosManager::reset()
     pubLaserCloudFullBody.reset();
     pubLaserCloudEffect.reset();
     pubLaserCloudMap.reset();
+    pubLaserCloudBAMap.reset();
     pubLaserCloudPriorMap.reset();
     pubGeoMapDropped.reset();
     pubCornFeature.reset();

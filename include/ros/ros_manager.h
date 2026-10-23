@@ -100,7 +100,8 @@ public:
                    Eigen::Vector3d &translation) const;
 
     Pcl2Publisher pubLaserCloudFull, pubLaserCloudFullBody;
-    Pcl2Publisher pubLaserCloudEffect, pubLaserCloudMap, pubLaserCloudPriorMap;
+    Pcl2Publisher pubLaserCloudEffect, pubLaserCloudMap, pubLaserCloudBAMap;
+    Pcl2Publisher pubLaserCloudPriorMap;
     Pcl2Publisher pubGeoMapDropped, pubCornFeature, pubSurfFeature;
     OdomPublisher pubOdom, pubOdomHighFreq;
     PathPublisher pubPath, pubOdomPath, pubLidarBAPath, pubGnssPath;

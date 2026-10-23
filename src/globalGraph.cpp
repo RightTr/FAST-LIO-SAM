@@ -422,8 +422,8 @@ void GlobalGraph::addOdomFactor(const PointTypePose &odomPose,
     if (cloudKeyPoses3D->points.empty())
     {
         gtsam::Vector6 priorVariance;
-        priorVariance << priorVar, priorVar, priorVar,
-                         priorVar, priorVar, priorVar;
+        priorVariance << priorRotVar, priorRotVar, priorRotVar,
+                         priorPosVar, priorPosVar, priorPosVar;
         noiseModel::Diagonal::shared_ptr priorNoise = 
             noiseModel::Diagonal::Variances(priorVariance);
         const gtsam::Pose3 poseTo = [&]() {
@@ -929,7 +929,7 @@ PointTypePose poseFromIsometry(const Eigen::Isometry3d &transform, double timest
 }
 } // namespace
 
-bool GlobalGraph::processPendingLoopChecks(int &nextKey)
+bool GlobalGraph::processLoopChecks(int &nextKey)
 {
     if (!loopClosureEnableFlag || loopCurNum <= 0)
     {
@@ -1031,11 +1031,6 @@ void GlobalGraph::Run()
     auto nextLoopTime = std::chrono::steady_clock::now();
     const double loopPeriodSec = loopClosureFrequency > 0.0
         ? 1.0 / loopClosureFrequency : 1.0;
-    size_t processedKeyframes = 0;
-    auto globalGraphWindowStart = std::chrono::steady_clock::now();
-    size_t globalGraphOperations = 0;
-    double globalGraphProcessingMs = 0.0;
-
     for (;;)
     {
         BAFramePtr frame;
@@ -1055,16 +1050,11 @@ void GlobalGraph::Run()
             }
             if (frame->keyframe)
             {
-                const auto operationStart = std::chrono::steady_clock::now();
                 KeyframeToGlobal(frame);
                 correctPoses();
                 publishSamMsg();
-                globalGraphProcessingMs += std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - operationStart).count();
-                ++globalGraphOperations;
             }
             ++batchCount;
-            ++processedKeyframes;
         }
 
         performGnssMatching();
@@ -1078,11 +1068,7 @@ void GlobalGraph::Run()
         if (loopClosureEnableFlag &&
             (now >= nextLoopTime || stopping) && loopCurNum > 0)
         {
-            const auto loopStart = std::chrono::steady_clock::now();
-            processPendingLoopChecks(nextLoopKey);
-            globalGraphProcessingMs += std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - loopStart).count();
-            ++globalGraphOperations;
+            processLoopChecks(nextLoopKey);
             nextLoopTime = now + std::chrono::duration_cast<
                 std::chrono::steady_clock::duration>(
                     std::chrono::duration<double>(loopPeriodSec));
@@ -1095,33 +1081,12 @@ void GlobalGraph::Run()
         }
         if (!gtSAMgraph.empty() || hasQueuedLoopFactors || gnssGraphUpdated)
         {
-            const auto operationStart = std::chrono::steady_clock::now();
             poseGraphUpdate();
             publishSamMsg();
-            globalGraphProcessingMs += std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - operationStart).count();
-            ++globalGraphOperations;
         }
 
         if (loopClosureEnableFlag && loopCurNum <= 0)
             loopDone.store(true);
-        if (globalGraphOperations >= 20)
-        {
-            ROS_PRINT_INFO("GlobalGraph average processing: %.2f ms over %zu operations (%zu keyframes)",
-                           globalGraphProcessingMs / globalGraphOperations,
-                           globalGraphOperations, processedKeyframes);
-            globalGraphProcessingMs = 0.0;
-            globalGraphOperations = 0;
-        }
-        if (processedKeyframes >= 100)
-        {
-            const double elapsed_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - globalGraphWindowStart).count();
-            ROS_PRINT_INFO("GlobalGraph throughput: %zu keyframes in %.1f ms", processedKeyframes, elapsed_ms);
-            processedKeyframes = 0;
-            globalGraphWindowStart = std::chrono::steady_clock::now();
-        }
-
         {
             std::lock_guard<std::mutex> lock(mMutexNewKFs);
             stopping = mbFinishRequested;
