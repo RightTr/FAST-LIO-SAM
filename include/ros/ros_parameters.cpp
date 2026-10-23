@@ -1,5 +1,4 @@
 #include "ros/ros_parameters.h"
-#include "utility.h"
 #include "lidarBA.h"
 #include "ros/ros_utils.h"
 #include "preprocess.h"
@@ -141,7 +140,6 @@ void read_mapping_params(Preprocess &preprocess, int &lidarType)
     rosparam_get("mapping/b_acc_cov", b_acc_cov, 0.0001);
     rosparam_get("mapping/point2point", point2point, false);
     rosparam_get("geo_map/enable", geo_map_enable, false);
-    rosparam_get("geo_map/debug", geo_map_debug, false);
     rosparam_get("geo_map/support", geo_support, 0.15);
     rosparam_get("geo_map/plane_dist", geo_plane_dist, 0.05);
     rosparam_get("preprocess/blind", preprocess.blind, 0.01);

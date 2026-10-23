@@ -1,6 +1,5 @@
 // Global graph, GNSS, and loop processing.
 
-#include "utility.h"
 #include "common_utils.h"
 #include "GNSS_Processing.hpp"
 #include "factor/gnssYaw_factor.h"
@@ -128,7 +127,7 @@ void GlobalGraph::Initialize()
     cloudKeyBAPoses6D.clear();
     loopDone.store(!loopClosureEnableFlag);
     gnss_aligned.store(false);
-    RosManager::instance().setEnuMap(
+    ros_manager.setEnuMap(
         Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
     last_fpos.setZero();
     has_fpos = false;
@@ -153,7 +152,7 @@ double GlobalGraph::yawToMap(double yaw) const
     const Eigen::Vector3d heading_enu(std::cos(yaw), std::sin(yaw), 0.0);
     Eigen::Matrix3d R_enu_map;
     Eigen::Vector3d t_enu_map;
-    RosManager::instance().getEnuMap(R_enu_map, t_enu_map);
+    ros_manager.getEnuMap(R_enu_map, t_enu_map);
     const Eigen::Vector3d heading_map = R_enu_map.transpose() * heading_enu;
     return normalizeYaw(std::atan2(heading_map.y(), heading_map.x()));
 }
@@ -431,7 +430,7 @@ void GlobalGraph::addOdomFactor(const PointTypePose &odomPose,
             const gtsam::Pose3 poseOdom = pclPointTogtsamPose3(baPose);
             Eigen::Matrix3d R_map_odom;
             Eigen::Vector3d t_map_odom;
-            RosManager::instance().getMapOdom(
+            ros_manager.getMapOdom(
                 R_map_odom, t_map_odom);
             const Eigen::Matrix3d R_map_body = R_map_odom * poseOdom.rotation().matrix();
             const Eigen::Vector3d t_map_body = R_map_odom *
@@ -547,7 +546,7 @@ void GlobalGraph::performGnssMatching()
         const Eigen::Matrix3d R_map_body = poseRotation(keyPose);
         Eigen::Matrix3d R_enu_map;
         Eigen::Vector3d t_enu_map;
-        RosManager::instance().getEnuMap(
+        ros_manager.getEnuMap(
             R_enu_map, t_enu_map);
         const Eigen::Vector3d p_map_ant = R_enu_map.transpose() *
             (gnssPos.position - t_enu_map);
@@ -667,8 +666,10 @@ void GlobalGraph::KeyframeToGlobal(const BAFramePtr &frame)
     updatePath(pose6);
     poseCovariance=isam->marginalCovariance(latestPoseKey);
 
-    if(keyframe_export_en) {
-        ResultWriter::instance().saveKeyframeCloud(frame->cloud, pose6.time);
+    if (keyframe_export_en)
+    {
+        ResultWriter resultWriter;
+        resultWriter.saveKeyframeCloud(frame->cloud, pose6.time);
     }
 }
 
@@ -738,7 +739,7 @@ void GlobalGraph::correctPoses()
             R_map_odom * Eigen::Vector3d(pose_odom_ref.translation().x(),
                                              pose_odom_ref.translation().y(),
                                              pose_odom_ref.translation().z());
-        RosManager::instance().setMapOdom(R_map_odom, t_map_odom);
+        ros_manager.setMapOdom(R_map_odom, t_map_odom);
     }
 
     graphUpdate = false;
@@ -779,7 +780,7 @@ void GlobalGraph::publishSamMsg()
     }
 
     // publish key poses
-    auto &ros = RosManager::instance();
+    auto &ros = ros_manager;
     publishCloud(ros.pubKeyPoses, keyPosesCloud, stamp, map_frame);
     if (ros_subscription_count(ros.pubGraphPath) != 0)
     {
@@ -907,8 +908,8 @@ void GlobalGraph::visualizeLoopClosure()
 
     markerArray.markers.push_back(markerNode);
     markerArray.markers.push_back(markerEdge);
-    RosManager::instance().publish(
-        RosManager::instance().pubLoopConstraintEdge, markerArray);
+    ros_manager.publish(
+        ros_manager.pubLoopConstraintEdge, markerArray);
 }
 
 namespace
@@ -958,7 +959,7 @@ bool GlobalGraph::processPendingLoopChecks(int &nextKey)
     }
 
     loopDone.store(false);
-    for (int processed = 0; processed < loopCurNum && nextKey <= readyKey; ++processed, ++nextKey)
+    for (int i = 0; i < loopCurNum && nextKey <= readyKey; ++i, ++nextKey)
         performLoopClosure(nextKey, poses6D, clouds);
     loopDone.store(nextKey > readyKey);
     return true;
@@ -1186,7 +1187,7 @@ Eigen::Vector3d GlobalGraph::GetGravityUp()
 }
 
 void GlobalGraph::publishGlobalMap() {
-    auto &ros = RosManager::instance();
+    auto &ros = ros_manager;
     if (ros_subscription_count(ros.pubLaserCloudGlobal) == 0)
         return;
 

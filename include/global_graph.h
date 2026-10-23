@@ -2,7 +2,7 @@
 #define GLOBAL_GRAPH_H
 
 #include "lidarBA.h"
-#include "utility.h"
+#include "ros/ros_utils.h"
 
 #include <Eigen/Core>
 #include <atomic>

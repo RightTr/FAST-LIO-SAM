@@ -1,13 +1,14 @@
 #include "ros/ros_manager.h"
 
 #include "common_utils.h"
-#include "utility.h"
 
 RosManager &RosManager::instance()
 {
     static RosManager manager;
     return manager;
 }
+
+RosManager &ros_manager = RosManager::instance();
 
 void RosManager::updateMapOdom(const Eigen::Matrix3d &R_map_body,
                               const Eigen::Vector3d &t_map_body,
@@ -86,7 +87,7 @@ void RosManager::initPublishers(bool enableLocalBA, bool enableGlobalGraph,
     pubLaserCloudEffect = create_publisher<PointCloud2Msg>("/cloud_effected", 5);
     pubLaserCloudMap = create_publisher<PointCloud2Msg>("/Laser_map", 1);
     pubLaserCloudPriorMap = create_publisher<PointCloud2Msg>("/Laser_map_prior", 1);
-    pubGeoMapDebug = create_publisher<PointCloud2Msg>("/geo_map/dropped", 100000);
+    pubGeoMapDropped = create_publisher<PointCloud2Msg>("/geo_map/dropped", 100000);
     pubOdom = create_publisher_qos<OdometryMsg>("/Odometry", reliableQos);
     pubPath = create_publisher_qos<PathMsg>("/path", reliableQos);
     pubOdomPath = create_publisher_qos<PathMsg>("/odom_path", reliableQos);
@@ -134,7 +135,7 @@ void RosManager::reset()
     pubLaserCloudEffect.shutdown();
     pubLaserCloudMap.shutdown();
     pubLaserCloudPriorMap.shutdown();
-    pubGeoMapDebug.shutdown();
+    pubGeoMapDropped.shutdown();
     pubCornFeature.shutdown();
     pubSurfFeature.shutdown();
     pubOdom.shutdown();
@@ -157,7 +158,7 @@ void RosManager::reset()
     pubLaserCloudEffect.reset();
     pubLaserCloudMap.reset();
     pubLaserCloudPriorMap.reset();
-    pubGeoMapDebug.reset();
+    pubGeoMapDropped.reset();
     pubCornFeature.reset();
     pubSurfFeature.reset();
     pubOdom.reset();

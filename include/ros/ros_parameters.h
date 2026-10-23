@@ -12,7 +12,7 @@ class Preprocess;
 // Runtime configuration shared by ROS parameter loading and mapping modules.
 extern bool sam_enable, path_en, scan_pub_en, dense_pub_en, scan_body_pub_en;
 extern bool feature_pub_en, effect_pub_en, time_sync_en, grav_align, timeRepair;
-extern bool prior_init_en, point2point, geo_map_enable, geo_map_debug;
+extern bool prior_init_en, point2point, geo_map_enable;
 extern int NUM_MAX_ITERATIONS, lidar_type, res_save_interval, feats_down_size;
 extern double time_diff_lidar_to_imu, imu_dt, prior_lidar_cov;
 extern double filter_size_corner_min, filter_size_surf_min, filter_size_map_min;

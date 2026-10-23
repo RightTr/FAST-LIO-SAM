@@ -101,7 +101,7 @@ public:
 
     Pcl2Publisher pubLaserCloudFull, pubLaserCloudFullBody;
     Pcl2Publisher pubLaserCloudEffect, pubLaserCloudMap, pubLaserCloudPriorMap;
-    Pcl2Publisher pubGeoMapDebug, pubCornFeature, pubSurfFeature;
+    Pcl2Publisher pubGeoMapDropped, pubCornFeature, pubSurfFeature;
     OdomPublisher pubOdom, pubOdomHighFreq;
     PathPublisher pubPath, pubOdomPath, pubLidarBAPath, pubGnssPath;
     MarkerArrayPublisher pubBAFrameMarkers;
@@ -130,5 +130,7 @@ private:
     std::shared_ptr<tf2_ros::TransformBroadcaster> broadcaster_;
 #endif
 };
+
+extern RosManager &ros_manager;
 
 #endif

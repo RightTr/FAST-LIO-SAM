@@ -101,15 +101,15 @@ if(USE_ROS1)
   )
 
   add_executable(fastlio_mapping src/laserMapping.cpp 
-    include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp 
-    include/ros/ros_parameters.cpp src/globalGraph.cpp src/lidarBA.cpp include/ros/ros_manager.cpp
+    include/map/ikdtree/ikd_Tree.cpp src/preprocess.cpp
+    include/ros/ros_parameters.cpp src/globalGraph.cpp src/lidarBA.cpp include/map/map.cpp include/map/point_obs.cpp include/ros/ros_manager.cpp
     include/debug/result_writer.cpp
     include/s-graph/floorMap.cpp
     include/scan_context/Scancontext.cpp include/simple_EKF/simple_ekf.cpp)
   target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} gtsam)
   target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
-  add_executable(pcd_to_ikdtree_bin include/ikd-Tree/pcd_to_ikdtree_bin.cpp include/ikd-Tree/ikd_Tree.cpp)
+  add_executable(pcd_to_ikdtree_bin include/map/ikdtree/pcd_to_ikdtree_bin.cpp include/map/ikdtree/ikd_Tree.cpp)
   target_link_libraries(pcd_to_ikdtree_bin ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
   target_include_directories(pcd_to_ikdtree_bin PRIVATE ${PYTHON_INCLUDE_DIRS})
 endif()
@@ -134,11 +134,13 @@ if(USE_ROS2)
   rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
   
   add_executable(fastlio_mapping src/laserMapping.cpp
-    include/ikd-Tree/ikd_Tree.cpp
+    include/map/ikdtree/ikd_Tree.cpp
     src/preprocess.cpp
     include/ros/ros_parameters.cpp
     src/globalGraph.cpp
     src/lidarBA.cpp
+    include/map/map.cpp
+    include/map/point_obs.cpp
     include/ros/ros_manager.cpp
     include/debug/result_writer.cpp
     include/s-graph/floorMap.cpp
@@ -161,7 +163,7 @@ if(USE_ROS2)
   target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} gtsam)
   target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
-  add_executable(pcd_to_ikdtree_bin include/ikd-Tree/pcd_to_ikdtree_bin.cpp include/ikd-Tree/ikd_Tree.cpp)
+  add_executable(pcd_to_ikdtree_bin include/map/ikdtree/pcd_to_ikdtree_bin.cpp include/map/ikdtree/ikd_Tree.cpp)
   target_link_libraries(pcd_to_ikdtree_bin ${PCL_LIBRARIES} ${PYTHON_LIBRARIES})
   target_include_directories(pcd_to_ikdtree_bin PRIVATE ${PYTHON_INCLUDE_DIRS})
   install(

@@ -16,7 +16,6 @@
 #include <Eigen/Geometry>
 
 #include "common_utils.h"
-#include "utility.h"
 #include "ros/ros_utils.h"
 
 #ifdef USE_ROS1

@@ -4,6 +4,7 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <queue>
 #include <fstream>
 #include <csignal>
 #include <cassert>
@@ -15,14 +16,13 @@
 #include <pcl/common/io.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <condition_variable>
 #include <pcl/common/transforms.h>
 #include <pcl/kdtree/kdtree_flann.h>
 #include <pcl_conversions/pcl_conversions.h>
 
 #include "simple_EKF/simple_ekf.hpp"
 #include "preprocess.h"
-#include "posebuffer.h"
+#include "common_utils.h"
 #include "global_graph.h"
 #include "lidarBA.h"
 
@@ -53,7 +53,29 @@ class ImuProcess
   void syncPose(const M3D &rotationDelta, const V3D &gravity)
   {
     acc_s_last = rotationDelta * (acc_s_last - gravity) + gravity;
-    pbuffer.Clear();
+    ClearPoseQueue();
+  }
+  void PushPose(const State &pose)
+  {
+    std::lock_guard<std::mutex> lock(poseQueueMutex_);
+    if (poseQueue_.size() >= 400)
+      poseQueue_.pop();
+    poseQueue_.push(pose);
+  }
+  bool TryPopPose(State &pose)
+  {
+    std::lock_guard<std::mutex> lock(poseQueueMutex_);
+    if (poseQueue_.empty())
+      return false;
+    pose = poseQueue_.front();
+    poseQueue_.pop();
+    return true;
+  }
+  void ClearPoseQueue()
+  {
+    std::lock_guard<std::mutex> lock(poseQueueMutex_);
+    std::queue<State> empty;
+    poseQueue_.swap(empty);
   }
   double accelerationScale() const { return G_m_s2 / mean_acc.norm(); }
 
@@ -62,8 +84,6 @@ class ImuProcess
   void accumulateBAImu(const std::deque<ImuMsgConstPtr> &imu);
   std::vector<ImuSample, Eigen::aligned_allocator<ImuSample>>
   takeBAImuInterval(double frame_time, const ImuMsgConstPtr &right_msg = {});
-
-  void PBufferPop(Pose &pose);
 
   ofstream fout_imu;
   V3D cov_acc;
@@ -74,7 +94,6 @@ class ImuProcess
   V3D cov_bias_acc;
   double first_lidar_time;
   int lidar_type;
-  PoseBuffer pbuffer;
 
  private:
   double gap_handler(double dt);
@@ -102,6 +121,8 @@ class ImuProcess
   bool   imu_need_init_ = true;
 
   std::deque<ImuSample, Eigen::aligned_allocator<ImuSample>> ba_imu_queue_;
+  std::queue<State> poseQueue_;
+  std::mutex poseQueueMutex_;
   ImuSample ba_imu_last_;
   bool ba_imu_last_valid_ = false;
 
@@ -219,7 +240,7 @@ void ImuProcess::Reset()
   init_iter_num     = 1;
   v_imu_.clear();
   IMUpose.clear();
-  pbuffer.Clear();
+  ClearPoseQueue();
   last_imu_.reset(new ImuMsg());
   cur_pcl_un_.reset(new PointCloudXYZI());
   ba_imu_queue_.clear();
@@ -281,11 +302,6 @@ double ImuProcess::gap_handler(double dt)
   }
 
   return dt;
-}
-
-void ImuProcess::PBufferPop(Pose &pose)
-{
-  pose = pbuffer.Pop();
 }
 
 void ImuProcess::IMU_init(const MeasureGroup &meas, SimpleEKF &kf_state, int &N)
@@ -431,7 +447,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, Poi
     imu_state = kf_state.state();
     const V3D grav_vec = kf_state.gravity();
     const Eigen::Quaterniond imu_q(imu_state.rot);
-    Pose pose(imu_state.pos.x(), imu_state.pos.y(), imu_state.pos.z(),
+    State pose(imu_state.pos.x(), imu_state.pos.y(), imu_state.pos.z(),
               imu_q.x(), imu_q.y(), imu_q.z(), imu_q.w(), tail_time);
     pose._vx = imu_state.vel.x();
     pose._vy = imu_state.vel.y();
@@ -453,7 +469,7 @@ void ImuProcess::UndistortPcl(const MeasureGroup &meas, SimpleEKF &kf_state, Poi
     pose._extx = Lidar_T_wrt_IMU.x();
     pose._exty = Lidar_T_wrt_IMU.y();
     pose._extz = Lidar_T_wrt_IMU.z();
-    pbuffer.Push(pose);
+    PushPose(pose);
     angvel_last = angvel_avr - imu_state.bg;
     acc_s_last  = imu_state.rot * (acc_avr - imu_state.ba);
     for(int i=0; i<3; i++)
