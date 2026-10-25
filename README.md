@@ -133,7 +133,7 @@ roslaunch fast_lio_sam mapping_airy.launch
 
 ### Local LiDAR BA
 
-`lidar_ba/enable` enables local BA; `sam_enable` enables global PGO. BA uses IMU preintegration when `lidar_ba/imu_enable` is set and can refine the shared gravity direction with `lidar_ba/gravity_optimize`. `lidar_ba/feedback_to_ekf` optionally feeds BA results back to the frontend.
+`lidar_ba/enable` enables local BA; `sam_enable` enables global PGO. BA uses IMU preintegration when `lidar_ba/imu_enable` is set. `lidar_ba/feedback_to_ekf` optionally feeds BA results back to the frontend.
 
 #### Global Graph Optimization
 

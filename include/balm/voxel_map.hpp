@@ -500,13 +500,10 @@ public:
                        double bg_cov, double ba_cov,
                        Eigen::MatrixXd *Hess, Eigen::VectorXd *JacT) const
   {
-    const int gravity_offset = 15*win_size;
-    const int dimension = gravity_offset + 2;
+    const int dimension = 15*win_size;
     double cost = 0.0;
-    Eigen::Matrix<double, 3, 2> D_up;
-    const Eigen::Vector3d up = gravity_up.point3(D_up);
+    const Eigen::Vector3d up = gravity_up.point3();
     const Eigen::Vector3d gravity = -gravity_magnitude * up;
-    const Eigen::Matrix<double, 3, 2> D_gravity = -gravity_magnitude * D_up;
 
     for(size_t i=0; i<preintegrations.size() && i+1<poses.size(); ++i)
     {
@@ -540,16 +537,6 @@ public:
       const Eigen::Matrix<double,9,1> xi = nav_i.correctPIM(
           corrected, pim.deltaTij(), gravity, pim.p().omegaCoriolis,
           pim.p().use2ndOrderCoriolis);
-      Eigen::Matrix<double,9,9> D_predict_xi, D_error_predict;
-      const gtsam::NavState predicted = nav_i.retract(xi, boost::none, D_predict_xi);
-      nav_j.localCoordinates(predicted, boost::none, D_error_predict);
-      Eigen::Matrix<double,9,2> D_xi_gravity = Eigen::Matrix<double,9,2>::Zero();
-      D_xi_gravity.block<3,2>(3,0) =
-          0.5 * pim.deltaTij() * pim.deltaTij() * poses[i].R.transpose() * D_gravity;
-      D_xi_gravity.block<3,2>(6,0) =
-          pim.deltaTij() * poses[i].R.transpose() * D_gravity;
-      J.block<9,2>(0,gravity_offset) = D_error_predict * D_predict_xi * D_xi_gravity;
-
       const Eigen::Matrix<double,9,9> information =
           pim.preintMeasCov().ldlt().solve(Eigen::Matrix<double,9,9>::Identity());
       cost += 0.5 * residual.dot(information * residual);
@@ -581,37 +568,16 @@ public:
     return cost;
   }
 
-  double add_gravity_prior(const gtsam::Unit3 &gravity_up,
-                           const gtsam::Unit3 &gravity_prior,
-                           double sigma,
-                           Eigen::MatrixXd *Hess, Eigen::VectorXd *JacT) const
-  {
-    Eigen::Matrix2d H_current;
-    const Eigen::Vector2d residual = gravity_prior.errorVector(
-        gravity_up, boost::none, H_current);
-    const double weight = 1.0/(sigma*sigma);
-    if(Hess && JacT)
-    {
-      const int offset = 15*win_size;
-      Hess->block<2,2>(offset,offset).noalias() +=
-          weight * H_current.transpose()*H_current;
-      JacT->segment<2>(offset).noalias() +=
-          weight * H_current.transpose()*residual;
-    }
-    return 0.5*weight*residual.squaredNorm();
-  }
-
   double joint_linearize(std::vector<BAState> &poses,
                              const std::vector<InertialState> &states,
                              LidarFactor &voxhess,
                              const std::vector<ImuPreintegration> &preintegrations,
                              const gtsam::Unit3 &gravity_up,
-                             const gtsam::Unit3 &gravity_prior,
-                             double gravity_magnitude, double gravity_sigma,
+                             double gravity_magnitude,
                              double bg_cov, double ba_cov,
                              Eigen::MatrixXd &Hess, Eigen::VectorXd &JacT)
   {
-    const int dimension=15*win_size+2;
+    const int dimension=15*win_size;
     Hess=Eigen::MatrixXd::Zero(dimension,dimension);
     JacT=Eigen::VectorXd::Zero(dimension);
     Eigen::MatrixXd lidar_hessian(6*win_size,6*win_size);
@@ -626,9 +592,7 @@ public:
     }
     const double imu_cost=add_imu_terms(poses,states,preintegrations,gravity_up,
                                         gravity_magnitude,bg_cov,ba_cov,&Hess,&JacT);
-    const double gravity_cost=add_gravity_prior(gravity_up,gravity_prior,gravity_sigma,
-                                                &Hess,&JacT);
-    return lidar_cost+imu_cost+gravity_cost;
+    return lidar_cost+imu_cost;
   }
 
   double joint_cost(std::vector<BAState> &poses,
@@ -636,31 +600,27 @@ public:
                         LidarFactor &voxhess,
                         const std::vector<ImuPreintegration> &preintegrations,
                         const gtsam::Unit3 &gravity_up,
-                        const gtsam::Unit3 &gravity_prior,
-                        double gravity_magnitude, double gravity_sigma,
+                        double gravity_magnitude,
                         double bg_cov, double ba_cov)
   {
     const double lidar=lidar_cost(poses,voxhess);
     const double imu=add_imu_terms(poses,states,preintegrations,gravity_up,
                                    gravity_magnitude,bg_cov,ba_cov,nullptr,nullptr);
-    const double gravity=add_gravity_prior(gravity_up,gravity_prior,gravity_sigma,
-                                           nullptr,nullptr);
-    return lidar+imu+gravity;
+    return lidar+imu;
   }
 
   bool damping_iter_joint(std::vector<BAState> &poses,
                           std::vector<InertialState> &states,
-                          gtsam::Unit3 &gravity_up,
-                          const gtsam::Unit3 &gravity_prior,
+                          const gtsam::Unit3 &gravity_up,
                           LidarFactor &voxhess,
                           const std::vector<ImuPreintegration> &preintegrations,
-                          double gravity_magnitude, double gravity_sigma,
-                          double bg_cov, double ba_cov, bool gravity_optimize,
+                          double gravity_magnitude,
+                          double bg_cov, double ba_cov,
                           int max_iter=5)
   {
     win_size=voxhess.win_size;
     jac_leng=6*win_size;
-    const int dimension=15*win_size+2;
+    const int dimension=15*win_size;
     double u=0.01,v=2.0;
     bool accepted=false;
     Eigen::MatrixXd Hess(dimension,dimension),D(dimension,dimension);
@@ -669,14 +629,9 @@ public:
     for(int iter=0;iter<max_iter;++iter)
     {
       current=joint_linearize(poses,states,voxhess,preintegrations,gravity_up,
-          gravity_prior,gravity_magnitude,gravity_sigma,bg_cov,ba_cov,Hess,gradient);
+          gravity_magnitude,bg_cov,ba_cov,Hess,gradient);
       Hess.topRows(15).setZero(); Hess.leftCols(15).setZero();
       Hess.block(0,0,15,15).setIdentity(); gradient.head(15).setZero();
-      if(!gravity_optimize)
-      {
-        Hess.bottomRows(2).setZero(); Hess.rightCols(2).setZero();
-        Hess.bottomRightCorner(2,2).setIdentity(); gradient.tail(2).setZero();
-      }
       D.setZero(); D.diagonal()=Hess.diagonal();
       dx=(Hess+u*D).ldlt().solve(-gradient);
 
@@ -691,17 +646,14 @@ public:
         trial_states[i].bg=states[i].bg+dx.segment<3>(o+9);
         trial_states[i].ba=states[i].ba+dx.segment<3>(o+12);
       }
-      const gtsam::Unit3 trial_gravity=gravity_optimize
-          ? gravity_up.retract(dx.tail<2>()) : gravity_up;
       const double trial=joint_cost(trial_poses,trial_states,voxhess,
-          preintegrations,trial_gravity,gravity_prior,gravity_magnitude,
-          gravity_sigma,bg_cov,ba_cov);
+          preintegrations,gravity_up,gravity_magnitude,bg_cov,ba_cov);
       const double predicted=0.5*dx.dot(u*D*dx-gradient);
       const double reduction=current-trial;
       if(reduction>0.0)
       {
         poses=std::move(trial_poses); states=std::move(trial_states);
-        gravity_up=trial_gravity; accepted=true;
+        accepted=true;
         double ratio=reduction/predicted;
         double scale=1.0-std::pow(2.0*ratio-1.0,3);
         u*=std::max(1.0/3.0,scale); v=2.0;

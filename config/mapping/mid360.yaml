@@ -123,8 +123,6 @@ lidar_ba:
     max_iterations: 5
     voxel_size: 1.0
     point_leaf_size: 0.2
-    gravity_optimize: false
-    gravity_prior_sigma_deg: 3.0
     max_layer: 2
     min_points: 20
     thread_num: 2

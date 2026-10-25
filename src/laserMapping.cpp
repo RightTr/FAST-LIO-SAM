@@ -1512,7 +1512,6 @@ int main(int argc, char** argv)
 
     read_lidar_ba_params();
     lidarBAConfig.imu_enable = false;
-    lidarBAConfig.gravity_optimize = false;
     lidarBAConfig.gyr_cov = gyr_cov;
     lidarBAConfig.acc_cov = acc_cov;
     lidarBAConfig.bg_cov = b_gyr_cov;

@@ -48,12 +48,10 @@ struct LidarBAConfig {
     std::vector<double> plane_eigenvalue_threshold{0.25, 0.25, 0.25};
     std::vector<double> min_layer_points{5.0, 5.0, 5.0};
     bool imu_enable = true;
-    bool gravity_optimize = false;
     double gyr_cov = 0.1;
     double acc_cov = 0.1;
     double bg_cov = 1e-4;
     double ba_cov = 1e-4;
-    double gravity_prior_sigma_deg = 10.0;
 };
 
 extern LidarBAConfig lidarBAConfig;

@@ -1,5 +1,6 @@
 #include "lidarBA.h"
 #include "balm/voxel_map.hpp"
+#include "common_lib.h"
 #include "ros/ros_utils.h"
 
 #include <Eigen/Cholesky>
@@ -70,7 +71,8 @@ Eigen::Isometry3d toIsometry(const BAState &state) {
 
 struct LidarBA::Impl {
     explicit Impl(const LidarBAConfig &cfg, const Eigen::Vector3d &gravity)
-        : config(cfg), gravityOdom(gravity) {
+        : config(cfg), gravityUp(-gravity),
+          factor(std::max(2, cfg.window_size)) {
         config.window_size=std::max(2, config.window_size);
         config.thread_num=std::max(1, config.thread_num);
         config.max_iterations=std::max(1,config.max_iterations);
@@ -92,13 +94,11 @@ struct LidarBA::Impl {
         lidar_ba::min_point.setConstant(config.min_points);
         for (size_t i=0; i<config.min_layer_points.size() && i<4; ++i)
             lidar_ba::min_point[i]=static_cast<int>(config.min_layer_points[i]);
-        window_size=config.window_size;
-        slots.resize(window_size);
-        for (int i=0;i<window_size;++i) slots[i]=i;
+        slots.resize(config.window_size);
+        for (int i=0;i<config.window_size;++i) slots[i]=i;
         lidar_ba::mp=slots.data();
         windows.resize(config.thread_num);
-        factor=LidarFactor(window_size);
-        imuParams=gtsam::PreintegrationParams::MakeSharedU(9.81);
+        imuParams=gtsam::PreintegrationParams::MakeSharedU(G_m_s2);
         imuParams->gyroscopeCovariance=Eigen::Matrix3d::Identity()*config.gyr_cov;
         imuParams->accelerometerCovariance=Eigen::Matrix3d::Identity()*config.acc_cov;
         imuParams->integrationCovariance=Eigen::Matrix3d::Identity()*1e-8;
@@ -131,11 +131,6 @@ struct LidarBA::Impl {
         BAState state; state.R=f.odom_pose.linear(); state.p=f.odom_pose.translation();
         InertialState inertial;
         inertial.v=f.velocity; inertial.bg=f.bg; inertial.ba=f.ba;
-        if(!gravityInitialized)
-        {
-            gravityUp=gtsam::Unit3(-gravityOdom);
-            gravityInitialized=true;
-        }
         if(!poses.empty() && config.imu_enable)
         {
             const gtsam::imuBias::ConstantBias biasHat(
@@ -172,11 +167,12 @@ struct LidarBA::Impl {
         const int idx=static_cast<int>(poses.size())-1;
         LBA_PLV(3) world(points->size());
         for (size_t i=0;i<points->size();++i) world[i]=state.R*(*points)[i].pnt+state.p;
-        if (!world.empty()) cut_voxel_multi(map,clouds.back(),idx,slideMap,window_size,world,windows);
+        if (!world.empty()) cut_voxel_multi(
+            map, clouds.back(), idx, slideMap, config.window_size, world, windows);
         recutMap(slideMap,static_cast<int>(poses.size()),poses,factor,windows);
         for (size_t i = 0; i < frames.size() && i < poses.size(); ++i)
             frames[i]->optimized_pose = toIsometry(poses[i]);
-        if (static_cast<int>(poses.size()) < window_size) {
+        if (static_cast<int>(poses.size()) < config.window_size) {
             return false;
         }
 
@@ -186,13 +182,12 @@ struct LidarBA::Impl {
             Eigen::MatrixXd hessian; std::vector<double> residuals;
             const std::vector<BAState> previous_poses=poses;
             const std::vector<InertialState> previous_imu_states=imuStates;
-            const gtsam::Unit3 previous_gravity=gravityUp;
             if(config.imu_enable)
             {
                 optimized=optimizer.damping_iter_joint(
-                    poses,imuStates,gravityUp,gravityPrior,factor,preintegrations,
-                    gravityMagnitude,config.gravity_prior_sigma_deg*M_PI/180.0,
-                    config.bg_cov,config.ba_cov,config.gravity_optimize,
+                    poses,imuStates,gravityUp,factor,preintegrations,
+                    G_m_s2,
+                    config.bg_cov,config.ba_cov,
                     config.max_iterations);
             }
             else
@@ -203,7 +198,6 @@ struct LidarBA::Impl {
             if (!optimized)
             {
                 poses=previous_poses; imuStates=previous_imu_states;
-                gravityUp=previous_gravity;
             }
         }
         if (optimized)
@@ -211,12 +205,15 @@ struct LidarBA::Impl {
         for (size_t i = 0; i < frames.size() && i < poses.size(); ++i)
             frames[i]->optimized_pose = toIsometry(poses[i]);
         finalize(frames.front(), poses.front(), finalizedFrames);
-        marginalize(slideMap,window_size,poses,factor,windows[0]);
-        for (int &slot: slots) { ++slot; if(slot>=window_size) slot=0; }
+        marginalize(slideMap,config.window_size,poses,factor,windows[0]);
+        for (int &slot: slots) {
+            ++slot;
+            if (slot >= config.window_size) slot = 0;
+        }
         poses.erase(poses.begin()); imuStates.erase(imuStates.begin());
         clouds.erase(clouds.begin()); frames.erase(frames.begin());
         if(!preintegrations.empty()) preintegrations.erase(preintegrations.begin());
-        factor=LidarFactor(window_size);
+        factor=LidarFactor(config.window_size);
         return optimized;
     }
     std::vector<BAFramePtr> Finish() {
@@ -231,19 +228,17 @@ struct LidarBA::Impl {
         return finalizedFrames;
     }
 
-    LidarBAConfig config; int window_size=10; double gravityMagnitude=9.81; std::vector<int> slots;
+    LidarBAConfig config;
+    std::vector<int> slots;
     std::vector<BAState> poses;
     std::vector<InertialState> imuStates;
     std::vector<ImuPreintegration> preintegrations;
     std::vector<PVecPtr> clouds; std::vector<BAFramePtr> frames;
     boost::shared_ptr<gtsam::PreintegrationParams> imuParams;
     gtsam::Unit3 gravityUp{Eigen::Vector3d::UnitZ()};
-    gtsam::Unit3 gravityPrior{Eigen::Vector3d::UnitZ()};
-    bool gravityInitialized=false;
-    Eigen::Vector3d gravityOdom;
     std::unordered_map<lidar_ba::VOXEL_LOC,lidar_ba::OctoTree*> map, slideMap;
     std::vector<std::vector<lidar_ba::SlideWindow*>> windows;
-    lidar_ba::LidarFactor factor{10};
+    lidar_ba::LidarFactor factor;
     bool finished = false;
 };
 

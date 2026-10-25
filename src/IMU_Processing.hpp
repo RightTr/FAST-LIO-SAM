@@ -292,15 +292,8 @@ void ImuProcess::set_grav_align(bool enabled)
 
 double ImuProcess::gap_handler(double dt)
 {
-  if (dt < 0.0)
-  {
-    return -1.0;
-  }
-  if (dt > imu_gap_)
-  {
-    return -1.0;
-  }
-
+  if (dt < 0.0) return -1.0;
+  if (dt > imu_gap_) return -1.0;
   return dt;
 }
 

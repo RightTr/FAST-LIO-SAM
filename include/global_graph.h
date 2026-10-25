@@ -140,8 +140,8 @@ private:
     std::unordered_set<int> loopUsedKeys;
     std::vector<std::pair<int, int>> loopEdges;
     std::deque<LoopFactor> loopQueue;
-    Eigen::Vector3d last_fpos = Eigen::Vector3d::Zero();
-    bool has_fpos = false;
+    Eigen::Vector3d lastGnssPosition = Eigen::Vector3d::Zero();
+    bool hasGnssPosition = false;
 
     mutable std::mutex mMutexNewKFs;
     std::condition_variable mNewKfCV;

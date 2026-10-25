@@ -220,9 +220,6 @@ void read_lidar_ba_params()
     rosparam_get("lidar_ba/plane_eigenvalue_threshold", lidarBAConfig.plane_eigenvalue_threshold, std::vector<double>{0.25, 0.25, 0.25});
     rosparam_get("lidar_ba/min_layer_points", lidarBAConfig.min_layer_points, std::vector<double>{5.0, 5.0, 5.0});
     rosparam_get("lidar_ba/imu_enable", lidarBAConfig.imu_enable, true);
-    rosparam_get("lidar_ba/gravity_optimize", lidarBAConfig.gravity_optimize, false);
-    rosparam_get("lidar_ba/gravity_prior_sigma_deg",
-                 lidarBAConfig.gravity_prior_sigma_deg, 10.0);
 }
 
 void read_sgraph_params()

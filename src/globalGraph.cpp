@@ -129,8 +129,8 @@ void GlobalGraph::Initialize()
     gnss_aligned.store(false);
     ros_manager.setEnuMap(
         Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
-    last_fpos.setZero();
-    has_fpos = false;
+    lastGnssPosition.setZero();
+    hasGnssPosition = false;
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.1;
@@ -551,10 +551,10 @@ void GlobalGraph::performGnssMatching()
         const Eigen::Vector3d p_map_ant = R_enu_map.transpose() *
             (gnssPos.position - t_enu_map);
         Eigen::Vector3d gnssPosition = p_map_ant - R_map_body * p_gnss->leverArm;
-        const Eigen::Vector3d positionDelta = gnssPosition - last_fpos;
+        const Eigen::Vector3d positionDelta = gnssPosition - lastGnssPosition;
         const double positionDistance = useGnssElevation
             ? positionDelta.norm() : positionDelta.head<2>().norm();
-        if (!has_fpos || positionDistance >= gpsFactorMinDis)
+        if (!hasGnssPosition || positionDistance >= gpsFactorMinDis)
         {
             if (useGnssElevation)
             {
@@ -576,8 +576,8 @@ void GlobalGraph::performGnssMatching()
                 gnssGraphUpdated = true;
             }
 
-            last_fpos = gnssPosition;
-            has_fpos = true;
+            lastGnssPosition = gnssPosition;
+            hasGnssPosition = true;
         }
     }
 
