@@ -944,16 +944,23 @@ void fillOdometryCovariance(OdomMsg& odom_msg, const CovT& P)
 void publishGnssPath(const GnssPositionData &pos)
 {
     if (!gnssPathVis || !gnss_aligned.load()) return;
+
+    Eigen::Matrix3d R_enu_map;
+    Eigen::Vector3d t_enu_map;
+    ros_manager.getEnuMap(R_enu_map, t_enu_map);
+    const Eigen::Vector3d position_map =
+        R_enu_map.transpose() * (pos.position - t_enu_map);
+
     PoseStampedMsg gnss_pose;
     gnss_pose.header.stamp = get_ros_time(pos.time);
-    gnss_pose.header.frame_id = "enu";
-    gnss_pose.pose.position.x = pos.position.x();
-    gnss_pose.pose.position.y = pos.position.y();
-    gnss_pose.pose.position.z = pos.position.z();
+    gnss_pose.header.frame_id = map_frame;
+    gnss_pose.pose.position.x = position_map.x();
+    gnss_pose.pose.position.y = position_map.y();
+    gnss_pose.pose.position.z = position_map.z();
     gnss_pose.pose.orientation.w = 1.0;
 
     gnssPath.header.stamp = gnss_pose.header.stamp;
-    gnssPath.header.frame_id = "enu";
+    gnssPath.header.frame_id = map_frame;
     gnssPath.poses.push_back(gnss_pose);
     ros_manager.publish(ros_manager.pubGnssPath,
                                    gnssPath);
@@ -1516,11 +1523,8 @@ int main(int argc, char** argv)
     lidarBAConfig.acc_cov = acc_cov;
     lidarBAConfig.bg_cov = b_gyr_cov;
     lidarBAConfig.ba_cov = b_acc_cov;
-    const bool keyframe_en = sam_enable || lidarBAConfig.enable;
-    if (keyframe_en) {
-        read_liosam_params();
-    }
     if (sam_enable) {
+        read_liosam_params();
         read_sgraph_params();
     }
     read_gnss_params();
@@ -1724,7 +1728,7 @@ int main(int argc, char** argv)
                         baPose, baFrames);
                     baFrameProcessed = true;
                 }
-                else if (keyframe_en && mapManager.hasFixedOnlineMap())
+                else if (sam_enable && mapManager.hasFixedOnlineMap())
                 {
                     getCurrPose(state_point);
                     const bool keyFrame = sam_enable && isKeyframe();
@@ -1799,7 +1803,7 @@ int main(int argc, char** argv)
             }
 
             bool keyFrame = false;
-            if (keyframe_en)
+            if (sam_enable)
             {
                 getCurrPose(state_point);
                 if (sam_enable)

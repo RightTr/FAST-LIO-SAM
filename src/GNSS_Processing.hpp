@@ -101,11 +101,13 @@ class GnssProcess
   {
     const auto &q = msg->pose.pose.orientation;
     const double stamp = get_ros_time_sec(msg->header.stamp);
-    const double rawYaw = quaternionToRPY(q.w, q.x, q.y, q.z).z();
+    // The RTK driver already publishes ROS ENU yaw in the Odometry quaternion.
+    // Only remove the configured antenna-to-body mounting offset here.
+    const double enuYaw = quaternionToRPY(q.w, q.x, q.y, q.z).z();
 
     GnssYawData data;
     data.time = stamp;
-    data.yaw = normalizeYaw(M_PI * 0.5 - rawYaw - headingOffset);
+    data.yaw = normalizeYaw(enuYaw - headingOffset);
 
     std::lock_guard<std::mutex> lock(gnssMutex);
     const auto yawIt = std::lower_bound(

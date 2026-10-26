@@ -34,7 +34,6 @@ int loopCurNum;
 int loopPreNum;
 
 float globalMapVisualizationSearchRadius;
-float globalMapVisualizationPoseDensity;
 float globalMapVisualizationLeafSize;
 float mappingICPSize;
 int ikdtreeSearchNeighborNum;
@@ -194,7 +193,6 @@ void read_liosam_params() {
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);
-    rosparam_get("lio_sam/globalMapVisualizationPoseDensity", globalMapVisualizationPoseDensity, 10.0f);
     rosparam_get("lio_sam/globalMapVisualizationLeafSize", globalMapVisualizationLeafSize, 1.0f);
 
     rosparam_get("lio_sam/mappingICPSize", mappingICPSize, 0.2f);

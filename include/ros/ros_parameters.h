@@ -33,7 +33,7 @@ extern float loopClosureFrequency, historyKeyframeSearchRadius;
 extern float historyKeyframeSearchTimeDiff, historyKeyframeFitnessScore, icpMaxCorrDistance;
 extern int surroundingKeyframeSize, historyKeyframeSearchNum, loopCurNum, loopPreNum;
 extern double priorRotVar, priorPosVar, odomRotVar, odomPosVar, loopRotVar, loopPosVar;
-extern float globalMapVisualizationSearchRadius, globalMapVisualizationPoseDensity;
+extern float globalMapVisualizationSearchRadius;
 extern float globalMapVisualizationLeafSize, mappingICPSize;
 extern int ikdtreeSearchNeighborNum;
 extern bool keyframe_export_en, keyframe_global_pcd_en, sceneEnableFlag;

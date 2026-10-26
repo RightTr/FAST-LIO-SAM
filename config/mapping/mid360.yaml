@@ -93,7 +93,6 @@ lio_sam:
 
     # Visualization
     globalMapVisualizationSearchRadius: 1000.0    # meters, global map visualization radius
-    globalMapVisualizationPoseDensity: 10.0       # meters, global map visualization keyframe density
     globalMapVisualizationLeafSize: 0.05           # meters, global map visualization cloud density
 
     keyframe_export_en: false                      # export each keyframe as a full-resolution PCD

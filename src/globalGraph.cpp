@@ -1156,63 +1156,36 @@ void GlobalGraph::publishGlobalMap() {
     if (ros_subscription_count(ros.pubLaserCloudGlobal) == 0)
         return;
 
-    pcl::PointCloud<PointTypeIndex>::Ptr keyPoses3D(new pcl::PointCloud<PointTypeIndex>());
     std::vector<PointTypePose> keyPoses6D;
     std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> keyClouds;
     {
         std::lock_guard<std::mutex> lock(mtxKeyframe);
-        if (cloudKeyPoses3D == nullptr || cloudKeyPoses6D == nullptr || cloudKeyOdomPoses6D == nullptr)
+        if (cloudKeyPoses3D == nullptr || cloudKeyPoses6D == nullptr)
             return;
         if (cloudKeyPoses3D->points.empty())
             return;
-        *keyPoses3D = *cloudKeyPoses3D;
         keyPoses6D.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
         keyClouds = featCloudKeyFrames;
     }
 
-    if (keyPoses3D->empty() || keyPoses6D.empty() || keyClouds.empty())
+    if (keyPoses6D.empty() || keyClouds.empty())
         return;
 
     const auto stamp = get_ros_time(keyPoses6D.back().time);
-    const PointTypeIndex &currentPose = keyPoses3D->back();
-    pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyPoses(new pcl::PointCloud<PointTypeIndex>());
-    pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyPosesDS(new pcl::PointCloud<PointTypeIndex>());
     pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyFrames(new pcl::PointCloud<PointTypeIndex>());
     pcl::PointCloud<PointTypeIndex>::Ptr globalMapKeyFramesDS(new pcl::PointCloud<PointTypeIndex>());
 
-    for (const auto &pose : keyPoses3D->points)
+    const size_t keyframeCount = std::min(keyPoses6D.size(), keyClouds.size());
+    const PointTypePose &currentPose = keyPoses6D[keyframeCount - 1];
+    for (size_t key = 0; key < keyframeCount; ++key)
     {
-        if (pointDistance(pose, currentPose) > globalMapVisualizationSearchRadius)
+        const PointTypePose &pose = keyPoses6D[key];
+        const Eigen::Vector3d positionDelta(
+            pose.x - currentPose.x, pose.y - currentPose.y, pose.z - currentPose.z);
+        if (positionDelta.norm() > globalMapVisualizationSearchRadius)
             continue;
-        globalMapKeyPoses->push_back(pose);
-    }
-
-    pcl::VoxelGrid<PointTypeIndex> downSizeFilterGlobalMapKeyPoses; // for global map visualization
-    downSizeFilterGlobalMapKeyPoses.setLeafSize(globalMapVisualizationPoseDensity, globalMapVisualizationPoseDensity, globalMapVisualizationPoseDensity); // for global map visualization
-    downSizeFilterGlobalMapKeyPoses.setInputCloud(globalMapKeyPoses);
-    downSizeFilterGlobalMapKeyPoses.filter(*globalMapKeyPosesDS);
-
-    for (auto &pt : globalMapKeyPosesDS->points)
-    {
-        float minDist = std::numeric_limits<float>::max();
-        int key = -1;
-        for (const auto &pose : globalMapKeyPoses->points)
-        {
-            const float dist = pointDistance(pt, pose);
-            if (dist < minDist)
-            {
-                minDist = dist;
-                key = static_cast<int>(pose.intensity);
-            }
-        }
-
-        if (key < 0 ||
-            key >= static_cast<int>(keyPoses6D.size()) ||
-            key >= static_cast<int>(keyClouds.size()))
-            continue;
-
-        pt.intensity = key;
-        *globalMapKeyFrames += *transformPointCloud(keyClouds[key], &keyPoses6D[key]);
+        if (keyClouds[key])
+            *globalMapKeyFrames += *transformPointCloud(keyClouds[key], &pose);
     }
 
     pcl::VoxelGrid<PointTypeIndex> downSizeFilterGlobalMapKeyFrames; // for global map visualization
