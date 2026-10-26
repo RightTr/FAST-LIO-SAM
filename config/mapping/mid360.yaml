@@ -16,14 +16,14 @@ gnss:
     topic: "handsfree/rtk/gnss"
     heading_topic: "handsfree/rtk/heading"
     gnssPathVis: true
-    gnssEnableFlag: true
+    gnssEnableFlag: false
     gpsFactorMinDis: 5.0
     gnss_dt: 0.2
     extrinsic_T: [0.0, 0.165, 0.0]
     extrinsic_R: [1.0, 0.0, 0.0,
                   0.0, 1.0, 0.0,
                   0.0, 0.0, 1.0]
-    heading_offset_deg: 90.0
+    heading_offset_deg: 180.0
     useYawFactor: false
     posXYVar: 0.25
     posZVar: 100000.0

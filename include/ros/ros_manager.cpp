@@ -71,6 +71,25 @@ void RosManager::getEnuMap(Eigen::Matrix3d &rotation,
     translation = t_enu_map_;
 }
 
+void RosManager::initializeEnuMap(const Eigen::Vector3d &gnssPosition,
+                                  double gnssYaw,
+                                  const Eigen::Matrix3d &R_map_body,
+                                  const Eigen::Vector3d &t_map_body,
+                                  const Eigen::Vector3d &leverArm,
+                                  const TimeType &stamp)
+{
+    const double mapYaw = std::atan2(R_map_body(1, 0), R_map_body(0, 0));
+    const double yawOffset = normalizeYaw(gnssYaw - mapYaw);
+    const Eigen::Matrix3d R_enu_map = Eigen::AngleAxisd(
+        yawOffset, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    const Eigen::Vector3d antenna_map = t_map_body + R_map_body * leverArm;
+    const Eigen::Vector3d t_enu_map = gnssPosition - R_enu_map * antenna_map;
+
+    setEnuMap(R_enu_map, t_enu_map);
+    gnss_aligned.store(true);
+    publishEnuToMapTf(stamp);
+}
+
 void RosManager::initPublishers(bool enableLocalBA, bool enableGlobalGraph,
                                 bool enableGnssPath)
 {

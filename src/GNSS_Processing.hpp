@@ -70,6 +70,11 @@ class GnssProcess
     }
     const double stamp = get_ros_time_sec(fix.header.stamp);
 
+    const Eigen::Matrix3d covariance = covarianceFromMsg(fix);
+    if ((covariance.diagonal().array() <= 0.0).any()) {
+      return false;
+    }
+
     std::lock_guard<std::mutex> lock(gnssMutex);
     if (!originReady_) {
       originEcef_ = geodeticToEcef(fix.latitude, fix.longitude, fix.altitude);
@@ -80,12 +85,7 @@ class GnssProcess
     const Eigen::Vector3d ecef = geodeticToEcef(fix.latitude, fix.longitude, fix.altitude);
     data.time = stamp;
     data.position = originRotation_ * (ecef - originEcef_);
-    data.covariance = covarianceFromMsg(fix);
-
-    if ((data.covariance.diagonal().array() <= 0.0).any())
-    {
-      return false;
-    }
+    data.covariance = covariance;
 
     const auto posIt = std::lower_bound(
         posBuffer.begin(), posBuffer.end(), stamp,
@@ -140,6 +140,51 @@ class GnssProcess
       } else {
         yawBuffer.pop_front();
       }
+    }
+
+    return false;
+  }
+
+  bool syncGnssByTimestamp(
+      const std::vector<double> &referenceTimes,
+      GnssPositionData &posOut, GnssYawData &yawOut, int &referenceIndexOut)
+  {
+    std::lock_guard<std::mutex> lock(gnssMutex);
+
+    while (!posBuffer.empty() && !yawBuffer.empty()) {
+      const double pairDt = posBuffer.front().time - yawBuffer.front().time;
+      if (std::abs(pairDt) > 0.1) {
+        if (pairDt < 0.0)
+          posBuffer.pop_front();
+        else
+          yawBuffer.pop_front();
+        continue;
+      }
+
+      const double stamp = posBuffer.front().time;
+      if (referenceTimes.empty() || stamp > referenceTimes.back())
+        return false;
+
+      int referenceIndex = -1;
+      double timeDiff = 0.0;
+      findNearestByTime(
+          referenceTimes, stamp, referenceIndex, timeDiff,
+          [](double time) { return time; });
+      if (timeDiff > gnss_dt)
+        referenceIndex = -1;
+
+      if (referenceIndex < 0) {
+        posBuffer.pop_front();
+        yawBuffer.pop_front();
+        continue;
+      }
+
+      posOut = posBuffer.front();
+      yawOut = yawBuffer.front();
+      referenceIndexOut = referenceIndex;
+      posBuffer.pop_front();
+      yawBuffer.pop_front();
+      return true;
     }
 
     return false;

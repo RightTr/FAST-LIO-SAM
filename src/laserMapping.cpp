@@ -962,8 +962,7 @@ void publishGnssPath(const GnssPositionData &pos)
     gnssPath.header.stamp = gnss_pose.header.stamp;
     gnssPath.header.frame_id = map_frame;
     gnssPath.poses.push_back(gnss_pose);
-    ros_manager.publish(ros_manager.pubGnssPath,
-                                   gnssPath);
+    ros_manager.publish(ros_manager.pubGnssPath, gnssPath);
 }
 
 void publishGnssLinkTf()
@@ -1001,16 +1000,9 @@ bool initGnssMap(double lidar_stamp_sec)
     Eigen::Vector3d t_map_body;
     composeMapPose(state_point.rot, state_point.pos, R_map_body, t_map_body);
 
-    const double map_yaw = std::atan2(R_map_body(1, 0), R_map_body(0, 0));
-    const double dyaw = normalizeYaw(heading.yaw - map_yaw);
-    const Eigen::Matrix3d R_enu_map_local =
-        Eigen::AngleAxisd(dyaw, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-    const Eigen::Vector3d p_map_ant = t_map_body + R_map_body * p_gnss->leverArm;
-    const Eigen::Vector3d t_enu_map_local = gnss_pos.position - R_enu_map_local * p_map_ant;
-    ros_manager.setEnuMap(R_enu_map_local, t_enu_map_local);
-
-    gnss_aligned.store(true);
-    ros_manager.publishEnuToMapTf(get_ros_time(lidar_stamp_sec));
+    ros_manager.initializeEnuMap(
+        gnss_pos.position, heading.yaw, R_map_body, t_map_body,
+        p_gnss->leverArm, get_ros_time(lidar_stamp_sec));
     return true;
 }
 
@@ -1667,14 +1659,11 @@ int main(int argc, char** argv)
                 continue;
             }
 
-            // Try to establish map as the local GNSS ENU frame when GNSS is
-            // enabled for fusion or path visualization. If GNSS is not ready
-            // yet, keep running normal LIO.
-            if ((gnssEnableFlag || gnssPathVis) && !gnss_aligned.load())
+            if (!sam_enable &&
+                (gnssEnableFlag || gnssPathVis) && !gnss_aligned.load())
             {
                 initGnssMap(Measures.lidar_end_time);
             }
-
             if (scan_frame_save_en)
                 resultWriter.saveScanFrame(
                     *feats_undistort, lidar_end_time, state_point.rot,

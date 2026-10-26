@@ -517,13 +517,39 @@ void GlobalGraph::poseGraphUpdate()
 
 void GlobalGraph::performGnssMatching()
 {
-    if (!gnssEnableFlag || !gnss_aligned.load())
+    if (!gnssEnableFlag && !gnssPathVis)
         return;
 
     if (!cloudKeyPoses6D || cloudKeyPoses6D->empty())
         return;
 
     const auto &keyPoses6D = cloudKeyPoses6D->points;
+
+    if (!gnss_aligned.load())
+    {
+        std::vector<double> keyframeTimes;
+        keyframeTimes.reserve(keyPoses6D.size());
+        for (const auto &keyPose : keyPoses6D)
+            keyframeTimes.push_back(keyPose.time);
+
+        GnssPositionData matchedPosition;
+        GnssYawData matchedYaw;
+        int matchedIndex = -1;
+        if (!p_gnss->syncGnssByTimestamp(
+                keyframeTimes, matchedPosition, matchedYaw, matchedIndex))
+            return;
+
+        const PointTypePose &keyPose = keyPoses6D[matchedIndex];
+        ros_manager.initializeEnuMap(
+            matchedPosition.position, matchedYaw.yaw,
+            poseRotation(keyPose), poseTranslation(keyPose),
+            p_gnss->leverArm, get_ros_time(keyPose.time));
+    }
+
+    // Path visualization needs the same historical alignment, but does not
+    // add GNSS constraints to the pose graph when fusion is disabled.
+    if (!gnssEnableFlag)
+        return;
 
     while (true)
     {
@@ -543,14 +569,14 @@ void GlobalGraph::performGnssMatching()
         if (keyIndex < 0) continue;
 
         const PointTypePose &keyPose = keyPoses6D[keyIndex];
-        const Eigen::Matrix3d R_map_body = poseRotation(keyPose);
         Eigen::Matrix3d R_enu_map;
         Eigen::Vector3d t_enu_map;
-        ros_manager.getEnuMap(
-            R_enu_map, t_enu_map);
-        const Eigen::Vector3d p_map_ant = R_enu_map.transpose() *
-            (gnssPos.position - t_enu_map);
-        Eigen::Vector3d gnssPosition = p_map_ant - R_map_body * p_gnss->leverArm;
+        ros_manager.getEnuMap(R_enu_map, t_enu_map);
+        const Eigen::Matrix3d R_map_body = poseRotation(keyPose);
+        const Eigen::Vector3d antenna_map =
+            R_enu_map.transpose() * (gnssPos.position - t_enu_map);
+        const Eigen::Vector3d gnssPosition =
+            antenna_map - R_map_body * p_gnss->leverArm;
         const Eigen::Vector3d positionDelta = gnssPosition - lastGnssPosition;
         const double positionDistance = useGnssElevation
             ? positionDelta.norm() : positionDelta.head<2>().norm();

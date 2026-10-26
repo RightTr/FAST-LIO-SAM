@@ -98,6 +98,12 @@ public:
                    const Eigen::Vector3d &translation);
     void getEnuMap(Eigen::Matrix3d &rotation,
                    Eigen::Vector3d &translation) const;
+    void initializeEnuMap(const Eigen::Vector3d &gnssPosition,
+                          double gnssYaw,
+                          const Eigen::Matrix3d &R_map_body,
+                          const Eigen::Vector3d &t_map_body,
+                          const Eigen::Vector3d &leverArm,
+                          const TimeType &stamp);
 
     Pcl2Publisher pubLaserCloudFull, pubLaserCloudFullBody;
     Pcl2Publisher pubLaserCloudEffect, pubLaserCloudMap, pubLaserCloudBAMap;
