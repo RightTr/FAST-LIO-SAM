@@ -26,8 +26,8 @@
 #include <atomic>
 #include "ros/ros_utils.h"
 #include "ros/ros_manager.h"
+#include "ros/rosbag_input.h"
 #include "ros/ros_parameters.h"
-#include "debug/debug_info.h"
 #include "debug/result_writer.h"
 #include "global_graph.h"
 #include "lidarBA.h"
@@ -1503,6 +1503,10 @@ int main(int argc, char** argv)
     #endif
 
     read_mapping_params(*p_pre, lidar_type);
+    std::string offlineBagPath;
+    rosparam_get("offline/bag_path", offlineBagPath, std::string(""));
+    std::string inputMode;
+    rosparam_get("offline/input_mode", inputMode, std::string("online"));
     set_mapping_mode();
     mapManager.setDownsampleParam(filter_size_map_min);
 
@@ -1585,7 +1589,13 @@ int main(int argc, char** argv)
     rosOptions.headingCallback = gnss_heading_cbk;
     ros_manager.initPublishers(
         lidarBAConfig.enable, sam_enable, gnssPathVis);
-    ros_manager.initSubscribers(rosOptions);
+    std::unique_ptr<RosbagInput> bagInput;
+    if (inputMode == "offline")
+        bagInput = std::make_unique<RosbagInput>(offlineBagPath, lid_topic, imu_topic,
+            rosOptions.avia, rosOptions.cloudCallback,
+            rosOptions.livoxCallback, rosOptions.imuCallback);
+    else
+        ros_manager.initSubscribers(rosOptions);
     if ((online_tree_pub_en || ba_tree_pub_en) && use_online_map)
         mapDisplayThread = std::thread(display_map_loop);
 
@@ -1608,11 +1618,14 @@ int main(int argc, char** argv)
 #endif
         RateType rate(5000);
         bool input_finished = false;
+        bool bagEof = false;
         while (ros_ok() && !flg_exit)
         {
 #ifdef USE_ROS1
             spin_once();
 #endif
+            if (bagInput && !bagEof)
+                bagEof = !bagInput->feedNext();
         // relocalization trigger
         if(relocalize_flag.load())
         {
@@ -1634,7 +1647,8 @@ int main(int argc, char** argv)
             relocalize_flag.store(false);
         }
 
-        if(!input_finished && sync_packages(Measures))
+        const bool frameReady = !input_finished && sync_packages(Measures);
+        if(frameReady)
         {
             if (flg_first_scan)
             {
@@ -1853,15 +1867,18 @@ int main(int argc, char** argv)
                 publish_prior_map();
         }
         
-            const int64_t input_time = last_input_time.load();
-            if (!input_finished && input_time > 0 && nowTimeUs() - input_time >= 2000000)
-            {
-                input_finished = true;
-            }
-
-            if (input_finished)
+            if (bagInput && bagEof && !frameReady) {
                 break;
-            rate.sleep();
+            }
+            if (!bagInput)
+            {
+                const int64_t input_time = last_input_time.load();
+                if (!input_finished && input_time > 0 && nowTimeUs() - input_time >= 2000000)
+                    input_finished = true;
+                if (input_finished)
+                    break;
+                rate.sleep();
+            }
         }
 
         {

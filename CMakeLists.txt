@@ -71,6 +71,7 @@ if(USE_ROS1)
     nav_msgs
     sensor_msgs
     roscpp
+    rosbag
     rospy
     std_msgs
     pcl_ros
@@ -95,7 +96,7 @@ if(USE_ROS1)
   )
 
   catkin_package(
-    CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs message_runtime
+    CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rosbag rospy std_msgs message_runtime
     DEPENDS EIGEN3 PCL GTSAM
     INCLUDE_DIRS
   )
@@ -126,6 +127,7 @@ if(USE_ROS2)
   find_package(tf2_eigen REQUIRED)
   find_package(livox_ros_driver2)
   find_package(visualization_msgs REQUIRED)
+  find_package(rosbag2_cpp REQUIRED)
 
   rosidl_generate_interfaces(${PROJECT_NAME}
     "msg/Pose6D.msg"
@@ -158,6 +160,7 @@ if(USE_ROS2)
     tf2_eigen
     livox_ros_driver2
     visualization_msgs
+    rosbag2_cpp
   )
   target_link_libraries(fastlio_mapping "${cpp_typesupport_target}")
   target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} gtsam)

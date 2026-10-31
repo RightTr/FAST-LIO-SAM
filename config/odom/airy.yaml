@@ -1,6 +1,6 @@
 common:
-    lid_topic:  "/rslidar_points"
-    imu_topic:  "/rslidar_imu_data"
+    lid_topic:  "/rslidar_points_front"
+    imu_topic:  "/rslidar_imu_data_front"
     time_sync_en: false         # ONLY turn on when external time synchronization is really not possible
     time_offset_lidar_to_imu: 0.0 # Time offset between lidar and IMU calibrated by other algorithms, e.g. LI-Init (can be found in README).
                                 # This param will take effect no matter what time_sync_en is. So if the time offset is not known exactly, please set as 0.0
@@ -26,6 +26,22 @@ mapping:
     extrinsic_R: [ 0.000076, -0.999999,  0.001261, # LiDAR rotation in the IMU coordinate frame
                 -0.999999, -0.000076,  0.001208,
                 -0.001208, -0.001261, -0.999999 ]
+
+lidar_ba:
+    enable: true
+    feedback_to_ekf: true
+    imu_enable: false
+    window_size: 10
+    max_iterations: 5
+    voxel_size: 1.0
+    point_leaf_size: 0.2
+    max_layer: 2
+    min_points: 20
+    thread_num: 2
+    min_eigen_value: 0.0025
+    max_fixed_points: 100
+    plane_eigenvalue_threshold: [0.25, 0.25, 0.25]
+    min_layer_points: [5.0, 5.0, 5.0]
 
 # === DIFOP PACKET DECODE ===
 # Header frame: LiDAR

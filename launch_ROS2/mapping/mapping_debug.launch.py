@@ -1,5 +1,7 @@
 import launch
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch.substitutions import PathJoinSubstitution
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
@@ -35,6 +37,8 @@ config_file = os.path.join(
 yaml_params = load_ros1_yaml_as_params(config_file)
 
 fast_lio_params = [
+    {'offline/input_mode': LaunchConfiguration('input')},
+    {'offline/bag_path': LaunchConfiguration('bag')},
     {'sam_enable': True},
     {'feature_extract_enable': False},
     {'point_filter_num': 3},
@@ -63,6 +67,8 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
+        DeclareLaunchArgument('input', default_value='online'),
+        DeclareLaunchArgument('bag', default_value=''),
         fast_lio_sam,
         fast_lio_rviz
     ])

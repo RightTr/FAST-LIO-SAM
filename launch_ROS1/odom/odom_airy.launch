@@ -2,6 +2,8 @@
 <!-- Launch file for RoboSense LiDAR -->
 
 	<arg name="rviz" default="true" />
+	<arg name="input" default="online" />
+	<arg name="bag" default="" />
 
 	<rosparam command="load" file="$(find fast_lio_sam)/config/odom/airy.yaml" />
 
@@ -11,6 +13,8 @@
 	<param name="filter_size_surf" type="double" value="0.1" />
 	<param name="filter_size_map" type="double" value="0.1" />
 	<param name="cube_side_length" type="double" value="1000" />
+    <param name="offline/input_mode" type="string" value="$(arg input)" />
+    <param name="offline/bag_path" type="string" value="$(arg bag)" if="$(eval arg('input') == 'offline')" />
     <node pkg="fast_lio_sam" type="fastlio_mapping" name="laserMapping" output="screen" /> 
 
 	<group if="$(arg rviz)">
