@@ -15,6 +15,7 @@
 #include "simple_EKF/simple_ekf.hpp"
 #include <Eigen/Core>
 #include "IMU_Processing.hpp"
+#include "synchronizer.hpp"
 #include "GNSS_Processing.hpp"
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
@@ -68,10 +69,8 @@ string root_dir = ROOT_DIR;
 string map_file_path, lid_topic, imu_topic;
 string reloc_topic;
 
-double last_timestamp_lidar = -1.0, last_timestamp_imu = -1.0;
-double last_raw_timestamp_lidar = -1.0, last_raw_timestamp_imu = -1.0;
-double lidar_timestamp_offset_sec = 0.0;
-double imu_timestamp_offset_sec = 0.0;
+double last_timestamp_lidar = -1.0;
+TimeSyncronizer imu_timestamp_sync;
 double imu_dt = 0.005;
 bool   timeRepair = true;
 std::deque<double> imuRollbackTimes;
@@ -285,12 +284,11 @@ void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
     p_pre->process(msg, ptr);
 
     std::lock_guard<std::mutex> lock(mtx_buffer);
-    const double corrected_timestamp = raw_timestamp + imu_timestamp_offset_sec;
+    const double corrected_timestamp = raw_timestamp + imu_timestamp_sync.offset();
 
     if (last_timestamp_lidar >= 0.0 && corrected_timestamp <= last_timestamp_lidar)
         return;
 
-    last_raw_timestamp_lidar = raw_timestamp;
     last_timestamp_lidar = corrected_timestamp;
 
     lidar_buffer.push_back(ptr);
@@ -308,7 +306,7 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
     p_pre->process(msg, ptr);
 
     std::lock_guard<std::mutex> lock(mtx_buffer);
-    const double corrected_timestamp = raw_timestamp + imu_timestamp_offset_sec; // vital!!!
+    const double corrected_timestamp = raw_timestamp + imu_timestamp_sync.offset(); // vital!!!
     // const double corrected_timestamp = raw_timestamp;
 
     if (last_timestamp_lidar >= 0.0 && corrected_timestamp <= last_timestamp_lidar)
@@ -316,7 +314,6 @@ void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg)
         return;
     }
 
-    last_raw_timestamp_lidar = raw_timestamp;
     last_timestamp_lidar = corrected_timestamp;
     
     if (!time_sync_en && abs(last_timestamp_imu - last_timestamp_lidar) > 10.0 && !imu_buffer.empty() && !lidar_buffer.empty() )
@@ -365,24 +362,23 @@ void imu_cbk(const ImuMsgConstPtr &msg_in)
         msg->header.stamp = get_ros_time(timediff_lidar_wrt_imu + msg_in_stamp_sec);
     }
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
-    const bool imuRolledBack = timeRepair &&
-        last_raw_timestamp_imu >= 0.0 && raw_timestamp < last_raw_timestamp_imu;
+    bool imuRolledBack = false;
 
     double corrected_timestamp = raw_timestamp;
     if (timeRepair)
     {
-        if (!repairTimestamp(raw_timestamp, imu_dt,
-            imu_timestamp_offset_sec, last_raw_timestamp_imu,
-            last_timestamp_imu, corrected_timestamp))
+        if (!imu_timestamp_sync.repair(raw_timestamp, imu_dt, corrected_timestamp,
+                                       imuRolledBack))
         {
             return;
         }
     }
     else
     {
-        last_raw_timestamp_imu = raw_timestamp;
-        last_timestamp_imu = raw_timestamp;
+        imu_timestamp_sync.accept(raw_timestamp);
     }
+
+    last_timestamp_imu = imu_timestamp_sync.lastCorrectedStamp();
 
     msg->header.stamp = get_ros_time(corrected_timestamp);
 

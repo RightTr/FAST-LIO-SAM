@@ -110,40 +110,6 @@ inline double clampDot(double v)
     return std::max(-1.0, std::min(1.0, v));
 }
 
-inline bool repairTimestamp(double raw_stamp, double expected_dt, double& stamp_offset,
-                            double& last_raw_stamp, double& last_corrected_stamp,
-                            double& corrected_stamp)
-{
-    corrected_stamp = raw_stamp + stamp_offset;
-
-    if (last_corrected_stamp < 0.0)
-    {
-        last_corrected_stamp = corrected_stamp;
-        last_raw_stamp = raw_stamp;
-        return true;
-    }
-
-    if (raw_stamp < last_raw_stamp)
-    {
-        stamp_offset += last_corrected_stamp + expected_dt - corrected_stamp;
-        corrected_stamp = raw_stamp + stamp_offset;
-    }
-    else if (stamp_offset != 0.0 && raw_stamp >= last_corrected_stamp)
-    {
-        stamp_offset = 0.0;
-        corrected_stamp = raw_stamp;
-    }
-
-    if (corrected_stamp <= last_corrected_stamp)
-    {
-        return false;
-    }
-
-    last_corrected_stamp = corrected_stamp;
-    last_raw_stamp = raw_stamp;
-    return true;
-}
-
 inline Eigen::Vector3d transformPoint(const Eigen::Vector3d &p_old,
                                       const Eigen::Matrix3d &R_new_old,
                                       const Eigen::Vector3d &t_new_old)
