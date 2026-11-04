@@ -42,7 +42,7 @@
 
 double kdtree_incremental_time = 0.0, kdtree_delete_time = 0.0;
 double match_time = 0, solve_time = 0;
-int    kdtree_size_st = 0, add_point_size = 0, kdtree_delete_counter = 0;
+int    add_point_size = 0, kdtree_delete_counter = 0;
 bool   feat_accum_save_en = false, time_sync_en = false, path_en = true;
 bool   imu_state_save_en = false, scan_frame_save_en = false, ikdtree_output_save_en = false;
 
@@ -70,6 +70,7 @@ string map_file_path, lid_topic, imu_topic;
 string reloc_topic;
 
 double last_timestamp_lidar = -1.0;
+double last_timestamp_imu = -1.0;
 TimeSyncronizer imu_timestamp_sync;
 double imu_dt = 0.005;
 bool   timeRepair = true;
@@ -750,7 +751,6 @@ void rebuildBAMap()
         }
     }
     mapManager.rebuildWindow(std::move(points));
-    kdtree_size_st = mapManager.onlineSize(true);
 }
 
 bool processBAFrame(
@@ -1250,9 +1250,6 @@ void publish_odometryhighfreq(ImuProcess &imuProcess,
                               ResultWriter &resultWriter)
 {
     auto &ros = ros_manager;
-    Eigen::Matrix3d R_map_odom_hf = Eigen::Matrix3d::Identity();
-    Eigen::Vector3d t_map_odom_hf = Eigen::Vector3d::Zero();
-
     while (ros_ok() && !flg_exit){
         State pose;
         if (!imuProcess.TryPopPose(pose))
@@ -1263,7 +1260,9 @@ void publish_odometryhighfreq(ImuProcess &imuProcess,
         OdomMsg msg_local;
         const auto stamp = get_ros_time(pose._timestamp);
 
-        ros.tryTakeMapOdomUpdate(R_map_odom_hf, t_map_odom_hf);
+        Eigen::Matrix3d R_map_odom_hf;
+        Eigen::Vector3d t_map_odom_hf;
+        ros.getMapOdom(R_map_odom_hf, t_map_odom_hf);
 
         TransformStampedMsg map_to_odom_msg;
         map_to_odom_msg.header.stamp = stamp;
@@ -1727,7 +1726,7 @@ int main(int argc, char** argv)
                         baPose, baFrames);
                     baFrameProcessed = true;
                 }
-                else if (sam_enable && mapManager.hasFixedOnlineMap())
+                else if (sam_enable && mapManager.onlineTree().Root_Node != nullptr)
                 {
                     getCurrPose(state_point);
                     const bool keyFrame = sam_enable && isKeyframe();
@@ -1751,8 +1750,6 @@ int main(int argc, char** argv)
                 }
                 continue;
             }
-            kdtree_size_st = use_online_map ? mapManager.onlineSize(useBAMap()) : 0;
-
             /*** ICP and iterated Kalman filter update ***/
             if (feats_down_size < 5)
             {
@@ -1924,7 +1921,8 @@ int main(int argc, char** argv)
         resultWriter.saveGlobalCloud(globalGraph.get());
     }
 
-        if (ikdtree_output_save_en && use_online_map && mapManager.hasFixedOnlineMap())
+        if (ikdtree_output_save_en && use_online_map &&
+            mapManager.onlineTree().Root_Node != nullptr)
         {
             resultWriter.saveTree(mapManager.onlineTree());
         }

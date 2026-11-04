@@ -91,8 +91,6 @@ public:
                     const Eigen::Vector3d &translation);
     void getMapOdom(Eigen::Matrix3d &rotation,
                     Eigen::Vector3d &translation) const;
-    bool tryTakeMapOdomUpdate(Eigen::Matrix3d &rotation,
-                              Eigen::Vector3d &translation);
 
     void setEnuMap(const Eigen::Matrix3d &rotation,
                    const Eigen::Vector3d &translation);
@@ -127,7 +125,6 @@ private:
     mutable std::mutex mapOdomMutex_;
     Eigen::Matrix3d R_map_odom_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d t_map_odom_ = Eigen::Vector3d::Zero();
-    std::atomic<bool> mapOdomUpdated_{true};
     mutable std::mutex enuMapMutex_;
     Eigen::Matrix3d R_enu_map_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d t_enu_map_ = Eigen::Vector3d::Zero();

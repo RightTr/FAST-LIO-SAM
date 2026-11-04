@@ -18,7 +18,6 @@ void RosManager::updateMapOdom(const Eigen::Matrix3d &R_map_body,
     std::lock_guard<std::mutex> lock(mapOdomMutex_);
     R_map_odom_ = R_map_body * R_odom_body.transpose();
     t_map_odom_ = t_map_body - R_map_odom_ * t_odom_body;
-    mapOdomUpdated_.store(true, std::memory_order_release);
 }
 
 void RosManager::setMapOdom(const Eigen::Matrix3d &rotation,
@@ -27,7 +26,6 @@ void RosManager::setMapOdom(const Eigen::Matrix3d &rotation,
     std::lock_guard<std::mutex> lock(mapOdomMutex_);
     R_map_odom_ = rotation;
     t_map_odom_ = translation;
-    mapOdomUpdated_.store(true, std::memory_order_release);
 }
 
 void RosManager::getMapOdom(Eigen::Matrix3d &rotation,
@@ -36,23 +34,6 @@ void RosManager::getMapOdom(Eigen::Matrix3d &rotation,
     std::lock_guard<std::mutex> lock(mapOdomMutex_);
     rotation = R_map_odom_;
     translation = t_map_odom_;
-}
-
-bool RosManager::tryTakeMapOdomUpdate(Eigen::Matrix3d &rotation,
-                                     Eigen::Vector3d &translation)
-{
-    if (!mapOdomUpdated_.load(std::memory_order_acquire))
-        return false;
-
-    std::unique_lock<std::mutex> lock(mapOdomMutex_, std::try_to_lock);
-    if (!lock.owns_lock() ||
-        !mapOdomUpdated_.load(std::memory_order_acquire))
-        return false;
-
-    rotation = R_map_odom_;
-    translation = t_map_odom_;
-    mapOdomUpdated_.store(false, std::memory_order_release);
-    return true;
 }
 
 void RosManager::setEnuMap(const Eigen::Matrix3d &rotation,

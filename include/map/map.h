@@ -43,7 +43,6 @@ public:
     bool containsInLocalMap(const Eigen::Vector3d &point) const;
     void flattenTree(PointVector &points, bool use_window);
     bool hasTree(bool use_window) const;
-    bool hasFixedOnlineMap() const { return onlineTree_.Root_Node != nullptr; }
     size_t onlineSize(bool include_window);
     bool hasPriorMap() const { return priorTree_.Root_Node != nullptr; }
     int priorSize() { return priorTree_.validnum(); }
