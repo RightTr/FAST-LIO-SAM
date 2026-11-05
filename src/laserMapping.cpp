@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <deque>
+#include <limits>
 #include <unordered_map>
 #include <Python.h>
 #include <so3_math.h>
@@ -1039,7 +1040,7 @@ bool priorInitAlign()
         return false;
 
     mapManager.setPriorTransform(R_map_odom_refined, t_map_odom_refined);
-    ros_manager.setMapOdom(R_map_odom_refined, t_map_odom_refined);
+    ros_manager.setMapOdom(R_map_odom_refined, t_map_odom_refined, lidar_end_time);
     prior_init_done = true;
 
     return true;
@@ -1245,6 +1246,10 @@ void publish_odometryhighfreq(ImuProcess &imuProcess,
                               ResultWriter &resultWriter)
 {
     auto &ros = ros_manager;
+    Eigen::Matrix3d R_map_odom = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d t_map_odom = Eigen::Vector3d::Zero();
+    double lastTfStamp = -std::numeric_limits<double>::infinity();
+
     while (ros_ok() && !flg_exit){
         State pose;
         if (!imuProcess.TryPopPose(pose))
@@ -1252,18 +1257,27 @@ void publish_odometryhighfreq(ImuProcess &imuProcess,
             usleep(1000);
             continue;
         }
+        if (pose._timestamp <= lastTfStamp)
+            continue;
+
         OdomMsg msg_local;
         const auto stamp = get_ros_time(pose._timestamp);
 
-        Eigen::Matrix3d R_map_odom_hf;
-        Eigen::Vector3d t_map_odom_hf;
-        ros.getMapOdom(R_map_odom_hf, t_map_odom_hf);
+        Eigen::Matrix3d R_new;
+        Eigen::Vector3d t_new;
+        double timestamp;
+        if (ros.tryGetMapOdom(R_new, t_new, timestamp) &&
+            pose._timestamp + 1e-6 >= timestamp)
+        {
+            R_map_odom = R_new;
+            t_map_odom = t_new;
+        }
 
         TransformStampedMsg map_to_odom_msg;
         map_to_odom_msg.header.stamp = stamp;
         map_to_odom_msg.header.frame_id = map_frame;
         map_to_odom_msg.child_frame_id = odom_frame;
-        fillTransformMsg(map_to_odom_msg, R_map_odom_hf, t_map_odom_hf);
+        fillTransformMsg(map_to_odom_msg, R_map_odom, t_map_odom);
 
         ros.sendTf(map_to_odom_msg);
 
@@ -1295,6 +1309,7 @@ void publish_odometryhighfreq(ImuProcess &imuProcess,
         ros.sendTf(tf_msg);
 
         resultWriter.saveImuPose(pose);
+        lastTfStamp = pose._timestamp;
     }
 }
 
@@ -1636,7 +1651,7 @@ int main(int argc, char** argv)
             const Eigen::Matrix3d R_odom_base = state_point.rot;
             const Eigen::Vector3d t_odom_base = state_point.pos;
             ros_manager.updateMapOdom(
-                R_map_base, reloc_pos, R_odom_base, t_odom_base);
+                R_map_base, reloc_pos, R_odom_base, t_odom_base, lidar_end_time);
 
             relocalize_flag.store(false);
         }

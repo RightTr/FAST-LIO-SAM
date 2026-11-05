@@ -28,8 +28,8 @@ mapping:
                 -0.001208, -0.001261, -0.999999 ]
 
 lidar_ba:
-    enable: true
-    feedback_to_ekf: true
+    enable: false
+    feedback_to_ekf: false
     imu_enable: false
     window_size: 10
     max_iterations: 5

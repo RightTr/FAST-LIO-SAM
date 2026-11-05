@@ -779,7 +779,7 @@ void GlobalGraph::correctPoses()
             R_map_odom * Eigen::Vector3d(pose_odom_ref.translation().x(),
                                              pose_odom_ref.translation().y(),
                                              pose_odom_ref.translation().z());
-        ros_manager.setMapOdom(R_map_odom, t_map_odom);
+        ros_manager.setMapOdom(R_map_odom, t_map_odom, mapReference.time);
     }
 
     graphUpdate = false;

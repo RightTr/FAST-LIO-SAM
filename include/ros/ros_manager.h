@@ -6,6 +6,7 @@
 #include <Eigen/Core>
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -86,11 +87,16 @@ public:
     void updateMapOdom(const Eigen::Matrix3d &R_map_body,
                        const Eigen::Vector3d &t_map_body,
                        const Eigen::Matrix3d &R_odom_body,
-                       const Eigen::Vector3d &t_odom_body);
+                       const Eigen::Vector3d &t_odom_body,
+                       double timestamp);
     void setMapOdom(const Eigen::Matrix3d &rotation,
-                    const Eigen::Vector3d &translation);
+                    const Eigen::Vector3d &translation,
+                    double timestamp);
     void getMapOdom(Eigen::Matrix3d &rotation,
                     Eigen::Vector3d &translation) const;
+    bool tryGetMapOdom(Eigen::Matrix3d &rotation,
+                       Eigen::Vector3d &translation,
+                       double &timestamp) const;
 
     void setEnuMap(const Eigen::Matrix3d &rotation,
                    const Eigen::Vector3d &translation);
@@ -125,6 +131,7 @@ private:
     mutable std::mutex mapOdomMutex_;
     Eigen::Matrix3d R_map_odom_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d t_map_odom_ = Eigen::Vector3d::Zero();
+    double mapOdomTimestamp_ = -std::numeric_limits<double>::infinity();
     mutable std::mutex enuMapMutex_;
     Eigen::Matrix3d R_enu_map_ = Eigen::Matrix3d::Identity();
     Eigen::Vector3d t_enu_map_ = Eigen::Vector3d::Zero();

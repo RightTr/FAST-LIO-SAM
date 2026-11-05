@@ -13,19 +13,23 @@ RosManager &ros_manager = RosManager::instance();
 void RosManager::updateMapOdom(const Eigen::Matrix3d &R_map_body,
                               const Eigen::Vector3d &t_map_body,
                               const Eigen::Matrix3d &R_odom_body,
-                              const Eigen::Vector3d &t_odom_body)
+                              const Eigen::Vector3d &t_odom_body,
+                              double timestamp)
 {
     std::lock_guard<std::mutex> lock(mapOdomMutex_);
     R_map_odom_ = R_map_body * R_odom_body.transpose();
     t_map_odom_ = t_map_body - R_map_odom_ * t_odom_body;
+    mapOdomTimestamp_ = timestamp;
 }
 
 void RosManager::setMapOdom(const Eigen::Matrix3d &rotation,
-                           const Eigen::Vector3d &translation)
+                           const Eigen::Vector3d &translation,
+                           double timestamp)
 {
     std::lock_guard<std::mutex> lock(mapOdomMutex_);
     R_map_odom_ = rotation;
     t_map_odom_ = translation;
+    mapOdomTimestamp_ = timestamp;
 }
 
 void RosManager::getMapOdom(Eigen::Matrix3d &rotation,
@@ -34,6 +38,20 @@ void RosManager::getMapOdom(Eigen::Matrix3d &rotation,
     std::lock_guard<std::mutex> lock(mapOdomMutex_);
     rotation = R_map_odom_;
     translation = t_map_odom_;
+}
+
+bool RosManager::tryGetMapOdom(Eigen::Matrix3d &rotation,
+                              Eigen::Vector3d &translation,
+                              double &timestamp) const
+{
+    std::unique_lock<std::mutex> lock(mapOdomMutex_, std::try_to_lock);
+    if (!lock.owns_lock())
+        return false;
+
+    rotation = R_map_odom_;
+    translation = t_map_odom_;
+    timestamp = mapOdomTimestamp_;
+    return true;
 }
 
 void RosManager::setEnuMap(const Eigen::Matrix3d &rotation,
