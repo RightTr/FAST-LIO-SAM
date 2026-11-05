@@ -1581,9 +1581,14 @@ int main(int argc, char** argv)
         lidarBAConfig.enable, sam_enable, gnssPathVis);
     std::unique_ptr<RosbagInput> bagInput;
     if (inputMode == "offline")
+    {
+        const bool readGnss = gnssEnableFlag || gnssPathVis;
         bagInput = std::make_unique<RosbagInput>(offlineBagPath, lid_topic, imu_topic,
-            rosOptions.avia, rosOptions.cloudCallback,
-            rosOptions.livoxCallback, rosOptions.imuCallback);
+            gnss_topic, gnss_heading_topic, rosOptions.avia,
+            rosOptions.cloudCallback, rosOptions.livoxCallback, rosOptions.imuCallback,
+            readGnss ? rosOptions.gnssCallback : decltype(rosOptions.gnssCallback){},
+            readGnss ? rosOptions.headingCallback : decltype(rosOptions.headingCallback){});
+    }
     else
         ros_manager.initSubscribers(rosOptions);
     if ((online_tree_pub_en || ba_tree_pub_en) && use_online_map)
