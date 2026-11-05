@@ -90,6 +90,7 @@ private:
     void Initialize();
     void Cleanup();
     void Run();
+    void LoopRun();
     void VisualizationRun();
     void allocateMemory();
     double yawToMap(double yaw) const;
@@ -107,11 +108,12 @@ private:
         const std::vector<PointTypePose> &poses6D,
         const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds);
     void addOdomFactor(const PointTypePose &odomPose, const PointTypePose &baPose);
-    void addLoopFactor();
-    void poseGraphUpdate();
+    std::vector<std::pair<int, int>> addLoopFactor();
+    void publishLoopEdges(const std::vector<std::pair<int, int>> &edges);
+    bool poseGraphUpdate();
     void performGnssMatching();
     void updatePath(const PointTypePose &pose);
-    void KeyframeToGlobal(const BAFramePtr &frame);
+    std::vector<std::pair<int, int>> KeyframeToGlobal(const BAFramePtr &frame);
     void correctPoses();
     void publishSamMsg();
     void visualizeLoopClosure();
@@ -134,8 +136,11 @@ private:
     pcl::VoxelGrid<PointTypeIndex> downSizeFilterICP;
 
     mutable std::mutex mtxKeyframe;
+    std::mutex mtxFloorMap;
     std::mutex mtxLoopFactor;
-    std::atomic<bool> loopDone{false};
+    std::atomic<int> latestLoopKey_{-1};
+    std::atomic<bool> loopInputClosed_{false};
+    std::atomic<bool> loopFinished_{false};
     bool graphUpdate = false, loopIsClosed = false, gnssGraphUpdated = false;
     std::unordered_set<int> loopUsedKeys;
     std::vector<std::pair<int, int>> loopEdges;
@@ -145,10 +150,12 @@ private:
 
     mutable std::mutex mMutexNewKFs;
     std::condition_variable mNewKfCV;
+    std::mutex mLoopMutex;
+    std::condition_variable mLoopCV;
     std::condition_variable mVisualizationCV;
     std::deque<BAFramePtr> mlNewKeyFrames;
     bool mbFinishRequested = false;
-    std::thread mWorker, mVisualizationWorker;
+    std::thread mWorker, mLoopWorker, mVisualizationWorker;
 
     static std::mutex gravityAxisMutex;
     static Eigen::Vector3d gravityUpAxis;

@@ -105,7 +105,6 @@ std::string prior_tree_path;
 double prior_lidar_cov = 0.001;
 bool prior_init_en = false;
 bool prior_init_done = false;
-std::atomic<int64_t> last_input_time{-1};
 
 std::shared_ptr<GnssProcess> p_gnss = std::make_shared<GnssProcess>();
 
@@ -278,8 +277,6 @@ void RGBpointBodyLidarToIMU(PointType const * const pi, PointType * const po)
 
 void standard_pcl_cbk(const Pcl2MsgConstPtr &msg)
 {
-    last_input_time.store(nowTimeUs());
-
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
@@ -300,8 +297,6 @@ double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
 void livox_pcl_cbk(const LivoxCustomMsgConstPtr &msg) 
 {
-    last_input_time.store(nowTimeUs());
-
     const double raw_timestamp = get_ros_time_sec(msg->header.stamp);
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
@@ -1612,7 +1607,6 @@ int main(int argc, char** argv)
         std::thread callbackThread([&callbackExecutor]() { callbackExecutor.spin(); });
 #endif
         RateType rate(5000);
-        bool input_finished = false;
         bool bagEof = false;
         while (ros_ok() && !flg_exit)
         {
@@ -1642,7 +1636,7 @@ int main(int argc, char** argv)
             relocalize_flag.store(false);
         }
 
-        const bool frameReady = !input_finished && sync_packages(Measures);
+        const bool frameReady = sync_packages(Measures);
         if(frameReady)
         {
             if (flg_first_scan)
@@ -1865,11 +1859,6 @@ int main(int argc, char** argv)
             }
             if (!bagInput)
             {
-                const int64_t input_time = last_input_time.load();
-                if (!input_finished && input_time > 0 && nowTimeUs() - input_time >= 2000000)
-                    input_finished = true;
-                if (input_finished)
-                    break;
                 rate.sleep();
             }
         }

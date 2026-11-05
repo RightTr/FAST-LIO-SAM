@@ -125,7 +125,6 @@ void GlobalGraph::Initialize()
 {
     floorMap = std::make_unique<FloorMap>();
     cloudKeyBAPoses6D.clear();
-    loopDone.store(!loopClosureEnableFlag);
     gnss_aligned.store(false);
     ros_manager.setEnuMap(
         Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
@@ -387,7 +386,7 @@ void GlobalGraph::performLoopICP(
                     Point3(cur_x, cur_y, cur_z)),
                 constraintNoise});
         }
-
+        mNewKfCV.notify_one();
         break;
     }
 }
@@ -403,6 +402,7 @@ void GlobalGraph::performLoopClosure(
     std::vector<FloorRange> floorRanges;
     if (sceneEnableFlag)
     {
+        std::lock_guard<std::mutex> lock(mtxFloorMap);
         if (!floorMap->getRanges(loopKeyCur, floorRanges))
             return;
     }
@@ -461,17 +461,17 @@ void GlobalGraph::addOdomFactor(const PointTypePose &odomPose,
     }
 }
 
-void GlobalGraph::addLoopFactor()
+std::vector<std::pair<int, int>> GlobalGraph::addLoopFactor()
 {
     if (!loopClosureEnableFlag)
-        return;
+        return {};
 
     std::deque<LoopFactor> factors;
 
     {
         std::lock_guard<std::mutex> lock(mtxLoopFactor);
         if (loopQueue.empty())
-            return;
+            return {};
 
         factors.swap(loopQueue);
     }
@@ -485,23 +485,26 @@ void GlobalGraph::addLoopFactor()
         addedEdges.emplace_back(factor.from, factor.to);
     }
 
-    {
-        std::lock_guard<std::mutex> lock(mtxLoopFactor);
-        for (const auto &edge : addedEdges)
-        {
-            loopEdges.emplace_back(edge.first, edge.second);
-        }
-    }
-
     loopIsClosed = true;
     graphUpdate = true;
+    return addedEdges;
 }
 
-void GlobalGraph::poseGraphUpdate()
+void GlobalGraph::publishLoopEdges(
+    const std::vector<std::pair<int, int>> &edges)
 {
-    addLoopFactor();
-    if (gtSAMgraph.empty())
+    if (edges.empty())
         return;
+
+    std::lock_guard<std::mutex> lock(mtxLoopFactor);
+    loopEdges.insert(loopEdges.end(), edges.begin(), edges.end());
+}
+
+bool GlobalGraph::poseGraphUpdate()
+{
+    const auto optimizedLoopEdges = addLoopFactor();
+    if (gtSAMgraph.empty())
+        return false;
 
     isam->update(gtSAMgraph, initialEstimate);
     for (int i = 0; i < 5; ++i)
@@ -513,6 +516,8 @@ void GlobalGraph::poseGraphUpdate()
     isamCurrentEstimate = isam->calculateEstimate();
     graphUpdate = true;
     correctPoses();
+    publishLoopEdges(optimizedLoopEdges);
+    return true;
 }
 
 void GlobalGraph::performGnssMatching()
@@ -659,13 +664,14 @@ namespace
 PointTypePose poseFromIsometry(const Eigen::Isometry3d &transform, double timestamp);
 }
 
-void GlobalGraph::KeyframeToGlobal(const BAFramePtr &frame)
+std::vector<std::pair<int, int>> GlobalGraph::KeyframeToGlobal(
+    const BAFramePtr &frame)
 {
     const PointTypePose odomPose = poseFromIsometry(frame->odom_pose, frame->timestamp);
     const PointTypePose baPose = poseFromIsometry(frame->optimized_pose, frame->timestamp);
     const gtsam::Key latestPoseKey=static_cast<gtsam::Key>(cloudKeyPoses3D->size());
     addOdomFactor(odomPose,baPose);
-    addLoopFactor();
+    const auto optimizedLoopEdges = addLoopFactor();
     isam->update(gtSAMgraph,initialEstimate);
     isam->update();
     if(loopIsClosed) for(int i=0;i<5;++i) isam->update();
@@ -687,8 +693,11 @@ void GlobalGraph::KeyframeToGlobal(const BAFramePtr &frame)
         featCloudKeyFrames.push_back(cloud);
         if(loopClosureEnableFlag && scanContextEnableFlag) sc_manager.makeAndSaveScancontextAndKeys(*cloud);
     }
-    if (loopClosureEnableFlag) loopDone.store(false);
-    if(sceneEnableFlag) floorMap->update(static_cast<int>(latestPoseKey),odomPose);
+    if (sceneEnableFlag)
+    {
+        std::lock_guard<std::mutex> lock(mtxFloorMap);
+        floorMap->update(static_cast<int>(latestPoseKey), odomPose);
+    }
     updatePath(pose6);
     poseCovariance=isam->marginalCovariance(latestPoseKey);
 
@@ -697,6 +706,9 @@ void GlobalGraph::KeyframeToGlobal(const BAFramePtr &frame)
         ResultWriter resultWriter;
         resultWriter.saveKeyframeCloud(frame->cloud, pose6.time);
     }
+    latestLoopKey_.store(static_cast<int>(latestPoseKey), std::memory_order_release);
+    mLoopCV.notify_one();
+    return optimizedLoopEdges;
 }
 
 void GlobalGraph::Cleanup()
@@ -959,7 +971,6 @@ bool GlobalGraph::processLoopChecks(int &nextKey)
 {
     if (!loopClosureEnableFlag || loopCurNum <= 0)
     {
-        loopDone.store(true);
         return false;
     }
 
@@ -970,7 +981,6 @@ bool GlobalGraph::processLoopChecks(int &nextKey)
         if (cloudKeyPoses6D == nullptr || cloudKeyPoses6D->points.size() < 6 ||
             featCloudKeyFrames.size() < 6)
         {
-            loopDone.store(true);
             return false;
         }
         poses6D.assign(cloudKeyPoses6D->points.begin(), cloudKeyPoses6D->points.end());
@@ -980,14 +990,11 @@ bool GlobalGraph::processLoopChecks(int &nextKey)
     const int readyKey = static_cast<int>(poses6D.size()) - 1;
     if (nextKey > readyKey)
     {
-        loopDone.store(true);
         return false;
     }
 
-    loopDone.store(false);
     for (int i = 0; i < loopCurNum && nextKey <= readyKey; ++i, ++nextKey)
         performLoopClosure(nextKey, poses6D, clouds);
-    loopDone.store(nextKey > readyKey);
     return true;
 }
 
@@ -1015,6 +1022,8 @@ void GlobalGraph::Shutdown()
     mVisualizationCV.notify_all();
     if (mWorker.joinable())
         mWorker.join();
+    if (mLoopWorker.joinable())
+        mLoopWorker.join();
     if (mVisualizationWorker.joinable())
         mVisualizationWorker.join();
 }
@@ -1053,87 +1062,93 @@ bool GlobalGraph::SaveGlobalCloud(const std::string &filename) const
 
 void GlobalGraph::Run()
 {
-    int nextLoopKey = 1;
-    auto nextLoopTime = std::chrono::steady_clock::now();
-    const double loopPeriodSec = loopClosureFrequency > 0.0
-        ? 1.0 / loopClosureFrequency : 1.0;
     for (;;)
     {
-        BAFramePtr frame;
-        size_t batchCount = 0;
-        while (batchCount < 8)
+        for (int i = 0; i < 8; ++i)
         {
+            BAFramePtr frame;
             {
                 std::unique_lock<std::mutex> lock(mMutexNewKFs);
-                if (batchCount == 0)
-                    mNewKfCV.wait_for(lock, std::chrono::milliseconds(30), [this] {
-                        return mbFinishRequested || !mlNewKeyFrames.empty();
-                    });
+                if (i == 0 && mlNewKeyFrames.empty())
+                    mNewKfCV.wait_for(lock, std::chrono::milliseconds(30));
                 if (mlNewKeyFrames.empty())
                     break;
                 frame = std::move(mlNewKeyFrames.front());
                 mlNewKeyFrames.pop_front();
             }
-            if (frame->keyframe)
-            {
-                KeyframeToGlobal(frame);
-                correctPoses();
-                publishSamMsg();
-            }
-            ++batchCount;
+            if (!frame || !frame->keyframe)
+                continue;
+
+            const auto optimizedLoopEdges = KeyframeToGlobal(frame);
+            correctPoses();
+            publishLoopEdges(optimizedLoopEdges);
+            publishSamMsg();
         }
 
         performGnssMatching();
+        if (poseGraphUpdate())
+            publishSamMsg();
 
-        const auto now = std::chrono::steady_clock::now();
-        bool stopping;
+        bool closing = false;
         {
             std::lock_guard<std::mutex> lock(mMutexNewKFs);
-            stopping = mbFinishRequested && mlNewKeyFrames.empty();
+            closing = mbFinishRequested && mlNewKeyFrames.empty();
         }
-        if (loopClosureEnableFlag &&
-            (now >= nextLoopTime || stopping) && loopCurNum > 0)
+
+        if (!closing)
+            continue;
+
+        if (!loopInputClosed_.exchange(true, std::memory_order_acq_rel))
+            mLoopCV.notify_all();
+
+        if (!loopFinished_.load(std::memory_order_acquire))
+            continue;
+
+        performGnssMatching();
+        if (poseGraphUpdate())
+            publishSamMsg();
+
+        correctPoses();
+        publishSamMsg();
+        visualizeLoopClosure();
+        publishGlobalMap();
+        break;
+    }
+}
+
+void GlobalGraph::LoopRun()
+{
+    if (!loopClosureEnableFlag || loopCurNum <= 0)
+    {
+        loopFinished_.store(true, std::memory_order_release);
+        mNewKfCV.notify_one();
+        return;
+    }
+
+    int nextLoopKey = 1;
+    for (;;)
+    {
+        {
+            std::unique_lock<std::mutex> lock(mLoopMutex);
+            mLoopCV.wait(lock, [this, &nextLoopKey] {
+                return loopInputClosed_.load(std::memory_order_acquire) ||
+                       latestLoopKey_.load(std::memory_order_acquire) >=
+                           std::max(5, nextLoopKey);
+            });
+        }
+
+        if (latestLoopKey_.load(std::memory_order_acquire) >=
+            std::max(5, nextLoopKey))
         {
             processLoopChecks(nextLoopKey);
-            nextLoopTime = now + std::chrono::duration_cast<
-                std::chrono::steady_clock::duration>(
-                    std::chrono::duration<double>(loopPeriodSec));
+            continue;
         }
-
-        bool hasQueuedLoopFactors = false;
-        {
-            std::lock_guard<std::mutex> lock(mtxLoopFactor);
-            hasQueuedLoopFactors = !loopQueue.empty();
-        }
-        if (!gtSAMgraph.empty() || hasQueuedLoopFactors || gnssGraphUpdated)
-        {
-            poseGraphUpdate();
-            publishSamMsg();
-        }
-
-        if (loopClosureEnableFlag && loopCurNum <= 0)
-            loopDone.store(true);
-        {
-            std::lock_guard<std::mutex> lock(mMutexNewKFs);
-            stopping = mbFinishRequested;
-        }
-        const bool loopsDrained = !loopClosureEnableFlag ||
-                                  loopCurNum <= 0 || loopDone.load();
-        if (stopping && loopsDrained)
-        {
-            performGnssMatching();
-            if (!gtSAMgraph.empty() || gnssGraphUpdated)
-            {
-                poseGraphUpdate();
-                publishSamMsg();
-            }
-            correctPoses();
-            publishSamMsg();
-            visualizeLoopClosure();
-            publishGlobalMap();
+        if (loopInputClosed_.load(std::memory_order_acquire))
             break;
-        }
     }
+
+    loopFinished_.store(true, std::memory_order_release);
+    mNewKfCV.notify_one();
 }
 
 void GlobalGraph::VisualizationRun()
@@ -1156,6 +1171,7 @@ GlobalGraph::GlobalGraph()
 {
     Initialize();
     mWorker = std::thread(&GlobalGraph::Run, this);
+    mLoopWorker = std::thread(&GlobalGraph::LoopRun, this);
     mVisualizationWorker = std::thread(&GlobalGraph::VisualizationRun, this);
 }
 

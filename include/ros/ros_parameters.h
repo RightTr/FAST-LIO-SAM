@@ -29,7 +29,7 @@ extern int numberOfCores;
 extern float surroundingkeyframeAddingDistThreshold, surroundingkeyframeAddingAngleThreshold;
 extern float surroundingKeyframeDensity, surroundingKeyframeSearchRadius;
 extern bool loopClosureEnableFlag, scanContextEnableFlag;
-extern float loopClosureFrequency, historyKeyframeSearchRadius;
+extern float historyKeyframeSearchRadius;
 extern float historyKeyframeSearchTimeDiff, historyKeyframeFitnessScore, icpMaxCorrDistance;
 extern int surroundingKeyframeSize, historyKeyframeSearchNum, loopCurNum, loopPreNum;
 extern double priorRotVar, priorPosVar, odomRotVar, odomPosVar, loopRotVar, loopPosVar;
