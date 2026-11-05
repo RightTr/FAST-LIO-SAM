@@ -117,6 +117,7 @@ private:
     void correctPoses();
     void publishSamMsg();
     void visualizeLoopClosure();
+    void publishLoopProgress(int key, const PointTypePose &pose);
     bool processLoopChecks(int &nextKey);
     void publishGlobalMap();
 

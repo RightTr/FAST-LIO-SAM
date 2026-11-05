@@ -517,6 +517,8 @@ bool GlobalGraph::poseGraphUpdate()
     graphUpdate = true;
     correctPoses();
     publishLoopEdges(optimizedLoopEdges);
+    if (!optimizedLoopEdges.empty())
+        visualizeLoopClosure();
     return true;
 }
 
@@ -950,6 +952,51 @@ void GlobalGraph::visualizeLoopClosure()
         ros_manager.pubLoopConstraintEdge, markerArray);
 }
 
+void GlobalGraph::publishLoopProgress(int key, const PointTypePose &pose)
+{
+    MarkerArrayMsg markerArray;
+
+    MarkerMsg progress;
+    progress.header.stamp = get_ros_time(pose.time);
+    progress.header.frame_id = map_frame;
+    progress.ns = "loop_progress";
+    progress.id = 0;
+    progress.type = MarkerMsg::SPHERE;
+    progress.action = MarkerMsg::ADD;
+    progress.pose.position.x = pose.x;
+    progress.pose.position.y = pose.y;
+    progress.pose.position.z = pose.z;
+    progress.pose.orientation.w = 1.0;
+    progress.scale.x = 0.35;
+    progress.scale.y = 0.35;
+    progress.scale.z = 0.35;
+    progress.color.r = 1.0;
+    progress.color.g = 0.2;
+    progress.color.b = 1.0;
+    progress.color.a = 1.0;
+    markerArray.markers.push_back(progress);
+
+    MarkerMsg label;
+    label.header = progress.header;
+    label.ns = "loop_progress";
+    label.id = 1;
+    label.type = MarkerMsg::TEXT_VIEW_FACING;
+    label.action = MarkerMsg::ADD;
+    label.pose.position.x = pose.x;
+    label.pose.position.y = pose.y;
+    label.pose.position.z = pose.z + 0.6;
+    label.pose.orientation.w = 1.0;
+    label.scale.z = 0.45;
+    label.color.r = 1.0;
+    label.color.g = 1.0;
+    label.color.b = 1.0;
+    label.color.a = 1.0;
+    label.text = "Loop key " + std::to_string(key);
+    markerArray.markers.push_back(label);
+
+    ros_manager.publish(ros_manager.pubLoopConstraintEdge, markerArray);
+}
+
 namespace
 {
 PointTypePose poseFromIsometry(const Eigen::Isometry3d &transform, double timestamp)
@@ -994,7 +1041,10 @@ bool GlobalGraph::processLoopChecks(int &nextKey)
     }
 
     for (int i = 0; i < loopCurNum && nextKey <= readyKey; ++i, ++nextKey)
+    {
+        publishLoopProgress(nextKey, poses6D[nextKey]);
         performLoopClosure(nextKey, poses6D, clouds);
+    }
     return true;
 }
 
@@ -1082,6 +1132,8 @@ void GlobalGraph::Run()
             const auto optimizedLoopEdges = KeyframeToGlobal(frame);
             correctPoses();
             publishLoopEdges(optimizedLoopEdges);
+            if (!optimizedLoopEdges.empty())
+                visualizeLoopClosure();
             publishSamMsg();
         }
 
