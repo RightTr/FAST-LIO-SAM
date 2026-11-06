@@ -11,7 +11,6 @@ bool ba_tree_pub_en = false;
 int numberOfCores;
 
 float surroundingkeyframeAddingDistThreshold;
-float surroundingkeyframeAddingAngleThreshold;
 float surroundingKeyframeDensity;
 float surroundingKeyframeSearchRadius;
 
@@ -167,7 +166,6 @@ void read_liosam_params() {
 
     // Keyframe Strategy
     rosparam_get("lio_sam/surroundingkeyframeAddingDistThreshold", surroundingkeyframeAddingDistThreshold, 1.0f);
-    rosparam_get("lio_sam/surroundingkeyframeAddingAngleThreshold", surroundingkeyframeAddingAngleThreshold, 0.2f);
     rosparam_get("lio_sam/surroundingKeyframeDensity", surroundingKeyframeDensity, 1.0f);
     rosparam_get("lio_sam/surroundingKeyframeSearchRadius", surroundingKeyframeSearchRadius, 50.0f);
 

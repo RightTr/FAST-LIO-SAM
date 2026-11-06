@@ -26,7 +26,7 @@ extern bool feat_accum_save_en, scan_frame_save_en, imu_state_save_en;
 extern bool ikdtree_output_save_en;
 
 extern int numberOfCores;
-extern float surroundingkeyframeAddingDistThreshold, surroundingkeyframeAddingAngleThreshold;
+extern float surroundingkeyframeAddingDistThreshold;
 extern float surroundingKeyframeDensity, surroundingKeyframeSearchRadius;
 extern bool loopClosureEnableFlag, scanContextEnableFlag;
 extern float historyKeyframeSearchRadius;

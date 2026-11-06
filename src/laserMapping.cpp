@@ -684,13 +684,7 @@ bool isKeyframe()
         transformTobeMapped[3], transformTobeMapped[4], transformTobeMapped[5],
         transformTobeMapped[0], transformTobeMapped[1], transformTobeMapped[2]);
     const Eigen::Affine3f relative = previous.inverse() * current;
-    float x, y, z, roll, pitch, yaw;
-    pcl::getTranslationAndEulerAngles(relative, x, y, z, roll, pitch, yaw);
-
-    return !(std::abs(roll) < surroundingkeyframeAddingAngleThreshold &&
-             std::abs(pitch) < surroundingkeyframeAddingAngleThreshold &&
-             std::abs(yaw) < surroundingkeyframeAddingAngleThreshold &&
-             std::sqrt(x*x + y*y + z*z) < surroundingkeyframeAddingDistThreshold);
+    return relative.translation().norm() >= surroundingkeyframeAddingDistThreshold;
 }
 
 void publishLidarBA(const BAFramePtr &frame);

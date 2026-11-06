@@ -73,7 +73,6 @@ lio_sam:
 
     # Surrounding map
     surroundingkeyframeAddingDistThreshold: 1.0   # meters, regulate keyframe adding threshold
-    surroundingkeyframeAddingAngleThreshold: 0.2  # radians, regulate keyframe adding threshold
     surroundingKeyframeDensity: 2.0               # meters, downsample surrounding keyframe poses   
     surroundingKeyframeSearchRadius: 50.0         # meters, within n meters scan-to-map optimization (when loop closure disabled)
 
@@ -84,8 +83,8 @@ lio_sam:
     historyKeyframeSearchRadius: 5.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
     historyKeyframeSearchTimeDiff: 15.0          # seconds, key frame that is n seconds older will be considered for loop closure
     historyKeyframeSearchNum: 25                  # number of hostory key frames will be fused into a submap for loop closure
-    historyKeyframeFitnessScore: 0.3              # icp threshold, the smaller the better alignment
-    icpMaxCorrDistance: 2.0                       # meters, loop-closure ICP max correspondence distance
+    historyKeyframeFitnessScore: 0.1              # icp threshold, the smaller the better alignment
+    icpMaxCorrDistance: 1.0                       # meters, loop-closure ICP max correspondence distance
     priorRotVar: 1.0e-4
     priorPosVar: 1.0e-4
     odomRotVar: 1.0e-3
@@ -117,8 +116,8 @@ result_save:
 
 lidar_ba:
     enable: true
-    feedback_to_ekf: false
-    imu_enable: false
+    feedback_to_ekf: true
+    imu_enable: true
     window_size: 10
     max_iterations: 5
     voxel_size: 1.0
