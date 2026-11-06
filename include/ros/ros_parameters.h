@@ -31,7 +31,7 @@ extern float surroundingKeyframeDensity, surroundingKeyframeSearchRadius;
 extern bool loopClosureEnableFlag, scanContextEnableFlag;
 extern float historyKeyframeSearchRadius;
 extern float historyKeyframeSearchTimeDiff, historyKeyframeFitnessScore, icpMaxCorrDistance;
-extern int surroundingKeyframeSize, historyKeyframeSearchNum, loopCurNum, loopPreNum;
+extern int loopTargetKeyframeSearchNum, loopCurNum, loopPreNum, loopSourceKeyframeNum;
 extern double priorRotVar, priorPosVar, odomRotVar, odomPosVar, loopRotVar, loopPosVar;
 extern float globalMapVisualizationSearchRadius;
 extern float globalMapVisualizationLeafSize, mappingICPSize;

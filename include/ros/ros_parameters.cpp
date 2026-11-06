@@ -16,10 +16,9 @@ float surroundingKeyframeSearchRadius;
 
 bool loopClosureEnableFlag;
 bool scanContextEnableFlag;
-int surroundingKeyframeSize;
+int loopTargetKeyframeSearchNum;
 float historyKeyframeSearchRadius;
 float historyKeyframeSearchTimeDiff;
-int historyKeyframeSearchNum;
 float historyKeyframeFitnessScore;
 float icpMaxCorrDistance;
 double priorRotVar = 1e-4;
@@ -29,6 +28,7 @@ double odomPosVar = 1e-3;
 double loopRotVar = 0.1;
 double loopPosVar = 0.1;
 int loopCurNum;
+int loopSourceKeyframeNum;
 int loopPreNum;
 
 float globalMapVisualizationSearchRadius;
@@ -172,10 +172,9 @@ void read_liosam_params() {
     // Loop closure parameters
     rosparam_get("lio_sam/loopClosureEnableFlag", loopClosureEnableFlag, false);
     rosparam_get("lio_sam/scanContextEnableFlag", scanContextEnableFlag, false);
-    rosparam_get("lio_sam/surroundingKeyframeSize", surroundingKeyframeSize, 50);
+    rosparam_get("lio_sam/loopTargetKeyframeSearchNum", loopTargetKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeSearchRadius", historyKeyframeSearchRadius, 10.0f);
     rosparam_get("lio_sam/historyKeyframeSearchTimeDiff", historyKeyframeSearchTimeDiff, 30.0f);
-    rosparam_get("lio_sam/historyKeyframeSearchNum", historyKeyframeSearchNum, 25);
     rosparam_get("lio_sam/historyKeyframeFitnessScore", historyKeyframeFitnessScore, 0.3f);
     rosparam_get("lio_sam/icpMaxCorrDistance", icpMaxCorrDistance, 2.0f);
     rosparam_get("lio_sam/priorRotVar", priorRotVar, 1e-4);
@@ -185,6 +184,7 @@ void read_liosam_params() {
     rosparam_get("lio_sam/loopRotVar", loopRotVar, 0.1);
     rosparam_get("lio_sam/loopPosVar", loopPosVar, 0.1);
     rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
+    rosparam_get("lio_sam/loopSourceKeyframeNum", loopSourceKeyframeNum, 3);
     rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
 
     // Global pointcloud visualization

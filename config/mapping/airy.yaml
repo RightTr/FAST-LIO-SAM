@@ -79,20 +79,20 @@ lio_sam:
     # Loop closure
     loopClosureEnableFlag: true
     scanContextEnableFlag: false
-    surroundingKeyframeSize: 50                   # submap size (when loop closure enabled)
-    historyKeyframeSearchRadius: 5.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
-    historyKeyframeSearchTimeDiff: 15.0          # seconds, key frame that is n seconds older will be considered for loop closure
-    historyKeyframeSearchNum: 25                  # number of hostory key frames will be fused into a submap for loop closure
-    historyKeyframeFitnessScore: 0.1              # icp threshold, the smaller the better alignment
+    historyKeyframeSearchRadius: 8.0             # meters, key frame that is within n meters from current pose will be considerd for loop closure
+    historyKeyframeSearchTimeDiff: 30.0          # seconds, key frame that is n seconds older will be considered for loop closure
+    loopTargetKeyframeSearchNum: 25                 # target frames on each side of the candidate
+    historyKeyframeFitnessScore: 0.5             # icp threshold, the smaller the better alignment
     icpMaxCorrDistance: 1.0                       # meters, loop-closure ICP max correspondence distance
     priorRotVar: 1.0e-4
     priorPosVar: 1.0e-4
     odomRotVar: 1.0e-3
     odomPosVar: 1.0e-3
-    loopRotVar: 0.1
-    loopPosVar: 0.1
+    loopRotVar: 1.0
+    loopPosVar: 1.0
     loopCurNum: 5                                 # max current keyframes processed per loop tick
-    loopPreNum: 3                                 # max ICP attempts per current keyframe
+    loopSourceKeyframeNum: 3                      # consecutive keyframes in the ICP source
+    loopPreNum: 1                                 # max ICP attempts per current keyframe
     mappingICPSize: 0.2                            # meters, loop-closure ICP voxel size
 
     # Visualization
@@ -115,9 +115,9 @@ result_save:
     scan_frame_save_en: false     # save each undistorted scan in LiDAR body frame and pose to ROOT_DIR/SCAN_FRAMES/
 
 lidar_ba:
-    enable: true
-    feedback_to_ekf: true
-    imu_enable: true
+    enable: false
+    feedback_to_ekf: false
+    imu_enable: false
     window_size: 10
     max_iterations: 5
     voxel_size: 1.0

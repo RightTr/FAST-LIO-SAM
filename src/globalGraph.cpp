@@ -262,11 +262,27 @@ void GlobalGraph::performLoopICP(
     const std::vector<PointTypePose> &poses6D,
     const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds)
 {
-    const pcl::PointCloud<PointTypeIndex>::Ptr &curCloud = clouds[loopKeyCur];
-
     pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloud(
         new pcl::PointCloud<PointTypeIndex>());
-    *cureKeyframeCloud = *curCloud;
+    const int submapSize = std::max(1, loopSourceKeyframeNum);
+    const int sourceBegin = loopKeyCur - submapSize + 1;
+    const auto currentFloorRange = std::find_if(
+        floorRanges.begin(), floorRanges.end(),
+        [&](const FloorRange &range) {
+            return loopKeyCur >= range.begin &&
+                   (range.end < 0 || loopKeyCur <= range.end);
+        });
+    if (currentFloorRange == floorRanges.end())
+        return;
+    if (sourceBegin < currentFloorRange->begin || sourceBegin < 0)
+        return;
+    const Eigen::Affine3f T_map_cur = pclPointToAffine3f(poses6D[loopKeyCur]);
+    const Eigen::Affine3f T_cur_map = T_map_cur.inverse();
+    for (int key = sourceBegin; key <= loopKeyCur; ++key)
+    {
+        const Eigen::Affine3f T_cur_key = T_cur_map * pclPointToAffine3f(poses6D[key]);
+        *cureKeyframeCloud += *transformPointCloud(clouds[key], T_cur_key);
+    }
 
     pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloudDS(
         new pcl::PointCloud<PointTypeIndex>());
@@ -275,7 +291,7 @@ void GlobalGraph::performLoopICP(
     if (cureKeyframeCloudDS->size() < 300)
         return;
 
-    const double current_time = poses6D[loopKeyCur].time;
+    const double current_time = poses6D[sourceBegin].time;
     int count = 0;
     for (const auto &loopKey : loopKeys)
     {
@@ -295,19 +311,20 @@ void GlobalGraph::performLoopICP(
         if (floor_range == floorRanges.end())
             continue;
 
+        const int historyRadius = std::max(0, loopTargetKeyframeSearchNum);
+        const int historyBegin = std::max(0, std::max(floor_range->begin, loopKeyPre - historyRadius));
+        int historyEnd = std::min(loopKeyPre + historyRadius, sourceBegin - 1);
+        if (floor_range->end >= 0)
+            historyEnd = std::min(historyEnd, floor_range->end);
+        if (historyBegin > historyEnd)
+            continue;
+
         if (!fromScanContext)
         {
             if (count >= loopPreNum)
                 continue;
             ++count;
         }
-
-        int historyBegin = std::max(0, loopKeyPre - historyKeyframeSearchNum);
-        int historyEnd = std::min(
-            loopKeyPre + historyKeyframeSearchNum, loopKeyCur - 1);
-        historyBegin = std::max(historyBegin, floor_range->begin);
-        if (floor_range->end >= 0)
-            historyEnd = std::min(historyEnd, floor_range->end);
 
         pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(
             new pcl::PointCloud<PointTypeIndex>());
@@ -344,7 +361,6 @@ void GlobalGraph::performLoopICP(
         icp.setInputSource(cureKeyframeCloudDS);
         icp.setInputTarget(prevKeyframeCloudDS);
         pcl::PointCloud<PointTypeIndex> aligned;
-        const Eigen::Affine3f T_map_cur = pclPointToAffine3f(poses6D[loopKeyCur]);
         const Eigen::Affine3f T_pre_cur_guess = T_pre_map * T_map_cur;
         icp.align(aligned, T_pre_cur_guess.matrix());
 
