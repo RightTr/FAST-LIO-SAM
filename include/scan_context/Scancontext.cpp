@@ -289,10 +289,7 @@ std::pair<int, float> SCManager::detectLoopClosureID(
      * step 1: candidates from ringkey tree_
      */
     // tree_ reconstruction (not mandatory to make everytime)
-    if( polarcontext_tree_ == nullptr ||
-        tree_making_period_conter % TREE_MAKING_PERIOD_ == 0 ||
-        (!polarcontext_search_ids_.empty() &&
-         polarcontext_search_ids_.back() > max_history_id))
+    if( polarcontext_tree_ == nullptr || polarcontext_search_ids_ != search_ids )
     {
         TicToc t_tree_construction;
 

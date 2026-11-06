@@ -78,9 +78,7 @@ lio_sam:
     odomPosVar: 1.0e-3
     loopRotVar: 0.1
     loopPosVar: 0.1
-    loopCurNum: 5                                 # max current keyframes processed per loop tick
-    loopSourceKeyframeNum: 3                      # consecutive keyframes in the ICP source
-    loopPreNum: 3                                 # max ICP attempts per current keyframe
+    loopSourceBatchSize: 5  # keyframes per loop ICP source batch
     mappingICPSize: 0.2                            # meters, loop-closure ICP voxel size
 
     # Visualization

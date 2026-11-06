@@ -242,13 +242,12 @@ std::vector<std::pair<int, float>> GlobalGraph::detectLoopKeys(
 
         if (sc_result.first >= 0)
         {
-            const bool duplicate = std::any_of(
+            loopKeys.erase(std::remove_if(
                 loopKeys.begin(), loopKeys.end(),
                 [&](const std::pair<int, float> &loopKey) {
                     return loopKey.first == sc_result.first;
-                });
-            if (!duplicate)
-                loopKeys.push_back(sc_result);
+                }), loopKeys.end());
+            loopKeys.insert(loopKeys.begin(), sc_result);
         }
     }
 
@@ -257,6 +256,8 @@ std::vector<std::pair<int, float>> GlobalGraph::detectLoopKeys(
 
 void GlobalGraph::performLoopICP(
     int loopKeyCur,
+    int sourceBegin,
+    int sourceEnd,
     const std::vector<std::pair<int, float>> &loopKeys,
     const std::vector<FloorRange> &floorRanges,
     const std::vector<PointTypePose> &poses6D,
@@ -264,8 +265,6 @@ void GlobalGraph::performLoopICP(
 {
     pcl::PointCloud<PointTypeIndex>::Ptr cureKeyframeCloud(
         new pcl::PointCloud<PointTypeIndex>());
-    const int submapSize = std::max(1, loopSourceKeyframeNum);
-    const int sourceBegin = loopKeyCur - submapSize + 1;
     const auto currentFloorRange = std::find_if(
         floorRanges.begin(), floorRanges.end(),
         [&](const FloorRange &range) {
@@ -274,11 +273,12 @@ void GlobalGraph::performLoopICP(
         });
     if (currentFloorRange == floorRanges.end())
         return;
-    if (sourceBegin < currentFloorRange->begin || sourceBegin < 0)
+    if (sourceBegin < currentFloorRange->begin || sourceBegin < 0 ||
+        (currentFloorRange->end >= 0 && sourceEnd > currentFloorRange->end))
         return;
     const Eigen::Affine3f T_map_cur = pclPointToAffine3f(poses6D[loopKeyCur]);
     const Eigen::Affine3f T_cur_map = T_map_cur.inverse();
-    for (int key = sourceBegin; key <= loopKeyCur; ++key)
+    for (int key = sourceBegin; key <= sourceEnd; ++key)
     {
         const Eigen::Affine3f T_cur_key = T_cur_map * pclPointToAffine3f(poses6D[key]);
         *cureKeyframeCloud += *transformPointCloud(clouds[key], T_cur_key);
@@ -292,11 +292,9 @@ void GlobalGraph::performLoopICP(
         return;
 
     const double current_time = poses6D[sourceBegin].time;
-    int count = 0;
     for (const auto &loopKey : loopKeys)
     {
         const int loopKeyPre = loopKey.first;
-        const bool fromScanContext = std::isfinite(loopKey.second);
         if (loopUsedKeys.count(loopKeyPre) != 0)
             continue;
         if (current_time - poses6D[loopKeyPre].time <= historyKeyframeSearchTimeDiff)
@@ -318,13 +316,6 @@ void GlobalGraph::performLoopICP(
             historyEnd = std::min(historyEnd, floor_range->end);
         if (historyBegin > historyEnd)
             continue;
-
-        if (!fromScanContext)
-        {
-            if (count >= loopPreNum)
-                continue;
-            ++count;
-        }
 
         pcl::PointCloud<PointTypeIndex>::Ptr prevKeyframeCloud(
             new pcl::PointCloud<PointTypeIndex>());
@@ -373,7 +364,7 @@ void GlobalGraph::performLoopICP(
             //     loopKeyCur,
             //     loopKeyPre,
             //     score);
-            continue;
+            break;
         }
 
         const Eigen::Affine3f T_pre_cur(icp.getFinalTransformation());
@@ -409,6 +400,8 @@ void GlobalGraph::performLoopICP(
 
 void GlobalGraph::performLoopClosure(
     int loopKeyCur,
+    int sourceBegin,
+    int sourceEnd,
     const std::vector<PointTypePose> &poses6D,
     const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds)
 {
@@ -429,7 +422,7 @@ void GlobalGraph::performLoopClosure(
 
     const auto loopKeys = detectLoopKeys(loopKeyCur, poses6D, floorRanges);
     if (!loopKeys.empty())
-        performLoopICP(loopKeyCur, loopKeys, floorRanges, poses6D, clouds);
+        performLoopICP(loopKeyCur, sourceBegin, sourceEnd, loopKeys, floorRanges, poses6D, clouds);
 }
 
 void GlobalGraph::addOdomFactor(const PointTypePose &odomPose,
@@ -1032,7 +1025,7 @@ PointTypePose poseFromIsometry(const Eigen::Isometry3d &transform, double timest
 
 bool GlobalGraph::processLoopChecks(int &nextKey)
 {
-    if (!loopClosureEnableFlag || loopCurNum <= 0)
+    if (!loopClosureEnableFlag || loopSourceBatchSize <= 0)
     {
         return false;
     }
@@ -1056,11 +1049,24 @@ bool GlobalGraph::processLoopChecks(int &nextKey)
         return false;
     }
 
-    for (int i = 0; i < loopCurNum && nextKey <= readyKey; ++i, ++nextKey)
+    int batchEnd = std::min(readyKey, nextKey + loopSourceBatchSize - 1);
+    if (sceneEnableFlag)
     {
-        publishLoopProgress(nextKey, poses6D[nextKey]);
-        performLoopClosure(nextKey, poses6D, clouds);
+        std::vector<FloorRange> ranges;
+        std::lock_guard<std::mutex> lock(mtxFloorMap);
+        if (floorMap->getRanges(nextKey, ranges))
+        {
+            const auto range = std::find_if(ranges.begin(), ranges.end(), [&](const FloorRange &r) {
+                return nextKey >= r.begin && (r.end < 0 || nextKey <= r.end);
+            });
+            if (range != ranges.end() && range->end >= 0)
+                batchEnd = std::min(batchEnd, range->end);
+        }
     }
+    const int anchor = nextKey + (batchEnd - nextKey) / 2;
+    publishLoopProgress(anchor, poses6D[anchor]);
+    performLoopClosure(anchor, nextKey, batchEnd, poses6D, clouds);
+    nextKey = batchEnd + 1;
     return true;
 }
 
@@ -1186,7 +1192,7 @@ void GlobalGraph::Run()
 
 void GlobalGraph::LoopRun()
 {
-    if (!loopClosureEnableFlag || loopCurNum <= 0)
+    if (!loopClosureEnableFlag || loopSourceBatchSize <= 0)
     {
         loopFinished_.store(true, std::memory_order_release);
         mNewKfCV.notify_one();
@@ -1201,17 +1207,19 @@ void GlobalGraph::LoopRun()
             mLoopCV.wait(lock, [this, &nextLoopKey] {
                 return loopInputClosed_.load(std::memory_order_acquire) ||
                        latestLoopKey_.load(std::memory_order_acquire) >=
-                           std::max(5, nextLoopKey);
+                           std::max(5, nextLoopKey + loopSourceBatchSize - 1);
             });
         }
 
-        if (latestLoopKey_.load(std::memory_order_acquire) >=
-            std::max(5, nextLoopKey))
+        const bool closed = loopInputClosed_.load(std::memory_order_acquire);
+        const int latest = latestLoopKey_.load(std::memory_order_acquire);
+        if (latest >= std::max(5, nextLoopKey) &&
+            (closed || latest >= nextLoopKey + loopSourceBatchSize - 1))
         {
             processLoopChecks(nextLoopKey);
             continue;
         }
-        if (loopInputClosed_.load(std::memory_order_acquire))
+        if (closed)
             break;
     }
 

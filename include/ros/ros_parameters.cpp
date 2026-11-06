@@ -27,9 +27,7 @@ double odomRotVar = 1e-3;
 double odomPosVar = 1e-3;
 double loopRotVar = 0.1;
 double loopPosVar = 0.1;
-int loopCurNum;
-int loopSourceKeyframeNum;
-int loopPreNum;
+int loopSourceBatchSize;
 
 float globalMapVisualizationSearchRadius;
 float globalMapVisualizationLeafSize;
@@ -183,9 +181,7 @@ void read_liosam_params() {
     rosparam_get("lio_sam/odomPosVar", odomPosVar, 1e-3);
     rosparam_get("lio_sam/loopRotVar", loopRotVar, 0.1);
     rosparam_get("lio_sam/loopPosVar", loopPosVar, 0.1);
-    rosparam_get("lio_sam/loopCurNum", loopCurNum, 5);
-    rosparam_get("lio_sam/loopSourceKeyframeNum", loopSourceKeyframeNum, 3);
-    rosparam_get("lio_sam/loopPreNum", loopPreNum, 3);
+    rosparam_get("lio_sam/loopSourceBatchSize", loopSourceBatchSize, 5);
 
     // Global pointcloud visualization
     rosparam_get("lio_sam/globalMapVisualizationSearchRadius", globalMapVisualizationSearchRadius, 1e3f);

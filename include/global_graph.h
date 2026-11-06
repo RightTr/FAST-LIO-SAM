@@ -99,12 +99,12 @@ private:
     std::vector<std::pair<int, float>> detectLoopKeys(
         int loopKeyCur, const std::vector<PointTypePose> &poses6D,
         const std::vector<FloorRange> &floorRanges);
-    void performLoopICP(int loopKeyCur,
+    void performLoopICP(int loopKeyCur, int sourceBegin, int sourceEnd,
         const std::vector<std::pair<int, float>> &loopKeys,
         const std::vector<FloorRange> &floorRanges,
         const std::vector<PointTypePose> &poses6D,
         const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds);
-    void performLoopClosure(int loopKeyCur,
+    void performLoopClosure(int loopKeyCur, int sourceBegin, int sourceEnd,
         const std::vector<PointTypePose> &poses6D,
         const std::vector<pcl::PointCloud<PointTypeIndex>::Ptr> &clouds);
     void addOdomFactor(const PointTypePose &odomPose, const PointTypePose &baPose);
