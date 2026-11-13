@@ -116,7 +116,7 @@ cd FAST-LIO-SAM
 ./build.sh ROS2
 ```
 
-`build.sh` builds from the workspace root (`../..`). It uses one conditional `package.xml` for both ROS versions and keeps the existing `launch_ROS1/` and `launch_ROS2/` directories in place. Source a Livox driver workspace first, or set `LIVOX_WS` to its `install` directory.
+`build.sh` builds from the workspace root (`../..`). It uses one conditional `package.xml` for both ROS versions and keeps the existing `launch_ROS1/` and `launch_ROS2/` directories in place. The small interface package in `interfaces/livox_ros_driver2/` generates `CustomMsg` for ROS1 or ROS2 without compiling the LiDAR driver. A live Livox sensor still needs a separate driver process.
 
 ## 🚀 Usage
 

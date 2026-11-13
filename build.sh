@@ -43,7 +43,16 @@ fi
 
 cd "${workspace_dir}"
 if [[ "${requested_version}" == 1 ]]; then
+  catkin_make --source "${package_dir}/interfaces" \
+    --build "${workspace_dir}/build/fastlio_interfaces_ros1" \
+    --devel "${workspace_dir}/devel_fastlio_interfaces_ros1" \
+    -DFASTLIO_ROS_VERSION=1
+  set +u
+  source "${workspace_dir}/devel_fastlio_interfaces_ros1/setup.bash"
+  set -u
   catkin_make -DCATKIN_WHITELIST_PACKAGES=fast_lio_sam -DFASTLIO_ROS_VERSION=1
 else
-  colcon build --packages-up-to fast_lio_sam --cmake-args -DFASTLIO_ROS_VERSION=2
+  colcon build --base-paths "${package_dir}" "${package_dir}/interfaces/livox_ros_driver2" \
+    --build-base build/fastlio_interfaces --packages-up-to fast_lio_sam \
+    --cmake-args -DFASTLIO_ROS_VERSION=2
 fi
