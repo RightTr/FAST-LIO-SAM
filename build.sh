@@ -1,72 +1,49 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Sourced from Livox-SDK/livox-ros-driver2
+package_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+workspace_dir="$(cd "${package_dir}/../.." && pwd)"
+ros_edition="${1:-}"
 
-readonly VERSION_ROS1="ROS1"
-readonly VERSION_ROS2="ROS2"
-readonly VERSION_HUMBLE="humble"
+case "${ros_edition}" in
+  ROS1|ros1|1)
+    requested_version=1
+    default_distro=noetic
+    ;;
+  ROS2|ros2|2|humble)
+    requested_version=2
+    default_distro=humble
+    ;;
+  *)
+    echo "Usage: $0 ROS1|ROS2" >&2
+    exit 2
+    ;;
+esac
 
-pushd `pwd` > /dev/null
-cd `dirname $0`
-echo "Working Path: "`pwd`
+if [[ -n "${ROS_VERSION:-}" && "${ROS_VERSION}" != "${requested_version}" ]]; then
+  echo "Sourced ROS_VERSION=${ROS_VERSION}, but ${ros_edition} was requested. Start a fresh shell." >&2
+  exit 2
+fi
+if [[ -z "${ROS_VERSION:-}" ]]; then
+  distro="${ROS_DISTRO:-${default_distro}}"
+  setup="/opt/ros/${distro}/setup.bash"
+  if [[ ! -f "${setup}" ]]; then
+    echo "ROS setup not found: ${setup}" >&2
+    exit 2
+  fi
+  set +u
+  source "${setup}"
+  set -u
+fi
+if [[ -n "${LIVOX_WS:-}" ]]; then
+  set +u
+  source "${LIVOX_WS%/}/setup.bash"
+  set -u
+fi
 
-ROS_VERSION=""
-ROS_HUMBLE=""
-
-# Set working ROS version
-if [ "$1" = "ROS2" ]; then
-    ROS_VERSION=${VERSION_ROS2}
-elif [ "$1" = "humble" ]; then
-    ROS_VERSION=${VERSION_ROS2}
-    ROS_HUMBLE=${VERSION_HUMBLE}
-elif [ "$1" = "ROS1" ]; then
-    ROS_VERSION=${VERSION_ROS1}
+cd "${workspace_dir}"
+if [[ "${requested_version}" == 1 ]]; then
+  catkin_make -DCATKIN_WHITELIST_PACKAGES=fast_lio_sam -DFASTLIO_ROS_VERSION=1
 else
-    echo "Invalid Argument"
-    exit
+  colcon build --packages-up-to fast_lio_sam --cmake-args -DFASTLIO_ROS_VERSION=2
 fi
-echo "ROS version is: "$ROS_VERSION
-
-# clear `build/` folder.
-# TODO: Do not clear these folders, if the last build is based on the same ROS version.
-rm -rf ../../build/
-rm -rf ../../devel/
-rm -rf ../../install/
-# clear src/CMakeLists.txt if it exists.
-if [ -f ../CMakeLists.txt ]; then
-    rm -f ../CMakeLists.txt
-fi
-
-# exit
-
-# substitute the files/folders: CMakeList.txt, package.xml(s)
-if [ ${ROS_VERSION} = ${VERSION_ROS1} ]; then
-    if [ -f package.xml ]; then
-        rm package.xml
-    fi
-    cp -f package_ROS1.xml package.xml
-elif [ ${ROS_VERSION} = ${VERSION_ROS2} ]; then
-    if [ -f package.xml ]; then
-        rm package.xml
-    fi
-    cp -f package_ROS2.xml package.xml
-    cp -rf launch_ROS2/ launch/
-fi
-
-# build
-pushd `pwd` > /dev/null
-if [ $ROS_VERSION = ${VERSION_ROS1} ]; then
-    cd ../../
-    catkin_make -DROS_EDITION=${VERSION_ROS1}
-elif [ $ROS_VERSION = ${VERSION_ROS2} ]; then
-    cd ../../
-    colcon build --cmake-args -DROS_EDITION=${VERSION_ROS2} -DHUMBLE_ROS=${ROS_HUMBLE}
-fi
-popd > /dev/null
-
-# remove the substituted folders/files
-if [ $ROS_VERSION = ${VERSION_ROS2} ]; then
-    rm -rf launch/
-fi
-
-popd > /dev/null

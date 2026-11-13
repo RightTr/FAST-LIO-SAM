@@ -98,7 +98,7 @@ sudo add-apt-repository ppa:borglab/gtsam-release-4.1
 sudo apt install libgtsam-dev libgtsam-unstable-dev
 ```
 
-### ROS1 Build
+### ROS1 / ROS2 Build
 
 ```bash
 mkdir fastlio_sam_ws
@@ -107,14 +107,16 @@ cd fastlio_sam_ws
 mkdir src && cd src
 git clone https://github.com/RightTr/FAST-LIO-SAM.git
 
-cd src/FAST-LIO-SAM
+cd FAST-LIO-SAM
 
 # ROS1 build
 ./build.sh ROS1
 
 # ROS2 build
-./build.sh humble
+./build.sh ROS2
 ```
+
+`build.sh` builds from the workspace root (`../..`). It uses one conditional `package.xml` for both ROS versions and keeps the existing `launch_ROS1/` and `launch_ROS2/` directories in place. Source a Livox driver workspace first, or set `LIVOX_WS` to its `install` directory.
 
 ## 🚀 Usage
 

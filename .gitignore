@@ -7,7 +7,6 @@ Log/*.pdf
 .vscode/settings.json
 PCD/*.pcd
 .vscode
-package.xml
 SCAN_FRAMES
 IMU_STATES
 .codex
