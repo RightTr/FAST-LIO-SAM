@@ -3,7 +3,7 @@ set -euo pipefail
 
 package_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 workspace_dir="$(cd "${package_dir}/../.." && pwd)"
-ros_edition="${1:-}"
+ros_edition="${1:-${ROS_VERSION:-}}"
 
 case "${ros_edition}" in
   ROS1|ros1|1)
@@ -15,7 +15,7 @@ case "${ros_edition}" in
     default_distro=humble
     ;;
   *)
-    echo "Usage: $0 ROS1|ROS2" >&2
+    echo "Source a ROS environment or use: $0 ROS1|ROS2" >&2
     exit 2
     ;;
 esac
@@ -35,24 +35,26 @@ if [[ -z "${ROS_VERSION:-}" ]]; then
   source "${setup}"
   set -u
 fi
-if [[ -n "${LIVOX_WS:-}" ]]; then
-  set +u
-  source "${LIVOX_WS%/}/setup.bash"
-  set -u
+interface_dir="${package_dir}/interfaces/livox_ros_driver2"
+interface_link="${workspace_dir}/src/livox_ros_driver2"
+if [[ -L "${interface_link}" ]]; then
+  if [[ "$(readlink -f "${interface_link}")" != "$(readlink -f "${interface_dir}")" ]]; then
+    echo "Interface link points elsewhere: ${interface_link}" >&2
+    exit 2
+  fi
+elif [[ ! -e "${interface_link}" ]]; then
+  ln -s "${interface_dir}" "${interface_link}"
 fi
 
 cd "${workspace_dir}"
 if [[ "${requested_version}" == 1 ]]; then
   catkin_make --source "${package_dir}/interfaces" \
     --build "${workspace_dir}/build/fastlio_interfaces_ros1" \
-    --devel "${workspace_dir}/devel_fastlio_interfaces_ros1" \
-    -DFASTLIO_ROS_VERSION=1
+    --devel "${workspace_dir}/devel_fastlio_interfaces_ros1"
   set +u
   source "${workspace_dir}/devel_fastlio_interfaces_ros1/setup.bash"
   set -u
-  catkin_make -DCATKIN_WHITELIST_PACKAGES=fast_lio_sam -DFASTLIO_ROS_VERSION=1
+  catkin_make -DCATKIN_WHITELIST_PACKAGES=fast_lio_sam
 else
-  colcon build --base-paths "${package_dir}" "${package_dir}/interfaces/livox_ros_driver2" \
-    --build-base build/fastlio_interfaces --packages-up-to fast_lio_sam \
-    --cmake-args -DFASTLIO_ROS_VERSION=2
+  colcon build --base-paths "${package_dir}" "${interface_dir}"
 fi

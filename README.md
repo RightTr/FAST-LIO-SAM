@@ -101,32 +101,46 @@ sudo apt install libgtsam-dev libgtsam-unstable-dev
 ### ROS1 / ROS2 Build
 
 ```bash
-mkdir fastlio_sam_ws
-cd fastlio_sam_ws
-
-mkdir src && cd src
-git clone https://github.com/RightTr/FAST-LIO-SAM.git
-
-cd FAST-LIO-SAM
-
-# ROS1 build
-./build.sh ROS1
-
-# ROS2 build
-./build.sh ROS2
+mkdir -p ~/fastlio_sam_ws/src
+git clone https://github.com/RightTr/FAST-LIO-SAM.git ~/fastlio_sam_ws/src/FAST-LIO-SAM
 ```
 
-`build.sh` builds from the workspace root (`../..`). It uses one conditional `package.xml` for both ROS versions and keeps the existing `launch_ROS1/` and `launch_ROS2/` directories in place. The small interface package in `interfaces/livox_ros_driver2/` generates `CustomMsg` for ROS1 or ROS2 without compiling the LiDAR driver. A live Livox sensor still needs a separate driver process.
+Build ROS1 and ROS2 in separate shells and workspaces. For ROS1:
+
+```bash
+source /opt/ros/noetic/setup.bash
+cd ~/fastlio_sam_ws/src/FAST-LIO-SAM
+./build.sh
+```
+
+For ROS2:
+
+```bash
+source /opt/ros/humble/setup.bash
+cd ~/fastlio_sam_ws/src/FAST-LIO-SAM
+./build.sh
+```
 
 ## 🚀 Usage
 
-### LIO-SAM-style Backend
+### Run
+
+ROS1:
 
 ```bash
-cd fastlio_ws 
-source devel/setup.bash
-# e.g.
-roslaunch fast_lio_sam mapping_airy.launch
+source ~/fastlio_sam_ws/devel/setup.bash
+roslaunch fast_lio_sam mapping_airy.launch input:=online
+# Offline: pass a ROS1 .bag file instead of starting a live sensor.
+roslaunch fast_lio_sam mapping_airy.launch input:=offline bag:='/path/data.bag'
+```
+
+ROS2:
+
+```bash
+source ~/fastlio_sam_ws/install/setup.bash
+ros2 launch fast_lio_sam mapping_airy.launch.py input:=online
+# Offline: pass the ROS2 bag directory containing metadata.yaml.
+ros2 launch fast_lio_sam mapping_airy.launch.py input:=offline bag:='/path/rosbag_dir'
 ```
 
 ### Hierarchical representation
