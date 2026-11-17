@@ -579,6 +579,7 @@ void Preprocess::airy_handler(const Pcl2MsgConstPtr& msg) {
     {
       PointCloudXYZI &pl = pl_buff[j];
       int linesize = pl.size();
+      if (linesize < 2) continue;
       vector<orgtype> &types = typess[j];
       types.clear();
       types.resize(linesize);
@@ -744,10 +745,11 @@ void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, vector<orgtype> &t
   }
   uint head = 0;
 
-  while(types[head].range < blind)
+  while(head < static_cast<uint>(plsize) && types[head].range < blind)
   {
     head++;
   }
+  if (head == static_cast<uint>(plsize)) return;
 
   // Surf
   plsize2 = (plsize > group_size) ? (plsize - group_size) : 0;
