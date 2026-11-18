@@ -22,11 +22,6 @@ def flatten_params(values, prefix=''):
 def launch_nodes(context):
     input_mode = LaunchConfiguration('input').perform(context)
     bag_path = LaunchConfiguration('bag').perform(context)
-    if input_mode not in ('online', 'offline'):
-        raise ValueError("input must be 'online' or 'offline'")
-    if input_mode == 'offline' and not bag_path:
-        raise ValueError('bag is required when input:=offline')
-
     share = get_package_share_directory('fast_lio_sam')
     with open(os.path.join(share, 'config', 'mapping', 'airy.yaml'), encoding='utf-8') as stream:
         params = flatten_params(yaml.safe_load(stream))
